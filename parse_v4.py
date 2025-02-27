@@ -3,7 +3,8 @@ import pandas as pd
 import ast
 import os
 import glob
-from tqdm import tqdm  # Optional: for progress bars
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 
 
 LOG_FILE_PREFIX= "logfile"
@@ -455,9 +456,80 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
     return aggregated_dfs, processed_files
 
 
+def process_one_id_dir(
+    id_dir, input_parent_dir, output_parent_dir, save_aggregated_dfs, window, resume_from_log
+):
+    """
+    Process all CSV files in a given ID folder.
+    Parameters:
+    - id_dir (str): Path to the ID directory under processing.
+    - input_parent_dir (str): Path to the parent directory containing ID subdirectories.
+    - output_parent_dir (str): Path to the parent directory where aggregated data will be saved.
+    - save_aggregated_dfs (bool): Whether to save the aggregated DataFrames to CSV files.
+    - window (str, optional): A string representing the resampling frequency (e.g., '5min' for five minutes).
+    Default is '5min'. If None, no time windowing on the processed data.
+    - resume_from_log (bool): If true, inspect each ID folder in output_parent_dir for a log file holding the  
+    list of processed files in input_parent_dir to skip during the processing; otherwise, process each ID folder  
+    in input_parent_dir from scratch
+    """
+    id_dir_path = os.path.join(input_parent_dir, id_dir)
+    print(f"\nProcessing ID: {id_dir}")
+
+    # Call the aggregation function
+    aggregated_data, processed_files= aggregate_apple_healthkit_data(
+        id_dir_path, output_parent_dir, resume_from_log
+    )
+
+    if save_aggregated_dfs and aggregated_data:
+        participant_count= 1
+        # Define the output directory for this ID
+        output_dir = os.path.join(output_parent_dir, id_dir)
+        os.makedirs(output_dir, exist_ok=True)
+
+        for name, aggregated_df in aggregated_data.items():
+            # Create a valid filename by replacing spaces and other unwanted characters
+            safe_name = "".join([c if c.isalnum() or c in ("_", "-") else "_" for c in name])
+            filename = f"{safe_name}.csv"
+            file_path = os.path.join(output_dir, filename)
+
+            if window and name != "ActivitySummary":
+                print(f"Creating {window} windows for '{name}'")
+                aggregated_df = distribute_events(aggregated_df, name, window=window)
+
+            try:
+                if os.path.exists(file_path):
+                    # append new data to the existing file (without header)
+                    aggregated_df.to_csv(file_path, mode='a', header=False, index=False)
+                    # final check for duplicates after appending into the file due to events
+                    # in the last day of the previous month that can last after midnight
+                    aggregated_df = clean_up_duplicated(name, file_path)
+                    print(f"Appended aggregated data for '{name}' to {file_path}")
+                else:
+                    # file doesn't exist: create a new file with headers
+                    aggregated_df.to_csv(file_path, index=False)
+                    print(f"Saved aggregated data for '{name}' to {file_path}")
+            except Exception as e:
+                print(f"Error saving {file_path}: {e}")
+
+        try:
+            processed_files= pd.DataFrame(
+                processed_files, columns=["filename"]
+            ).sort_values(by=["filename"]).reset_index(drop=True)
+
+            processed_files.to_csv(os.path.join(output_dir, LOG_FILE_NAME), index=False, header=True)
+            print(f"Creating processed log file to {id_dir}")
+        except Exception as e:
+            print(f"Error saving processed logfile: {e}")
+    
+    else:
+        participant_count= 0
+
+    return participant_count
+
+
 def process_all_ids(
     input_parent_dir, output_parent_dir, select_dir=None, save_aggregated_dfs=True,
-    window="5min", skip_dirs_in_output_parent_dir=False, resume_from_log=True
+    window="5min", skip_dirs_in_output_parent_dir=False, resume_from_log=True, max_workers=4
 ):
     """
     Processes all ID directories within the input_parent_dir and aggregates their AppleHealthkit data.
@@ -474,6 +546,8 @@ def process_all_ids(
     list of processed files in input_parent_dir to skip during the processing; otherwise, process each ID folder  
     in input_parent_dir from scratch
     """
+    # Counter for participants with saved data
+    participant_count = 0
     # Ensure the output parent directory exists
     os.makedirs(output_parent_dir, exist_ok=True)
     # List all subdirectories in the output_parent_dir
@@ -500,64 +574,24 @@ def process_all_ids(
         id_dirs = [item for item in id_dirs if item not in out_id_dirs]
         print(f"Skipping {len(out_id_dirs)} ID directories previously processed.")
 
-    # Participant data
-    participant_count = 0
-
     if not id_dirs:
         print(f"No subdirectories found in input parent directory: {input_parent_dir}")
         return
     print(f"--> {len(id_dirs)} ID directories will be processed.")
 
-    # Iterate over each ID directory
-    for id_dir in tqdm(id_dirs, desc="Processing ID directories"):
-        id_dir_path = os.path.join(input_parent_dir, id_dir)
-        print(f"\nProcessing ID: {id_dir}")
 
-        # Call the aggregation function
-        aggregated_data, processed_files= aggregate_apple_healthkit_data(
-            id_dir_path, output_parent_dir, resume_from_log
-        )
+    # Processes all ID folders in parallel using a ProcessPoolExecutor.
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(  # task with multiple parameters
+                process_one_id_dir, id_dir, input_parent_dir, output_parent_dir, save_aggregated_dfs, 
+                window, resume_from_log
+            ): id_dir for id_dir in id_dirs
+        }
+        # as_completed iterator with tqdm for progress monitoring.
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing ID directories"):
+            participant_count += future.result()
 
-        if save_aggregated_dfs and aggregated_data:
-            participant_count += 1
-            # Define the output directory for this ID
-            output_dir = os.path.join(output_parent_dir, id_dir)
-            os.makedirs(output_dir, exist_ok=True)
-
-            for name, aggregated_df in aggregated_data.items():
-                # Create a valid filename by replacing spaces and other unwanted characters
-                safe_name = "".join([c if c.isalnum() or c in ("_", "-") else "_" for c in name])
-                filename = f"{safe_name}.csv"
-                file_path = os.path.join(output_dir, filename)
-
-                if window and name != "ActivitySummary":
-                    print(f"Creating {window} windows for '{name}'")
-                    aggregated_df = distribute_events(aggregated_df, name, window=window)
-
-                try:
-                    if os.path.exists(file_path):
-                        # append new data to the existing file (without header)
-                        aggregated_df.to_csv(file_path, mode='a', header=False, index=False)
-                        # final check for duplicates after appending into the file due to events
-                        # in the last day of the previous month that can last after midnight
-                        aggregated_df = clean_up_duplicated(name, file_path)
-                        print(f"Appended aggregated data for '{name}' to {file_path}")
-                    else:
-                        # file doesn't exist: create a new file with headers
-                        aggregated_df.to_csv(file_path, index=False)
-                        print(f"Saved aggregated data for '{name}' to {file_path}")
-                except Exception as e:
-                    print(f"Error saving {file_path}: {e}")
-
-            try:
-                processed_files= pd.DataFrame(
-                    processed_files, columns=["filename"]
-                ).sort_values(by=["filename"]).reset_index(drop=True)
-
-                processed_files.to_csv(os.path.join(output_dir, LOG_FILE_NAME), index=False, header=True)
-                print(f"Creating processed log file to {id_dir}")
-            except Exception as e:
-                print(f"Error saving processed logfile: {e}")
 
     print(f"Aggregated participants: {participant_count} out {len(id_dirs)} ID directories processed.")
     print("All ID directories have been processed.")
@@ -577,5 +611,5 @@ if __name__ == "__main__":
     # Process all ID directories
     process_all_ids(
         input_parent_directory, output_parent_directory, input_selected, save_aggregated_dfs=True,
-        window="5min", skip_dirs_in_output_parent_dir=False, resume_from_log=True
+        window="5min", skip_dirs_in_output_parent_dir=False, resume_from_log=True, max_workers=4
     )
