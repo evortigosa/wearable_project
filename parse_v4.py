@@ -283,6 +283,46 @@ def distribute_events(df, ft_name, window="5min"):
     return df_result
 
 
+def resume_from_log_files(csv_files, input_dir, output_dir):
+    """
+    Here we identify the log file with previously processed files, read it, and skip 
+    processed files
+    - csv_files (list of str): Paths of all CSV files in the input_dir
+    - input_dir (str): Path to the directory containing CSV files.
+    - output_dir (str): Path to the parent directory where aggregated data will be saved.
+    Returns:
+    - csv_files (list of str): Updated csv_files list only with paths to not processed files
+    - processed_files (list of str): List of processed files from a log file in output_dir
+    """
+    # Hold the name of processed files to track the updated files 
+    processed_files= []
+
+    try:
+        id_number= csv_files[0].split(os.sep)[-2]
+        log_path= os.path.join(output_dir, id_number, LOG_FILE_NAME)
+        log_processed= pd.read_csv(log_path, header=None, dtype=str)
+        log_processed= log_processed.iloc[:, 0].dropna().tolist()
+        filtered_files= []
+
+        for file_path in csv_files:
+            # get the relative file name (without directory and extension)
+            file_name= os.path.splitext(os.path.relpath(file_path, input_dir))[0]
+
+            if file_name in log_processed:
+                # track processed files and skip those already processed.
+                processed_files.append(file_name)
+                print(f"Skiping file {file_name}: Previously processed.")
+            else:
+                # keep only non-processed elements
+                filtered_files.append(file_path)
+        
+        csv_files= filtered_files  # update csv_files to only include new files
+    except Exception as e:
+        print(f"Error reading processed logfile: {e}.\nThis directory will be processed from scratch.")
+
+    return csv_files, processed_files
+
+
 def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_from_log=True):
     """
     Aggregates data from all CSV files in the specified directory where data_source is AppleHealthkit.
@@ -297,9 +337,6 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
     """
     # Initialize the dictionary to hold aggregated DataFrames
     aggregated_dfs = {}
-    # Hold the name of processed files to track the updated files 
-    processed_files= []
-
     # Use glob to find all CSV files in the directory
     csv_files = glob.glob(os.path.join(directory_path, "*.csv"))
     # Skip possible log files
@@ -311,30 +348,10 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
 
     print(f"Found {len(csv_files)} CSV files in directory: {directory_path}")
 
-    # Here we identify the log file with previously processed files, read it, and skip processed files
     if resume_from_log:
-        try:
-            id_number= csv_files[0].split(os.sep)[-2]
-            log_path= os.path.join(output_parent_dir, id_number, LOG_FILE_NAME)
-            log_processed= pd.read_csv(log_path, header=None, dtype=str)
-            log_processed= log_processed.iloc[:, 0].dropna().tolist()
-            filtered_files= []
-
-            for file_path in csv_files:
-                # get the relative file name (without directory and extension)
-                file_name= os.path.splitext(os.path.relpath(file_path, directory_path))[0]
-
-                if file_name in log_processed:
-                    # track processed files and skip those already processed.
-                    processed_files.append(file_name)
-                    print(f"Skiping file {file_name}: Previously processed.")
-                else:
-                    filtered_files.append(file_path)  # keep only non-processed elements
-            
-            csv_files= filtered_files  # update csv_files to only include new files
-        except Exception as e:
-            print(f"Error reading processed logfile: {e}.\nThis directory will be processed from scratch.")
-
+        csv_files, processed_files= resume_from_log_files(
+            csv_files, directory_path, output_parent_dir
+        )
     print(f"--> {len(csv_files)} CSV files will be processed.")
 
     # iterate over each CSV file with a progress bar
@@ -373,7 +390,6 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
 
             # Filter the DataFrame for the current 'name'
             subset = apple_health_df[apple_health_df["name"] == name]
-
             # List to hold parsed DataFrames for the current 'name'
             list_of_dfs = []
 
@@ -409,9 +425,7 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
                         try:
                             df_data[date_col] = pd.to_datetime(row[date_col])
                         except Exception as e:
-                            print(
-                                f"Error converting '{date_col}' in file {file_path} at index {index}: {e}"
-                            )
+                            print(f"Error converting '{date_col}' in file {file_path} at index {index}: {e}")
                             df_data[date_col] = (pd.NaT)  # Assign Not-a-Time if conversion fails
 
                 # Add other contextual columns
@@ -429,7 +443,6 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
             if list_of_dfs:
                 # Concatenate all DataFrames for the current 'name'
                 combined_df = pd.concat(list_of_dfs, ignore_index=True)
-
                 # If the 'name' already exists in aggregated_dfs, append to it
                 if name in aggregated_dfs:
                     aggregated_dfs[name] = pd.concat([aggregated_dfs[name], combined_df], ignore_index=True)
@@ -465,18 +478,20 @@ def process_all_ids(
     os.makedirs(output_parent_dir, exist_ok=True)
     # List all subdirectories in the output_parent_dir
     out_id_dirs = [
-        d for d in os.listdir(output_parent_dir) if os.path.isdir(os.path.join(output_parent_dir, d))
+        d for d in os.listdir(output_parent_dir) 
+        if os.path.isdir(os.path.join(output_parent_dir, d))
     ]
-
     if select_dir is None:
         # List all subdirectories in the input_parent_dir
         id_dirs = [
-            d for d in os.listdir(input_parent_dir) if os.path.isdir(os.path.join(input_parent_dir, d))
+            d for d in os.listdir(input_parent_dir) 
+            if os.path.isdir(os.path.join(input_parent_dir, d))
         ]
     else:
         # List all subdirectories in the select_dir to process only the same in the input_parent_dir
         id_dirs = [
-            d for d in os.listdir(select_dir) if os.path.isdir(os.path.join(select_dir, d))
+            d for d in os.listdir(select_dir) 
+            if os.path.isdir(os.path.join(select_dir, d))
         ]
     print(f"Found a total of {len(id_dirs)} ID directories.")
 
@@ -491,7 +506,6 @@ def process_all_ids(
     if not id_dirs:
         print(f"No subdirectories found in input parent directory: {input_parent_dir}")
         return
-
     print(f"--> {len(id_dirs)} ID directories will be processed.")
 
     # Iterate over each ID directory
