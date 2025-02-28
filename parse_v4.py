@@ -336,6 +336,8 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
     Returns:
     - aggregated_dfs (dict): Dictionary where keys are unique 'name' values and values are aggregated DataFrames.
     """
+    # Hold the name of processed files to track the updated files 
+    processed_files= []
     # Initialize the dictionary to hold aggregated DataFrames
     aggregated_dfs = {}
     # Use glob to find all CSV files in the directory
@@ -345,7 +347,7 @@ def aggregate_apple_healthkit_data(directory_path, output_parent_dir, resume_fro
 
     if not csv_files:
         print(f"No CSV files found in directory: {directory_path}")
-        return aggregated_dfs
+        return aggregated_dfs, processed_files
 
     print(f"Found {len(csv_files)} CSV files in directory: {directory_path}")
 
@@ -472,6 +474,8 @@ def process_one_id_dir(
     list of processed files in input_parent_dir to skip during the processing; otherwise, process each ID folder  
     in input_parent_dir from scratch
     """
+    participant_count= 0
+
     id_dir_path = os.path.join(input_parent_dir, id_dir)
     print(f"\nProcessing ID: {id_dir}")
 
@@ -520,9 +524,6 @@ def process_one_id_dir(
             print(f"Creating processed log file to {id_dir}")
         except Exception as e:
             print(f"Error saving processed logfile: {e}")
-    
-    else:
-        participant_count= 0
 
     return participant_count
 
@@ -611,5 +612,5 @@ if __name__ == "__main__":
     # Process all ID directories
     process_all_ids(
         input_parent_directory, output_parent_directory, input_selected, save_aggregated_dfs=True,
-        window="5min", skip_dirs_in_output_parent_dir=False, resume_from_log=True, max_workers=4
+        window="5min", skip_dirs_in_output_parent_dir=False, resume_from_log=True, max_workers=24
     )
