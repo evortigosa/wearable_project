@@ -579,6 +579,9 @@ def process_all_ids(
         print(f"No subdirectories found in input parent directory: {input_parent_dir}")
         return
     print(f"--> {len(id_dirs)} ID directories will be processed.")
+    
+    # Check the number of CPUs/cores available
+    max_workers= max(1, os.cpu_count() - 1) if max_workers> max(1, os.cpu_count() - 1) else max_workers
 
 
     # Processes all ID folders in parallel using a ProcessPoolExecutor.
