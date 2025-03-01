@@ -547,6 +547,8 @@ def process_all_ids(
     list of processed files in input_parent_dir to skip during the processing; otherwise, process each ID folder  
     in input_parent_dir from scratch
     """
+    # Check the number of CPUs/cores available
+    max_workers= max(1, os.cpu_count() - 1) if max_workers> max(1, os.cpu_count() - 1) else max_workers
     # Counter for participants with saved data
     participant_count = 0
     # Ensure the output parent directory exists
@@ -571,7 +573,7 @@ def process_all_ids(
     print(f"Found a total of {len(id_dirs)} ID directories.")
 
     # This step acts like a 'resume' in processing by skipping dirs already processed
-    if out_id_dirs and skip_dirs_in_output_parent_dir:
+    if out_id_dirs and skip_dirs_in_output_parent_dir and not resume_from_log:
         id_dirs = [item for item in id_dirs if item not in out_id_dirs]
         print(f"Skipping {len(out_id_dirs)} ID directories previously processed.")
 
@@ -579,9 +581,6 @@ def process_all_ids(
         print(f"No subdirectories found in input parent directory: {input_parent_dir}")
         return
     print(f"--> {len(id_dirs)} ID directories will be processed.")
-    
-    # Check the number of CPUs/cores available
-    max_workers= max(1, os.cpu_count() - 1) if max_workers> max(1, os.cpu_count() - 1) else max_workers
 
 
     # Processes all ID folders in parallel using a ProcessPoolExecutor.
