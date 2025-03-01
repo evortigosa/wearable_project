@@ -11,9 +11,9 @@ LOG_FILE_PREFIX= "logfile"
 LOG_FILE_NAME= LOG_FILE_PREFIX + "_aggregated_files.csv"
 
 
-def activities_to_average_window(ft_name):
+def activities_to_weigh_window(ft_name):
     """
-    Define the activities to average their values by the number of windows during the aggregation.
+    Define the activities to weigh their values by the number of windows during the aggregation.
     """
     to_average= [
         'StepCount','DistanceWalkingRunning','BasalEnergyBurned','ActiveEnergyBurned','FlightsClimbed',
@@ -262,7 +262,7 @@ def distribute_events(df, ft_name, window="5min"):
 
     value_features = features_to_aggregate(df)
     
-    if activities_to_average_window(ft_name) is True:
+    if activities_to_weigh_window(ft_name) is True:
         for col in value_features:
             df_distributed[col]= (df_distributed[col] / df_distributed["event_count"])
 
