@@ -11,9 +11,10 @@ LOG_FILE_PREFIX= "logfile"
 LOG_FILE_NAME= LOG_FILE_PREFIX + "_aggregated_files.csv"
 
 
-def activities_to_weigh_window(ft_name):
+def activities_to_weight_window(ft_name):
     """
-    Define the activities to weigh their values by the number of windows during the aggregation.
+    Define the activities to weight their values by the number of windows during the aggregation.
+    Activities that are ratio-like (e.g., HeartRate) are not window-weighted.
     """
     to_average= [
         'StepCount','DistanceWalkingRunning','BasalEnergyBurned','ActiveEnergyBurned','FlightsClimbed',
@@ -27,7 +28,7 @@ def activities_to_weigh_window(ft_name):
 
 def features_to_aggregate(df):
     """
-    Function to determine the column values to aggregate according to the feature under processing
+    Function to determine the column values to aggregate according to the feature under processing.
     """
     if "value" in df.columns:
         values = ["value"]
@@ -51,7 +52,7 @@ def features_to_aggregate(df):
 
 def aggregate_values_by_type(series, agg_type='median'):
     """
-    Function to handle both numeric and categorical values during aggregation
+    Function to handle both numeric and categorical values during aggregation.
     """
     if pd.api.types.is_numeric_dtype(series):
         if (agg_type=='median'):
@@ -262,7 +263,7 @@ def distribute_events(df, ft_name, window="5min"):
 
     value_features = features_to_aggregate(df)
     
-    if activities_to_weigh_window(ft_name) is True:
+    if activities_to_weight_window(ft_name) is True:
         for col in value_features:
             df_distributed[col]= (df_distributed[col] / df_distributed["event_count"])
 
