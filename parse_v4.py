@@ -587,7 +587,7 @@ def process_all_ids(
     # Processes all ID folders in parallel using a ProcessPoolExecutor.
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(  # task with multiple parameters
+            executor.submit(  # execute tasks with multiple parameters
                 process_one_id_dir, id_dir, input_parent_dir, output_parent_dir, save_aggregated_dfs, 
                 window, resume_from_log
             ): id_dir for id_dir in id_dirs
