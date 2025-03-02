@@ -1,7 +1,7 @@
-# import numpy as np
 import pandas as pd
 import os
 import glob
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from parse_v4 import clean_up_duplicated
 from tqdm import tqdm
 
@@ -133,13 +133,15 @@ def merge_dfs_and_sum_features(list_dfs):
     return df_final
 
 
-def get_id_statistics(directory_path, fts_to_skip_time_accum):
+def get_id_statistics(input_parent_dir, id_dir, fts_to_skip_time_accum):
     """
     Processes a directory of CSV files corresponding to a single ID.
     Parameters:
-    - directory_path (str): Path to the ID directory.
+    - input_parent_dir (str): Path to the parent directory with ID subdirectories.
+    - id_dir (str): The ID directory under processing.
     - fts_to_skip_time_accum (list): Features to skip for time accumulation.
     Returns:
+    - id_dir (str): The ID directory under processing.
     - feature_presence (dict): Dictionary mapping features to their occurrence count.
     - dir_size (int): Total size of files in the directory (in bytes).
     - ft_evolution (pd.DataFrame): DataFrame of feature evolution (accumulated durations).
@@ -150,20 +152,22 @@ def get_id_statistics(directory_path, fts_to_skip_time_accum):
     """
     dir_size = 0
     feature_presence = {}
-
-    # Use glob to find all CSV files in the directory
-    csv_files = glob.glob(os.path.join(directory_path, "*.csv"))
-
     # Lists to hold event counts and durations for each day
     ft_duration_dfs = []
     ft_daily_counts_dfs = []
     ft_daily_hourly_dfs = []
     active_dates = set()
 
+    print(f"\nProcessing ID: {id_dir}")
+    # Access the ID directory under processing.
+    directory_path= os.path.join(input_parent_dir, id_dir)
+    # Use glob to find all CSV files in the directory
+    csv_files = glob.glob(os.path.join(directory_path, "*.csv"))
+
     for file in csv_files:
         if os.path.isfile(file):  # Ensure it's a file
             dir_size += os.path.getsize(file)
-            feature_name = file.replace(directory_path + "/", "").replace(".csv", "")
+            feature_name = file.replace(directory_path + os.sep, "").replace(".csv", "")
 
             if LOG_FILE_PREFIX in feature_name.split("_"):
                 print("Skipping log file.")
@@ -197,10 +201,10 @@ def get_id_statistics(directory_path, fts_to_skip_time_accum):
     ft_daily_counts = list_of_dfs_to_df(ft_daily_counts_dfs)
     ft_hourly_counts = merge_hourly_dataframes(ft_daily_hourly_dfs)
 
-    return feature_presence, dir_size, ft_evolution, ft_daily_counts, ft_hourly_counts, active_dates
+    return id_dir, feature_presence, dir_size, ft_evolution, ft_daily_counts, ft_hourly_counts, active_dates
 
 
-def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum):
+def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum, max_workers=4):
     """
     Processes all ID directories within the input_parent_dir, aggregates their data,
     and saves summary CSV files in the output_parent_dir.
@@ -209,77 +213,79 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum)
     - output_parent_dir (str): Path to save the output CSV files.
     - fts_to_skip_time_accum (list): List of feature names to skip time accumulation.
     """
-    # Ensure the output parent directory exists
-    os.makedirs(output_parent_dir, exist_ok=True)
-
-    # List all subdirectories in the input_parent_dir
-    id_dirs = [
-        d for d in os.listdir(input_parent_dir)
-        if os.path.isdir(os.path.join(input_parent_dir, d))
-    ]
+    # Check the number of CPUs/cores available
+    max_workers= max(1, os.cpu_count() - 1) if max_workers> max(1, os.cpu_count() - 1) else max_workers
 
     # Aggregates daily and hourly data
     all_ids_daily_counts = []
     all_ids_hourly_counts = []
     # Aggregates activity evolution (count and duration)
     all_ids_ft_evol = []
+    # Store information per ID folder
+    participant_sizes = []
+    participant_features = {}
+    # Store the count of active users per day
+    active_counts = {}
+    aggregated_features = {}
 
+    # Ensure the output parent directory exists
+    os.makedirs(output_parent_dir, exist_ok=True)
+    # List all subdirectories in the input_parent_dir
+    id_dirs = [
+        d for d in os.listdir(input_parent_dir)
+        if os.path.isdir(os.path.join(input_parent_dir, d))
+    ]
     if not id_dirs:
         print(f"No subdirectories found in input parent directory: {input_parent_dir}")
         return
-
     print(f"Found {len(id_dirs)} ID directories to process.")
-    # total_participants = len(id_dirs)
 
-    participant_sizes = []
-    participant_features = {}
-    aggregated_features = {}
-    # store the count of active users per day
-    active_counts = {}
+    # Processes all ID folders in parallel using a ProcessPoolExecutor.
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(  # Call the statistics function
+                get_id_statistics, input_parent_dir, id_dir, fts_to_skip_time_accum
+            ): id_dir for id_dir in id_dirs
+        }
+        # as_completed iterator with tqdm for progress monitoring.
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing ID directories"):
+            (
+                id_dir, dir_features, dir_size, dir_ft_evol, dir_ft_daily_count, dir_ft_hourly_counts, 
+                user_active_dates
+            ) = future.result()
+            # The output directory for this ID
+            output_dir = os.path.join(output_parent_dir, id_dir)
+            os.makedirs(output_dir, exist_ok=True)
 
-    # Iterate over each ID directory
-    for id_dir in tqdm(id_dirs, desc="Processing ID directories"):
-        id_dir_path = os.path.join(input_parent_dir, id_dir)
-        print(f"\nProcessing ID: {id_dir}")
-        # The output directory for this ID
-        output_dir = os.path.join(output_parent_dir, id_dir)
-        os.makedirs(output_dir, exist_ok=True)
+            all_ids_ft_evol.append(dir_ft_evol)
+            all_ids_daily_counts.append(dir_ft_daily_count)
+            all_ids_hourly_counts.append(dir_ft_hourly_counts)
 
-        # Call the statistics function
-        (
-            dir_features, dir_size, dir_ft_evol, dir_ft_daily_count, dir_ft_hourly_counts, 
-            user_active_dates
-        ) = get_id_statistics(id_dir_path, fts_to_skip_time_accum)
-        
-        all_ids_ft_evol.append(dir_ft_evol)
-        all_ids_daily_counts.append(dir_ft_daily_count)
-        all_ids_hourly_counts.append(dir_ft_hourly_counts)
+            for d in user_active_dates:
+                active_counts[d] = active_counts.get(d, 0) + 1
 
-        for d in user_active_dates:
-            active_counts[d] = active_counts.get(d, 0) + 1
+            # Store size results per ID folder
+            participant_sizes.append({"participant_id": id_dir, "folder_size_bytes": dir_size})
+            # Features present in each ID folder
+            participant_features[id_dir] = dir_features
 
-        # Store size results per ID folder
-        participant_sizes.append({"Participant_ID": id_dir, "Folder_Size_Bytes": dir_size})
-        # Features present in each ID folder
-        participant_features[id_dir] = dir_features
+            # Aggregate feature counts across directories
+            for feature, count in dir_features.items():
+                aggregated_features[feature] = aggregated_features.get(feature, 0) + count
 
-        # Aggregate feature counts across directories
-        for feature, count in dir_features.items():
-            aggregated_features[feature] = aggregated_features.get(feature, 0) + count
-
-        try:
-            dir_ft_evol.to_csv(os.path.join(output_dir, LOG_FILE_PREFIX + "_activity_durations.csv"))
-            dir_ft_daily_count.to_csv(os.path.join(output_dir, LOG_FILE_PREFIX + "_activity_counts.csv"))
-            print("Saving per-participant log files.")
-        except Exception as e:
-            print(f"Error saving log file for ID {id_dir}: {e}")
+            try:
+                dir_ft_evol.to_csv(os.path.join(output_dir, LOG_FILE_PREFIX + "_activity_durations.csv"))
+                dir_ft_daily_count.to_csv(os.path.join(output_dir, LOG_FILE_PREFIX + "_activity_counts.csv"))
+                print("Saving per-participant log files.")
+            except Exception as e:
+                print(f"Error saving log file for ID {id_dir}: {e}")
 
     try:
         print("Saving processing log files...")
         # Convert aggregated sizes to a DataFrame and save
         df_sizes = pd.DataFrame(participant_sizes)
         # Sort by folder size
-        df_sizes = df_sizes.sort_values(by="Folder_Size_Bytes", ascending=False)
+        df_sizes = df_sizes.sort_values(by="folder_size_bytes", ascending=False)
         df_sizes.to_csv(
             os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_id_folder_sizes.csv"), index=False,
         )
@@ -287,9 +293,9 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum)
         # print(df_sizes)
 
         # Create a DataFrame summarizing feature presence across IDs
-        df_features = pd.DataFrame(list(aggregated_features.items()), columns=["Feature", "Count"])
+        df_features = pd.DataFrame(list(aggregated_features.items()), columns=["feature", "count"])
         # Sort features by count
-        df_features = df_features.sort_values(by="Count", ascending=False).reset_index(drop=True)
+        df_features = df_features.sort_values(by="count", ascending=False).reset_index(drop=True)
         df_features.to_csv(
             os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_features_summary.csv"), index=False,
         )
@@ -299,12 +305,14 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum)
         # Build list of presence of features for each ID
         id_features = []
         for participant, features in participant_features.items():
-            row = {"Participant_ID": participant}
-            row.update({feature: features.get(feature, 0) for feature in df_features["Feature"]})
+            row = {"participant_id": participant}
+            row.update({feature: features.get(feature, 0) for feature in df_features["feature"]})
             id_features.append(row)
 
         df_presence = pd.DataFrame(id_features)
-        df_presence.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_features_by_id_folder.csv"))
+        df_presence.to_csv(
+            os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_features_by_id_folder.csv"), index=False
+        )
         # print(f"\nFeature Presence For Each Participant:")
         # print(df_presence)
 
@@ -344,5 +352,5 @@ if __name__ == "__main__":
 
     # Process all ID directories
     process_all_ids(
-        input_parent_directory, output_parent_directory, fts_to_skip_time_accum,
+        input_parent_directory, output_parent_directory, fts_to_skip_time_accum, max_workers=4
     )
