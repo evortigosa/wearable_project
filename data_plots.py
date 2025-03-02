@@ -42,7 +42,6 @@ def dual_feature_month_boxplot(
     file1, file2, start_date, end_date, label1, label2, day_sum=False, value_threshold1=None, 
     value_threshold2=None
 ):
-    
     def load_and_process(file, value_threshold):
         df = pd.read_csv(file)
         df['start_date']= pd.to_datetime(df['start_date'])
