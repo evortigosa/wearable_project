@@ -179,7 +179,9 @@ def get_id_statistics(input_parent_dir, id_dir, fts_to_skip_time_accum):
             df = clean_up_duplicated(feature_name, file)
             # collect the dates on which at least one activity is recorded
             if 'datetime' in df.columns:
-                dates = pd.to_datetime(df['datetime'], errors='coerce').dt.date.dropna().unique()
+                dates = pd.to_datetime(
+                    df['datetime'], errors='coerce', utc=True
+                ).dt.date.dropna().unique()
                 active_dates.update(dates)
             else:
                 print(f"'datetime' field not found in {feature_name}")
