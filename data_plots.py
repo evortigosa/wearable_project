@@ -2,9 +2,30 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.transforms as mtransforms
 import seaborn as sns
 import plotly.express as px
 from matplotlib.ticker import MaxNLocator
+
+
+def vis_ft_count_per_user(ft_file):
+    df_ft_count= pd.read_csv(ft_file)
+    col_feature= [col for col in df_ft_count.columns if col.lower() == "feature"][0]
+    col_count  = [col for col in df_ft_count.columns if col.lower() == "count"][0]
+    # Sort DataFrame by count ascending (for horizontal bar chart, smallest at the bottom)
+    df_sorted = df_ft_count.sort_values(col_count, ascending=True)
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(
+        data=df_sorted, x=col_count, y=col_feature, hue=col_feature, palette="viridis", 
+        dodge=False
+    )
+    plt.legend([], [], frameon=False)
+    plt.title("Feature Appearance Count per User Folder")
+    plt.xlabel("Count")
+    plt.ylabel("Feature")
+    plt.tight_layout()
+    plt.show()
 
 
 def vis_active_devices(active_file, start_date, end_date, yyyy_mm_x=True):
@@ -62,14 +83,14 @@ def dual_feature_month_boxplot(
 
     # Load both datasets and combine them
     df1 = load_and_process(file1, value_threshold1)
-    df1["Feature"] = label1
+    df1["feature"] = label1
     df2 = load_and_process(file2, value_threshold2)
-    df2["Feature"] = label2
+    df2["feature"] = label2
     df_combined = pd.concat([df1, df2], ignore_index=True)
     
     # Create a boxplot
     plt.figure(figsize=(14, 7))
-    sns.boxplot(x="year_month", y="value", hue="Feature", data=df_combined, showfliers=True)
+    sns.boxplot(x="year_month", y="value", hue="feature", data=df_combined, showfliers=True)
     plt.xticks(rotation=45, ha="right")
     plt.xlabel("Month")
     plt.ylabel("Value")
@@ -120,7 +141,7 @@ def feature_value_evolving(
 
     # aggregate by day (summing up the 'value' column)
     df_daily = df_filtered.groupby(df_filtered['start_date'].dt.date)['value'].sum().reset_index()
-    df_daily.columns = ['Date', 'value']
+    df_daily.columns = ['date', 'value']
 
     if value_threshold is not None:
         df_daily['value']= df_daily['value'].clip(upper=value_threshold)
@@ -128,10 +149,10 @@ def feature_value_evolving(
     if interactive:
         # interactive area chart with Plotly
         fig = px.area(
-            df_daily, x='Date', y='value', 
+            df_daily, x='date', y='value', 
             title=f"Total Daily {ylabel} Over Time",
-            labels={'Date': 'Date', f'{ylabel}': 'value'},
-            hover_data={'value': True, 'Date': True}
+            labels={'Date': 'date', f'{ylabel}': 'value'},
+            hover_data={'value': True, 'date': True}
         )
 
         fig.update_layout(
@@ -143,8 +164,8 @@ def feature_value_evolving(
     else:
         # plotting the area chart
         plt.figure(figsize=(10, 6))
-        plt.fill_between(df_daily['Date'], df_daily['value'], color="skyblue", alpha=0.4)
-        plt.plot(df_daily['Date'], df_daily['value'], color="Slateblue", alpha=0.6)
+        plt.fill_between(df_daily['date'], df_daily['value'], color="skyblue", alpha=0.4)
+        plt.plot(df_daily['date'], df_daily['value'], color="Slateblue", alpha=0.6)
         plt.title(f'Total Daily {ylabel} Over Time')
         plt.xlabel('Date')
         plt.ylabel(ylabel)
@@ -255,6 +276,94 @@ def plot_heatmap(df, start_date, end_date):
     ]
     plt.xticks(ticks=range(len(x_labels)), labels=x_labels, rotation=45)
     plt.yticks(rotation=0)
+    plt.show()
+
+
+def data_sizes_by_folders(ft_file):
+    df_id_sizes= pd.read_csv(ft_file)
+    col_size= [
+        col for col in df_id_sizes.columns if col.lower() == "folder_size_bytes"
+    ][0]
+
+    # 1. Histogram with KDE
+    plt.figure(figsize=(12, 6))
+    ax= sns.histplot(
+        x=df_id_sizes[col_size], bins=100, kde=True, 
+        color="royalblue",           # Histogram color
+        edgecolor="black",           # Edge color for better separation
+    )
+    ax.lines[0].set_color('crimson')
+    plt.title("Distribution of Folder Sizes (Bytes)")
+    plt.xlabel("Folder Size (Bytes)")
+    plt.ylabel("Count")
+    plt.show()
+
+    # 2. Boxplot (with log scale on x-axis for better visibility)
+    plt.figure(figsize=(8, 4))
+    sns.boxplot(x=df_id_sizes[col_size], color="lightgreen")
+    plt.xscale("log")
+    plt.title("Folder Sizes (Log Scale)")
+    plt.xlabel("Folder Size (Bytes)")
+    plt.show()
+
+    # 3. Sorted Scatter Plot (each point represents a participant)
+    df_sorted = df_id_sizes.sort_values(col_size)
+    folder_sizes= df_sorted[col_size].values
+    N= len(folder_sizes)
+    # Define thresholds in bytes (1 MB = 1e6 bytes, etc.)
+    thresholds= [1e6, 10e6, 100e6, 500e6]
+    threshold_labels= [" 1 MB", " 10 MB", " 100 MB", " 500 MB"]
+    
+    # Compute cumulative percentages for each threshold
+    cumulative= []
+    for thresh in thresholds:
+        idx= np.searchsorted(folder_sizes, thresh, side="right")
+        cumulative.append(idx / N * 100)
+
+    # Compute bin percentages (differences)
+    bin_percentages= []
+    bin_percentages.append(cumulative[0])  # Folders below 1MB
+    for i in range(1, len(cumulative)):
+        # For subsequent bins, subtract the previous cumulative percentage
+        bin_percentages.append(cumulative[i] - cumulative[i - 1])
+    # For the last bin: folders above the highest threshold (500 MB)
+    above_pct= 100 - cumulative[-1]
+    bin_percentages.append(above_pct)
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(folder_sizes, marker='o', linestyle='', markersize=2)
+    plt.yscale("log")
+    plt.title("Folder Sizes per Participant (Sorted, Log Scale)")
+    plt.xlabel("Participants (sorted)")
+    plt.ylabel("Folder Size (Bytes)")
+    plt.grid(alpha=0.5)
+    ax = plt.gca()  # get the current axis
+
+    # For annotation, compute the x-index for each threshold
+    indices = {}
+    for label, thresh in zip(threshold_labels, thresholds):
+        idx = np.searchsorted(folder_sizes, thresh, side="right")
+        indices[label] = idx
+
+    # Annotate each bin (for bins below 500 MB)
+    y_min = plt.ylim()[0]
+    for label, pct in zip(threshold_labels, bin_percentages):
+        idx = indices[label]
+        plt.axvline(x=idx, color='black', linestyle='--', alpha=0.8)
+        # Annotate near the bottom of the plot; use a small offset if needed
+        plt.text(
+            idx, y_min, f"{label}: {pct:.1f}%", rotation=90,
+            verticalalignment='bottom', horizontalalignment='right', 
+            color='darkred', fontsize=11
+        )
+    # Annotate the "500 MB+" percentage near the end
+    offset= mtransforms.ScaledTranslation(0.2, 0, plt.gcf().dpi_scale_trans)
+    plt.text(
+        N, plt.ylim()[0], f" 500 MB+: {bin_percentages[-1]:.1f}%", rotation=90, 
+        verticalalignment='bottom', horizontalalignment='right', 
+        color='darkred', fontsize=11, 
+        transform=ax.transData + offset
+    )
     plt.show()
 
 
