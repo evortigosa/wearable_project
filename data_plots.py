@@ -8,6 +8,35 @@ import plotly.express as px
 from matplotlib.ticker import MaxNLocator
 
 
+def map_features_by_id(file_path, n_top=50, random_sample=False):
+    """
+    - n_top (int): Define the number of top participants to sample.
+    - random_sample (bool): If True, sample a subset of rows, otherwise, 
+    select the top n_top folders with the largest feature_count.
+    """
+    df= pd.read_csv(file_path)
+
+    feature_cols = df.columns.drop("participant_id")
+    df["feature_count"] = df[feature_cols].sum(axis=1)
+
+    if random_sample:
+        # Sample a subset of rows (e.g., 50 participants)
+        sample_df = df.sample(n=n_top, random_state=42).set_index("participant_id")
+    else:
+        # Select the top n_top folders with the largest feature_count.
+        sample_df = df.nlargest(n_top, 'feature_count').set_index("participant_id")
+    # Only include the binary feature columns
+    sample_features = sample_df[feature_cols]
+
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(sample_features, cmap="Blues", cbar=False)
+    plt.title("Heatmap of Feature Presence (Sample of Participants)")
+    plt.xlabel("Feature")
+    plt.ylabel("Participant ID")
+    plt.tight_layout()
+    plt.show()
+
+
 def vis_ft_count_per_user(ft_file):
     df_ft_count= pd.read_csv(ft_file)
     col_feature= [col for col in df_ft_count.columns if col.lower() == "feature"][0]
@@ -55,6 +84,35 @@ def vis_active_devices(active_file, start_date, end_date, yyyy_mm_x=True):
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+
+def activities_per_folder(file_path, n_bins_to_keep=None):
+    """
+    n_bins_to_keep (int, optional): If provided and the total number of bins (unique activity 
+    counts) is greater than this number, then the lower bins will be set to zero (i.e. removed)
+    so that only the highest bins are highlighted in the plot
+    """
+    features_per_folder= pd.read_csv(file_path)
+    feature_cols = features_per_folder.columns.drop("participant_id")
+    # Compute the number of features (activities) present for each folder.
+    features_per_folder['feature_count'] = features_per_folder[feature_cols].sum(axis=1)
+    # Compute the counts per bin (each unique feature_count value)
+    counts = features_per_folder['feature_count'].value_counts().sort_index()
+    # If n_bins_to_keep is provided and there are more bins than desired,
+    # then determine how many of the lowest bins to remove.
+    if n_bins_to_keep is not None and counts.size > n_bins_to_keep:
+        bins_to_remove = counts.size - n_bins_to_keep
+        # Set the counts for the lower bins to 0.
+        counts.iloc[:bins_to_remove] = 0
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x=counts.index, y=counts.values, color="royalblue")
+    plt.xlabel("Number of Activities Present")
+    plt.ylabel("Number of Folders")
+    plt.title("Distribution of Activities per Folder")
+    plt.xticks(range(0, counts.size))
     plt.tight_layout()
     plt.show()
 
