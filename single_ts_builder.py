@@ -132,7 +132,7 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_build,
 if __name__ == "__main__":
     current_folder = os.getcwd()
     # Specify the input directory containing processed ID subdirectories
-    input_parent_directory = current_folder + "/test_processed/"  # "/EV_aggregated_from_apple_24_12_w05min_update/"
+    input_parent_directory = current_folder + "/EV_aggregated_from_apple_24_12_w05min_update/"
 
     # Specify the parent output directory where the time series data will be saved
     output_parent_directory = input_parent_directory
