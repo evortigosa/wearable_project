@@ -24,9 +24,12 @@ def collect_time_series(directory_path, activity, min_duration, tolerance):
         return None
     
     try:
-        # Assume it has 'start_date' and 'end_date' columns
         # The data was processed with a fixed window size (in minutes)
-        df = pd.read_csv(csv_file, parse_dates=['start_date', 'end_date'])
+        df = pd.read_csv(csv_file)
+        # Assume it has 'start_date' and 'end_date' columns
+        df["start_date"]= pd.to_datetime(df["start_date"], errors="coerce", utc=True)
+        df["end_date"]  = pd.to_datetime(df["end_date"], errors="coerce", utc=True)
+        
         df = df.sort_values("start_date").reset_index(drop=True)
         # Compute the previous record's end time (shift down by 1)
         df['prev_end'] = df['end_date'].shift(1)
@@ -143,5 +146,5 @@ if __name__ == "__main__":
     # Process all ID directories
     process_all_ids(
         input_parent_directory, output_parent_directory, fts_to_build, min_time_duration='300min', 
-        continuity_tolerance='1min'
+        continuity_tolerance='6min'
     )
