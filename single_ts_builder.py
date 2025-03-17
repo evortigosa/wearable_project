@@ -158,7 +158,11 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_build,
                     pbar.update(1)
 
         total_hours= int(total_hours)
-        print(f"Finished processing {activity} time series with accumulated duration of {total_hours}. Results saved to {output_file}")
+        print(f"Finished processing {activity} time series.\
+            \n- Continuity tolerance between consecutive records: {continuity_tolerance}\
+            \n- Minimum continuous duration: {min_time_duration}\
+            \n- Accumulated duration of {total_hours} hours\
+            \nResults saved to {output_file}")
         
     print("All ID directories have been processed.")
 
