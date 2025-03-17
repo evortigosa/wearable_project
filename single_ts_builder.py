@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import multiprocessing as mp
 from tqdm import tqdm
 
 
@@ -29,6 +30,8 @@ def collect_time_series(directory_path, activity, min_duration, tolerance):
         # Assume it has 'start_date' and 'end_date' columns
         df["start_date"]= pd.to_datetime(df["start_date"], errors="coerce", utc=True)
         df["end_date"]  = pd.to_datetime(df["end_date"], errors="coerce", utc=True)
+        # Drop rows where conversion failed
+        df = df.dropna(subset=["start_date", "end_date"])
         
         df = df.sort_values("start_date").reset_index(drop=True)
         # Compute the previous record's end time (shift down by 1)
@@ -65,10 +68,49 @@ def collect_time_series(directory_path, activity, min_duration, tolerance):
     except Exception as e:
         print(f"Error processing file {csv_file}: {e}")
         return None
+    
+
+def process_single_id(id_dir, input_parent_dir, output_parent_dir, activity, min_time_duration, 
+                      continuity_tolerance):
+    """
+    Processes a single ID directory and appends results to the corresponding CSV file.
+    """
+    id_dir_path = os.path.join(input_parent_dir, id_dir)
+    output_file = os.path.join(output_parent_dir, f"{activity}_timeseries.csv")
+    
+    df_series = collect_time_series(
+        id_dir_path, activity, min_time_duration, continuity_tolerance
+    )
+    total_hours = 0
+
+    if df_series is not None:
+        try:
+            lock = mp.Lock()  # Ensures safe write to file in parallel execution
+            with lock:
+                df_series.to_csv(                       # Ensures header is written only once
+                    output_file, mode='a', index=False, header=(not os.path.exists(output_file))
+                )
+
+            # Calculate the accumulated duration in hours
+            total_seconds = (df_series['end_date'] - df_series['start_date']).dt.total_seconds().sum()
+            total_hours += total_seconds / 3600
+
+            print(f"Appended {len(df_series)} rows from {id_dir} to {output_file}")
+        except Exception as e:
+            print(f"Error saving data from {id_dir} to {output_file}: {e}")
+
+    return total_hours
+
+
+def arguments_wrapper(args):
+    """
+    Helper function to unpack arguments.
+    """
+    return process_single_id(*args)
 
 
 def process_all_ids(input_parent_dir, output_parent_dir, fts_to_build, 
-                    min_time_duration='60min', continuity_tolerance='1min'):
+                    min_time_duration='60min', continuity_tolerance='1min', max_workers=4):
     """
     Processes all ID directories within input_parent_dir.
     For each target activity, it finds the corresponding CSV file in each ID folder,
@@ -82,6 +124,8 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_build,
     - min_time_duration (str): Minimum continuous duration required (e.g., '60min')
     - continuity_tolerance (str): Maximum gap allowed between consecutive records (e.g., '1min').
     """
+    # Check the number of CPUs/cores available
+    max_workers= min(max_workers, max(1, os.cpu_count() - 1))
     # Ensure the output parent directory exists
     os.makedirs(output_parent_dir, exist_ok=True)
     # List all subdirectories in the input_parent_dir
@@ -94,41 +138,28 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_build,
         return
     print(f"Found {len(id_dirs)} ID directories to process.")
 
-    # Dictionary to store valid time series for each activity.
-    activity_series = {activity: [] for activity in fts_to_build}
+    for activity in fts_to_build:
+        output_file = os.path.join(output_parent_dir, f"{activity}_timeseries.csv")
+        # Clear previous data
+        if os.path.exists(output_file):
+            os.remove(output_file)
 
-    # Iterate over each ID directory
-    for id_dir in tqdm(id_dirs, desc="Processing ID directories"):
-        id_dir_path = os.path.join(input_parent_dir, id_dir)
-        print(f"\nProcessing ID: {id_dir}")
+        total_hours = 0
 
-        for activity in fts_to_build:
-            df_series = collect_time_series(
-                id_dir_path, activity, min_time_duration, continuity_tolerance
-            )
-            if df_series is not None:
-                activity_series[activity].append(df_series)
+        # Create multiprocessing pool
+        with mp.Pool(processes=max_workers) as pool:
+            task_args = [
+                (id_dir, input_parent_dir, output_parent_dir, activity, min_time_duration, continuity_tolerance)
+                for id_dir in id_dirs
+            ]
+            with tqdm(total=len(id_dirs), desc=f"Processing {activity}", unit="file") as pbar:
+                for hours in pool.imap_unordered(arguments_wrapper, task_args):
+                    total_hours += hours
+                    pbar.update(1)
 
-    # For each activity, concatenate the valid time series and save to CSV.
-    for activity, df_list in activity_series.items():
-        if df_list:
-            combined_df = pd.concat(df_list, ignore_index=True)
-            output_file = os.path.join(output_parent_dir, f"{activity}_timeseries.csv")
-            
-            try:
-                combined_df.to_csv(output_file, index=False)
-                # Calculate the accumulated duration in hours.
-                total_seconds = (
-                    combined_df['end_date'] - combined_df['start_date']
-                ).dt.total_seconds().sum()
-                total_hours = total_seconds / 3600
-                
-                print(f"Saved {activity} time series with accumulated duration of {total_hours:.0f} hours to {output_file}")
-            except Exception as e:
-                print(f"Error saving {output_file}: {e}")
-        else:
-            print(f"No valid time series found for activity: {activity}")
-
+        total_hours= int(total_hours)
+        print(f"Finished processing {activity} time series with accumulated duration of {total_hours}. Results saved to {output_file}")
+        
     print("All ID directories have been processed.")
 
 
@@ -146,5 +177,5 @@ if __name__ == "__main__":
     # Process all ID directories
     process_all_ids(
         input_parent_directory, output_parent_directory, fts_to_build, min_time_duration='300min', 
-        continuity_tolerance='6min'
+        continuity_tolerance='6min', max_workers=8
     )
