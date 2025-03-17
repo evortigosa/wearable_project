@@ -99,6 +99,9 @@ def anonymize_and_remove_duplicates(ft_name, df):
         df["datetime"] = pd.to_datetime(
             df["datetime"], format="%Y-%m-%d %H:%M:%S", errors="coerce", utc=True
         )
+        # Drop rows where conversion failed
+        df = df.dropna(subset=["datetime"])
+
         value_features = features_to_aggregate(df)
 
         # Group by 'datetime', then take mean values
@@ -122,6 +125,8 @@ def anonymize_and_remove_duplicates(ft_name, df):
         df["end_date"] = pd.to_datetime(
             df["end_date"], format="%Y-%m-%dT%H:%M:%S.%f%z", errors="coerce", utc=True
         )
+        # Drop rows where conversion failed
+        df = df.dropna(subset=["start_date", "end_date"])
 
         value_features = features_to_aggregate(df)
 
@@ -155,10 +160,16 @@ def clean_up_duplicated(feature, file_path):
         # checking for duplicates
         if feature == "ActivitySummary":
             df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True)
+            # Drop rows where conversion failed
+            df = df.dropna(subset=["datetime"])
+            
             duplicated = df[["datetime"]].duplicated().sum() > 0
         else:
             df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce", utc=True)
             df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce", utc=True)
+            # Drop rows where conversion failed
+            df = df.dropna(subset=["start_date", "end_date"])
+            
             duplicated = df[["start_date", "end_date"]].duplicated().sum() > 0
 
         if duplicated:
