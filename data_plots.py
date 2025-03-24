@@ -459,3 +459,36 @@ def plot_monthly_data_trends(df, start_date, end_date, remove_first_year_label=T
     plt.title("Total Data Volume Over Time")
     plt.grid(True)
     plt.show()
+
+
+def get_bmi_stats(data_dir_path):
+    # Load the dataset
+    file_path = data_dir_path + "BMI_timeseries.csv"
+    df = pd.read_csv(file_path)
+
+    # Compute the median BMI for each user
+    median_bmi_per_user = df.groupby("participant_id")["value"].median()
+
+    # Categorize users into BMI classes
+    bmi_categories = {
+        "Healthy": (median_bmi_per_user < 25),
+        "Overweight": (median_bmi_per_user.between(25, 30, inclusive="left")),
+        "Obese": (median_bmi_per_user >= 30)
+    }
+    # Count users in each category
+    bmi_distribution = {category: median_bmi_per_user[mask].count() for category, mask in bmi_categories.items()}
+    # Compute percentage distribution
+    total_users = median_bmi_per_user.count()
+    bmi_percentage = {category: (count / total_users) * 100 for category, count in bmi_distribution.items()}
+
+    # Print the distribution
+    print("BMI Distribution:")
+    total_users= 0
+    total_percent= 0
+    for category, count in bmi_distribution.items():
+        print(f"{category}: {count} users ({bmi_percentage[category]:.1f}%)")
+        total_users += count
+        total_percent += bmi_percentage[category]
+
+    print("------------------------------")
+    print(f"Total: {total_users} users ({int(total_percent)}%)")
