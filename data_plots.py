@@ -281,6 +281,9 @@ def plot_evolution(df, start_date, end_date, top_n=10):
 
 
 def plot_agg_totals(df_counts, df_durations, start_date, end_date, top_n=10):
+    """
+    Duration values from df_durations are in SECONDS!
+    """
     # Filter for the selected year and month
     df_counts.index= pd.to_datetime(df_counts.index, format="%Y-%m-%d")
     df_counts_filtered= df_counts[(df_counts.index >= start_date) & (df_counts.index <= end_date)]
@@ -293,7 +296,7 @@ def plot_agg_totals(df_counts, df_durations, start_date, end_date, top_n=10):
     total_durations = df_durations_filtered.sum().sort_values(ascending=False)
     
     top_counts= total_counts[:top_n]
-    top_durations= total_durations[:top_n] / 60  # Convert to hours
+    top_durations= total_durations[:top_n] / 3600  # Convert SECONDS to hours
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     
     # Count Plot
@@ -492,3 +495,29 @@ def get_bmi_stats(data_dir_path):
 
     print("------------------------------")
     print(f"Total: {total_users} users ({int(total_percent)}%)")
+
+
+def norm_df_by_active_devices(df_to_norm, df_active_devices):
+    """
+    This function normalizes the values in df_to_norm by the number of 
+    active devices recorded in df_active_devices. The normalization is 
+    done by dividing each value in df_to_norm by the corresponding number 
+    of active devices for the same date.
+    """
+
+    df_to_norm.index  = pd.to_datetime(df_to_norm.index)
+    df_active_devices.index= pd.to_datetime(df_active_devices.index)
+
+    # Merge the DataFrames on 'date'
+    merged_df= df_to_norm.join(df_active_devices, how='left')
+    duration_cols = [col for col in df_to_norm.columns if col != 'index']
+
+    # Normalize activity duration by dividing by the active devices count
+    for col in duration_cols:
+        merged_df[col] = merged_df.apply(
+            lambda row: row[col] / row['active_devices'] 
+            if row['active_devices'] > 0 else 0, axis=1
+        )
+
+    # Drop the active_devices column after normalization
+    return merged_df.drop(columns=['active_devices'])
