@@ -133,6 +133,37 @@ def merge_dfs_and_sum_features(list_dfs):
     return df_final
 
 
+def count_height_weight_bmi(id_dir):
+    """
+    Check if id_dir contains both Height.csv and Weight.csv, and BMI.csv files.
+    - id_dir (str): The ID directory under processing.
+    Returns
+    A tuple (num_folders_with_height_weight, num_bmi_files), where:
+    - folder_with_height_weight is 1 if id_dir contains both Height.csv and Weight.csv.
+    - folder_with_bmi is 1 if id_dir contains BMI.csv.
+    - folder_with_height_weight_bmi is 1 if id_dir contains both Height.csv, Weight.csv, and BMI.csv.
+    """
+    count_hw = 0  # Count of subfolders with both Height.csv and Weight.csv
+    count_bmi = 0  # Count of BMI.csv files
+    count_hw_bmi = 0
+
+    height_file = os.path.join(id_dir, "Height.csv")
+    weight_file = os.path.join(id_dir, "Weight.csv")
+    # Check if both Height.csv and Weight.csv exist in this folder.
+    if os.path.isfile(height_file) and os.path.isfile(weight_file):
+        count_hw = 1
+    
+    # Count BMI.csv files in this folder.
+    bmi_file = os.path.join(id_dir, "BMI.csv")
+    if os.path.isfile(bmi_file):
+        count_bmi = 1
+
+    if os.path.isfile(height_file) and os.path.isfile(weight_file) and os.path.isfile(bmi_file):
+        count_hw_bmi = 1
+
+    return count_hw, count_bmi, count_hw_bmi
+
+
 def get_id_statistics(input_parent_dir, id_dir, fts_to_skip_time_accum):
     """
     Processes a directory of CSV files corresponding to a single ID.
@@ -163,6 +194,9 @@ def get_id_statistics(input_parent_dir, id_dir, fts_to_skip_time_accum):
     directory_path= os.path.join(input_parent_dir, id_dir)
     # Use glob to find all CSV files in the directory
     csv_files = glob.glob(os.path.join(directory_path, "*.csv"))
+
+    # Look for Height, Weight, and BMI files
+    has_hw, has_bmi, has_hw_bmi= count_height_weight_bmi(directory_path)
 
     for file in csv_files:
         if os.path.isfile(file):  # Ensure it's a file
@@ -203,7 +237,10 @@ def get_id_statistics(input_parent_dir, id_dir, fts_to_skip_time_accum):
     ft_daily_counts = list_of_dfs_to_df(ft_daily_counts_dfs)
     ft_hourly_counts = merge_hourly_dataframes(ft_daily_hourly_dfs)
 
-    return id_dir, feature_presence, dir_size, ft_evolution, ft_daily_counts, ft_hourly_counts, active_dates
+    return (
+        id_dir, feature_presence, dir_size, ft_evolution, ft_daily_counts, ft_hourly_counts, 
+        active_dates, has_hw, has_bmi, has_hw_bmi
+    )
 
 
 def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum, max_workers=4):
@@ -230,6 +267,10 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum,
     active_counts = {}
     aggregated_features = {}
 
+    count_hw = 0  # Count of subfolders with both Height.csv and Weight.csv
+    count_bmi = 0  # Count of BMI.csv files
+    count_hw_bmi = 0
+
     # Ensure the output parent directory exists
     os.makedirs(output_parent_dir, exist_ok=True)
     # List all subdirectories in the input_parent_dir
@@ -253,11 +294,16 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum,
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing ID directories"):
             (
                 id_dir, dir_features, dir_size, dir_ft_evol, dir_ft_daily_count, dir_ft_hourly_counts, 
-                user_active_dates
+                user_active_dates, has_hw, has_bmi, has_hw_bmi
             ) = future.result()
             # The output directory for this ID
             output_dir = os.path.join(output_parent_dir, id_dir)
             os.makedirs(output_dir, exist_ok=True)
+
+            # Count Height.csv, Weight.csv, and BMI.csv files
+            if has_hw: count_hw += 1
+            if has_bmi: count_bmi += 1
+            if has_hw_bmi: count_hw_bmi += 1
 
             all_ids_ft_evol.append(dir_ft_evol)
             all_ids_daily_counts.append(dir_ft_daily_count)
@@ -338,6 +384,10 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum,
 
         print("\nTotal duration of data (in hours):", overall_total)
         print("All ID directories have been processed.")
+
+        print(f"- Users with both Height and Weight data: {count_hw}")
+        print(f"- Total BMI files: {count_bmi}")
+        print(f"- Users with Height, Weight, and BMI: {count_hw_bmi}")
     except Exception as e:
         print(f"Error saving log file: {e}")
 
