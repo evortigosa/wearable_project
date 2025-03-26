@@ -328,69 +328,93 @@ def process_all_ids(input_parent_dir, output_parent_dir, fts_to_skip_time_accum,
             except Exception as e:
                 print(f"Error saving log file for ID {id_dir}: {e}")
 
+    print("Saving processing log files...")
+    # Convert aggregated sizes to a DataFrame and save
+    df_sizes = pd.DataFrame(participant_sizes)
+    # Sort by folder size
+    df_sizes = df_sizes.sort_values(by="folder_size_bytes", ascending=False)
+
     try:
-        print("Saving processing log files...")
-        # Convert aggregated sizes to a DataFrame and save
-        df_sizes = pd.DataFrame(participant_sizes)
-        # Sort by folder size
-        df_sizes = df_sizes.sort_values(by="folder_size_bytes", ascending=False)
         df_sizes.to_csv(
             os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_id_folder_sizes.csv"), index=False,
         )
         # print(f"\nFolders sizes:")
         # print(df_sizes)
+    except Exception as e:
+        print(f"Error saving log file: {e}")
 
-        # Create a DataFrame summarizing feature presence across IDs
-        df_features = pd.DataFrame(list(aggregated_features.items()), columns=["feature", "count"])
-        # Sort features by count
-        df_features = df_features.sort_values(by="count", ascending=False).reset_index(drop=True)
+    # Create a DataFrame summarizing feature presence across IDs
+    df_features = pd.DataFrame(list(aggregated_features.items()), columns=["feature", "count"])
+    # Sort features by count
+    df_features = df_features.sort_values(by="count", ascending=False).reset_index(drop=True)
+
+    try:
         df_features.to_csv(
             os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_features_summary.csv"), index=False,
         )
         # print(f"\nFeature Presence Across {total_participants} Participants:")
         # print(df_features)
+    except Exception as e:
+        print(f"Error saving log file: {e}")
 
-        # Build list of presence of features for each ID
-        id_features = []
-        for participant, features in participant_features.items():
-            row = {"participant_id": participant}
-            row.update({feature: features.get(feature, 0) for feature in df_features["feature"]})
-            id_features.append(row)
+    # Build list of presence of features for each ID
+    id_features = []
+    for participant, features in participant_features.items():
+        row = {"participant_id": participant}
+        row.update({feature: features.get(feature, 0) for feature in df_features["feature"]})
+        id_features.append(row)
 
-        df_presence = pd.DataFrame(id_features)
+    df_presence = pd.DataFrame(id_features)
+    
+    try:
         df_presence.to_csv(
             os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_features_by_id_folder.csv"), index=False
         )
         # print(f"\nFeature Presence For Each Participant:")
         # print(df_presence)
-
-        # Merge hourly and daily DataFrames and save.
-        df_hourly_counts = (merge_hourly_dataframes(all_ids_hourly_counts)).set_index("date")
-        df_hourly_counts.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_all_hourly_data.csv"))
-
-        df_daily_counts = merge_dfs_and_sum_features(all_ids_daily_counts).set_index('date')
-        df_daily_counts.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_activity_counts.csv"))
-        df_durations = merge_dfs_and_sum_features(all_ids_ft_evol).set_index('date')
-        df_durations.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_activity_durations.csv"))
-
-        # Convert active_counts to a DataFrame and sort by date
-        df_active = pd.DataFrame(list(active_counts.items()), columns=["date", "active_devices"])
-        df_active["date"] = pd.to_datetime(df_active["date"])
-        df_active = df_active.sort_values("date")
-        df_active.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_active_devices.csv"), index=False)
-
-        total_per_activity = df_durations.sum()
-        overall_total = (total_per_activity.sum() / 3600).round(0).astype(int)
-
-        print("\nTotal duration of data (in hours):", overall_total)
-        print("All ID directories have been processed.")
-
-        print(f"- Users with both Height and Weight data: {count_hw}")
-        print(f"- Total BMI files: {count_bmi}")
-        print(f"- Users with Height, Weight, and BMI: {count_hw_bmi}")
     except Exception as e:
         print(f"Error saving log file: {e}")
 
+    # Merge hourly and daily DataFrames and save.
+    df_hourly_counts = (merge_hourly_dataframes(all_ids_hourly_counts)).set_index("date")
+
+    try:    
+        df_hourly_counts.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_all_hourly_data.csv"))
+    except Exception as e:
+        print(f"Error saving log file: {e}")
+
+    df_daily_counts = merge_dfs_and_sum_features(all_ids_daily_counts).set_index('date')
+
+    try:
+        df_daily_counts.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_activity_counts.csv"))
+    except Exception as e:
+        print(f"Error saving log file: {e}")
+        
+    df_durations = merge_dfs_and_sum_features(all_ids_ft_evol).set_index('date')
+    total_per_activity = df_durations.sum()
+    overall_total = (total_per_activity.sum() / 3600).round(0).astype(int)
+
+    try:
+        df_durations.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_activity_durations.csv"))
+    except Exception as e:
+        print(f"Error saving log file: {e}")
+
+    # Convert active_counts to a DataFrame and sort by date
+    df_active = pd.DataFrame(list(active_counts.items()), columns=["date", "active_devices"])
+    df_active["date"] = pd.to_datetime(df_active["date"])
+    df_active = df_active.sort_values("date")
+
+    try:
+        df_active.to_csv(os.path.join(output_parent_dir, LOG_FILE_PREFIX + "_active_devices.csv"), index=False)
+    except Exception as e:
+        print(f"Error saving log file: {e}")
+
+    print("\nTotal duration of data (in hours):", overall_total)
+    print("All ID directories have been processed.")
+    print(f"- Users with both Height and Weight data: {count_hw}")
+    print(f"- Total BMI files: {count_bmi}")
+    print(f"- Users with Height, Weight, and BMI: {count_hw_bmi}")
+    
 
 if __name__ == "__main__":
     current_folder = os.getcwd()
