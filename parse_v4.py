@@ -57,6 +57,8 @@ def aggregate_values_by_type(series, agg_type='median'):
     if pd.api.types.is_numeric_dtype(series):
         if (agg_type=='median'):
             return series.median()  # Median for numerical data
+        elif (agg_type=='sum'):
+            return series.sum()     # Sum for numerical data
         else:
             return series.mean()    # Mean for numerical data
 
