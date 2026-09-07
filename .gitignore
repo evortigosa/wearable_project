@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+.env
+.env.*
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local notebooks
+.ipynb_checkpoints/
+
+# Data, models, and generated outputs
+data/
+models/
+outputs/
+*.ckpt
+*.pt
+*.pth
+*.parquet
+processing_summary.csv
+processing_summary.json
+statistics_*.csv
+statistics_summary.json
+validation_report.json
+
+# Logs
+*.log
