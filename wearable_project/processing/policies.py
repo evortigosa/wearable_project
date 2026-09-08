@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 from typing import Any, Literal, Mapping
-from .exceptions import ConfigurationError
+from ..exceptions import ConfigurationError
 
 Aggregation= Literal["sum", "weighted_mean", "mean", "median", "mode"]
 
@@ -57,15 +57,21 @@ _CUMULATIVE_FEATURES= {
     "protein", "stepcount", "totalfat",
 }
 
+# Sparse point measurements, complex records, and categorical sleep intervals are
+# preserved at native resolution unless a study-approved override is supplied. Sleep
+# is intentionally explicit here: the cohort can contain INBED, ASLEEP, DEEP, and REM,
+# and overlapping hierarchical labels must not be collapsed by a generic mode rule.
 _NON_WINDOWABLE_FEATURES= {
-    "activitysummary", "bmi", "bodymass", "bodymassindex", "electrocardiogram", "ecg", "height", "weight",
+    "activitysummary", "bmi", "bodyfatpercentage", "bodymass", "bodymassindex", "electrocardiogram", "ecg",
+    "height", "leanbodymass", "sleep", "sleepanalysis", "waistcircumference", "weight",
 }
 
 # These are measurements or ratios, not interval totals. Listing them explicitly
 # prevents accidental treatment as cumulative if an old configuration is reused.
 _DISCRETE_FEATURES= {
-    "bloodalcoholcontent", "bloodglucose", "bloodpressure", "bodytemperature", "heartrate", "heartratevariabilitysdnn",
-    "oxygensaturation", "respiratoryrate", "restingheartrate", "walkingheartrateaverage",
+    "bloodalcoholcontent", "bloodglucose", "bloodpressure", "bodytemperature", "heartrate",
+    "heartratevariability", "heartratevariabilitysdnn", "oxygensaturation", "peakflow", "respiratoryrate",
+    "restingheartrate", "vo2max", "walkingheartrate", "walkingheartrateaverage",
 }
 
 
@@ -92,7 +98,7 @@ def default_feature_policy(feature_name:str) -> FeaturePolicy:
 
 
 def feature_policy_origin(
-feature_name:str, overrides:Mapping[str, FeaturePolicy | Mapping[str, Any]] | None= None,
+    feature_name:str, overrides:Mapping[str, FeaturePolicy | Mapping[str, Any]] | None= None,
 ) -> Literal["override", "built_in", "unknown_conservative"]:
     """
     Describe why a feature received its policy.
@@ -144,7 +150,8 @@ def normalize_policy_mapping(
         policy= _coerce_policy(value)
         if key in normalized and normalized[key] != policy:
             raise ConfigurationError(
-                f"Conflicting policies for {original_names[key]!r} and {name!r}; their canonical feature names are identical."
+                f"Conflicting policies for {original_names[key]!r} and {name!r}; "
+                "their canonical feature names are identical."
             )
         normalized[key]= policy
         original_names[key]= str(name)

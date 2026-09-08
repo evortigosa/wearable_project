@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 import numpy as np
 import pandas as pd
-from .policies import canonical_feature_name
+from ..processing.policies import canonical_feature_name
 
 
 def _plot_imports() -> tuple[Any, Any, Any, Any, Any]:
@@ -376,7 +376,10 @@ def data_sizes_by_folders(file_path:str|Path, *, show:bool= True):
         percentage= index / count * 100
         ax_scatter.axvline(index, linestyle="--", alpha=0.5)
         offset= mtransforms.ScaledTranslation(0.05, 0, fig_scatter.dpi_scale_trans)
-        ax_scatter.text(index, max(float(sorted_sizes.min()), 1.0), f"<{threshold / 1e6:g} MB: {percentage:.1f}%", rotation=90, transform=ax_scatter.transData + offset)
+        ax_scatter.text(
+            index, max(float(sorted_sizes.min()), 1.0), f"<{threshold / 1e6:g} MB: {percentage:.1f}%",
+            rotation=90, transform=ax_scatter.transData + offset,
+        )
     fig_scatter.tight_layout()
     figures.append((fig_scatter, ax_scatter))
     if show:

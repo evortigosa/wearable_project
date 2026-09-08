@@ -11,14 +11,17 @@ from pathlib import Path
 import sys
 from typing import Sequence
 import pandas as pd
-from . import __version__
-from .cleaning import DEFAULT_SENSITIVE_COLUMNS, DEFAULT_SOURCE_IDENTITY_COLUMNS
-from .policies import load_feature_policies
-from .processing import ProcessingConfig, process_dataset
-from .statistics import StatisticsConfig, summarize_dataset
-from .timeseries import SegmentConfig, build_time_series
-from .validation import ValidationConfig, validate_raw_dataset
-
+from ._version import __version__
+from .processing.cleaning import (
+    DEFAULT_SAMPLE_IDENTITY_COLUMNS,
+    DEFAULT_SENSITIVE_COLUMNS,
+    DEFAULT_SOURCE_IDENTITY_COLUMNS,
+)
+from .processing.policies import load_feature_policies
+from .processing.pipeline import ProcessingConfig, process_dataset
+from .utils.statistics import StatisticsConfig, summarize_dataset
+from .processing.timeseries import SegmentConfig, build_time_series
+from .processing.validation import ValidationConfig, validate_raw_dataset
 
 def _parser() -> argparse.ArgumentParser:
     parser= argparse.ArgumentParser(
@@ -37,12 +40,14 @@ def _parser() -> argparse.ArgumentParser:
         "--naive-timezone", default="UTC", help="IANA zone for naive timestamps, or 'reject'.",
     )
     validate.add_argument("--include-non-monthly-csv", action="store_true")
-    # ---- parse -----------------------------------------------------------
+
     parse= subparsers.add_parser("parse", help="Parse raw monthly exports into feature tables.")
     parse.add_argument("input_root", type=Path)
     parse.add_argument("output_root", type=Path)
     parse.add_argument("--data-source", default="applehealthkit")
-    parse.add_argument("--window", default="5min", help="Fixed window width; use 'none' to preserve events.")
+    parse.add_argument(
+        "--window", default="none", help="Fixed window width (for example 5min); default 'none' preserves events.",
+    )
     parse.add_argument("--max-workers", type=int, default=4)
     parse.add_argument("--chunksize", type=int, default=10_000)
     parse.add_argument("--strict", action="store_true")
@@ -63,6 +68,19 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parse.add_argument(
+        "--sample-identity-column", action="append", default=[],
+        help=(
+            "Additional stable payload identity column used to derive sample_key; repeat for multiple columns."
+        ),
+    )
+    parse.add_argument(
+        "--deduplicate-no-id-content", action="store_true",
+        help=(
+            "Opt in to exact content-based deduplication for records lacking a stable "
+            "sample identity. The conservative default retains and reports them."
+        ),
+    )
+    parse.add_argument(
         "--merge-sources", action="store_true",
         help=(
             "Do not keep source_key partitions. Use only after defining a study-level source adjudication/merge rule."
@@ -70,14 +88,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parse.add_argument("--include-non-monthly-csv", action="store_true")
     parse.add_argument("--max-windows-per-event", type=int, default=100_000)
-    # ---- stats -----------------------------------------------------------
+
     stats= subparsers.add_parser("stats", help="Generate non-destructive coverage and quality statistics.")
     stats.add_argument("input_root", type=Path)
     stats.add_argument("output_root", type=Path)
     stats.add_argument("--max-workers", type=int, default=4)
     stats.add_argument("--day-basis", choices=["utc", "timezone", "source_offset"], default="utc")
     stats.add_argument("--timezone", default="UTC")
-    # ---- series ----------------------------------------------------------
+
     timeseries= subparsers.add_parser("timeseries", help="Build continuous feature time-series datasets.")
     timeseries.add_argument("input_root", type=Path)
     timeseries.add_argument("output_root", type=Path)
@@ -91,7 +109,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None= None) -> int:
+def main(argv:Sequence[str]|None= None) -> int:
     args= _parser().parse_args(argv)
     logging.basicConfig(
         level=getattr(logging, args.log_level), format="%(asctime)s %(processName)s %(levelname)s %(name)s: %(message)s",
@@ -127,7 +145,13 @@ def main(argv: Sequence[str] | None= None) -> int:
                 retain_participant_id=not args.drop_participant_column,
                 sensitive_columns=tuple(dict.fromkeys([*DEFAULT_SENSITIVE_COLUMNS, *args.sensitive_column])),
                 separate_sources=not args.merge_sources,
-                source_identity_columns=tuple(dict.fromkeys([*DEFAULT_SOURCE_IDENTITY_COLUMNS, *args.source_identity_column])),
+                source_identity_columns=tuple(
+                    dict.fromkeys([*DEFAULT_SOURCE_IDENTITY_COLUMNS, *args.source_identity_column])
+                ),
+                sample_identity_columns=tuple(
+                    dict.fromkeys([*DEFAULT_SAMPLE_IDENTITY_COLUMNS, *args.sample_identity_column])
+                ),
+                deduplicate_no_id_content=args.deduplicate_no_id_content,
                 fingerprint_mode=args.fingerprint,
                 monthly_filename_only=not args.include_non_monthly_csv,
                 max_windows_per_event=args.max_windows_per_event,
@@ -142,7 +166,8 @@ def main(argv: Sequence[str] | None= None) -> int:
 
     if args.command == "stats":
         outputs= summarize_dataset(
-            args.input_root, args.output_root,
+            args.input_root,
+            args.output_root,
             StatisticsConfig(max_workers=args.max_workers, day_basis=args.day_basis, timezone=args.timezone,),
         )
         print(
@@ -152,7 +177,9 @@ def main(argv: Sequence[str] | None= None) -> int:
 
     if args.command == "timeseries":
         reports= build_time_series(
-            args.input_root, args.output_root, args.features,
+            args.input_root,
+            args.output_root,
+            args.features,
             SegmentConfig(
                 min_duration=args.min_duration, tolerance=args.tolerance, duration_basis=args.duration_basis,
                 min_coverage_fraction=args.min_coverage_fraction, max_workers=args.max_workers,

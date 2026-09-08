@@ -20,23 +20,23 @@ import traceback
 from typing import Any
 import pandas as pd
 from tqdm import tqdm
-from . import __version__
-from .cleaning import (
+from wearable_project import __version__
+from wearable_project.processing.cleaning import (
     DEFAULT_SENSITIVE_COLUMNS,
     DEFAULT_SOURCE_IDENTITY_COLUMNS,
     normalize_feature_frame,
     parse_serialized_payload,
     validate_naive_timezone,
 )
-from .exceptions import ConfigurationError, PayloadParseError, SchemaError
-from .policies import (
+from wearable_project.exceptions import ConfigurationError, PayloadParseError, SchemaError
+from wearable_project.processing.policies import (
     FeaturePolicy,
     canonical_feature_name,
     feature_policy_origin,
     policies_to_jsonable,
     resolve_feature_policy,
 )
-from .utils import (
+from wearable_project.utils import (
     MONTHLY_FILE_RE,
     atomic_write_dataframe,
     atomic_write_json,
@@ -47,7 +47,7 @@ from .utils import (
     safe_feature_stem,
     utc_now_iso,
 )
-from .windowing import fixed_window_timedelta, window_feature
+from wearable_project.processing.windowing import fixed_window_timedelta, window_feature
 
 LOGGER= logging.getLogger(__name__)
 MANIFEST_NAME= ".wearable_manifest.json"

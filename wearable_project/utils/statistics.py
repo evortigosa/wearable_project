@@ -17,17 +17,12 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from .cleaning import normalize_datetime_series
-from .exceptions import ConfigurationError
-from .policies import canonical_feature_name
-from .processing import MANIFEST_NAME, QUALITY_REPORT_NAME
-from .utils import (
-    atomic_write_dataframe,
-    atomic_write_json,
-    cap_workers,
-    ensure_disjoint_roots,
-    utc_now_iso,
-)
+from ..processing.cleaning import normalize_datetime_series
+from ..exceptions import ConfigurationError
+from ..processing.policies import canonical_feature_name
+from ..processing.pipeline import MANIFEST_NAME, QUALITY_REPORT_NAME
+from .filesystem import atomic_write_dataframe, atomic_write_json
+from .runtime import cap_workers, ensure_disjoint_roots, utc_now_iso
 
 LOGGER= logging.getLogger(__name__)
 DayBasis= Literal["utc", "timezone", "source_offset"]
@@ -85,7 +80,7 @@ def _read_feature_map(participant_dir:Path) -> dict[str, Path]:
 
 
 def _read_table(path:Path) -> pd.DataFrame:
-    return pd.read_parquet(path) if path.suffix.casefold() == ".parquet" else pd.read_csv(path)
+    return pd.read_parquet(path) if path.suffix.casefold() == ".parquet" else pd.read_csv(path, low_memory=False)
 
 
 def _local_clock(timestamps:pd.Series, *, config:StatisticsConfig, offsets:pd.Series|None= None,) -> pd.Series:
@@ -524,7 +519,9 @@ def _write_legacy_outputs(output_root:Path, *, feature_summary:pd.DataFrame, dai
     atomic_write_dataframe(active_legacy, output_root / "logfile_active_devices.csv", "csv")
 
 
-def summarize_dataset(input_root:str|Path, output_root:str|Path, config:StatisticsConfig|None= None,) -> dict[str, pd.DataFrame]:
+def summarize_dataset(
+    input_root:str|Path, output_root:str|Path, config:StatisticsConfig|None= None,
+) -> dict[str, pd.DataFrame]:
     """ Generate long-form, auditable statistics without rewriting feature files. """
 
     config= config or StatisticsConfig()
