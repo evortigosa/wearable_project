@@ -3,7 +3,6 @@ Wearable Data Processing and Modeling project
 Deterministic serialization helpers.
 """
 
-
 from __future__ import annotations
 from datetime import datetime
 import hashlib
@@ -11,7 +10,6 @@ import json
 from typing import Any
 import numpy as np
 import pandas as pd
-
 
 
 def stable_json(value:Any) -> str:

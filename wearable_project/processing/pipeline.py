@@ -20,34 +20,33 @@ import traceback
 from typing import Any
 import pandas as pd
 from tqdm import tqdm
-from wearable_project import __version__
-from wearable_project.processing.cleaning import (
+from .._version import __version__
+from .cleaning import (
     DEFAULT_SENSITIVE_COLUMNS,
+    DEFAULT_SAMPLE_IDENTITY_COLUMNS,
     DEFAULT_SOURCE_IDENTITY_COLUMNS,
     normalize_feature_frame,
     parse_serialized_payload,
     validate_naive_timezone,
 )
-from wearable_project.exceptions import ConfigurationError, PayloadParseError, SchemaError
-from wearable_project.processing.policies import (
+from ..exceptions import ConfigurationError, PayloadParseError, SchemaError
+from .policies import (
     FeaturePolicy,
     canonical_feature_name,
     feature_policy_origin,
     policies_to_jsonable,
     resolve_feature_policy,
 )
-from wearable_project.utils import (
+from ..utils.filesystem import (
     MONTHLY_FILE_RE,
     atomic_write_dataframe,
     atomic_write_json,
-    cap_workers,
-    config_digest,
-    ensure_disjoint_roots,
     file_fingerprint,
     safe_feature_stem,
-    utc_now_iso,
 )
-from wearable_project.processing.windowing import fixed_window_timedelta, window_feature
+from ..utils.runtime import cap_workers, ensure_disjoint_roots, utc_now_iso
+from ..utils.serialization import config_digest
+from .windowing import fixed_window_timedelta, window_feature
 
 LOGGER= logging.getLogger(__name__)
 MANIFEST_NAME= ".wearable_manifest.json"
@@ -60,8 +59,8 @@ class ProcessingConfig:
     """ Configuration for raw export processing. """
 
     target_data_source:str= "applehealthkit"
-    window:str | None= "5min"
-    max_workers:int | None= 4
+    window:str|None= None
+    max_workers:int|None= 4
     resume:bool= True
     strict:bool= False
     chunksize:int= 10_000
@@ -71,6 +70,8 @@ class ProcessingConfig:
     sensitive_columns:tuple[str, ...]= DEFAULT_SENSITIVE_COLUMNS
     separate_sources:bool= True
     source_identity_columns:tuple[str, ...]= DEFAULT_SOURCE_IDENTITY_COLUMNS
+    sample_identity_columns:tuple[str, ...]= DEFAULT_SAMPLE_IDENTITY_COLUMNS
+    deduplicate_no_id_content:bool= False
     fingerprint_mode:str= "metadata"
     monthly_filename_only:bool= True
     max_windows_per_event:int= 100_000
@@ -108,6 +109,10 @@ class ProcessingConfig:
             raise ConfigurationError(str(exc)) from exc
         if not all(str(column).strip() for column in self.source_identity_columns):
             raise ConfigurationError("source_identity_columns cannot contain empty names.")
+        if not all(str(column).strip() for column in self.sample_identity_columns):
+            raise ConfigurationError("sample_identity_columns cannot contain empty names.")
+        if not isinstance(self.deduplicate_no_id_content, bool):
+            raise ConfigurationError("deduplicate_no_id_content must be a boolean.")
         # Validate early, even when processing runs in worker subprocesses.
         cap_workers(self.max_workers)
         policies_to_jsonable(self.feature_policies)
@@ -127,6 +132,8 @@ class ProcessingConfig:
             "sensitive_columns": list(self.sensitive_columns),
             "separate_sources": self.separate_sources,
             "source_identity_columns": list(self.source_identity_columns),
+            "sample_identity_columns": list(self.sample_identity_columns),
+            "deduplicate_no_id_content": self.deduplicate_no_id_content,
             "fingerprint_mode": self.fingerprint_mode,
             "monthly_filename_only": self.monthly_filename_only,
             "max_windows_per_event": self.max_windows_per_event,
@@ -157,17 +164,24 @@ class FileParseResult:
 def discover_input_files(participant_dir:Path, *, monthly_only:bool= True) -> tuple[list[Path], list[str]]:
     """ Return deterministic input files and names skipped by the monthly-file rule. """
 
-    csv_files= sorted(path for path in participant_dir.glob("*.csv") if path.is_file())
+    csv_files= sorted(
+        (path for path in participant_dir.glob("*.csv") if path.is_file()),
+        key=lambda path: (path.name.casefold(), path.name),
+    )
     if not monthly_only:
         return csv_files, []
-    selected:list[Path]= []
+    selected_with_keys:list[tuple[int, int, str, Path]]= []
     skipped:list[str]= []
     for path in csv_files:
-        if MONTHLY_FILE_RE.fullmatch(path.name):
-            selected.append(path)
-        else:
+        match= MONTHLY_FILE_RE.fullmatch(path.name)
+        if match is None:
             skipped.append(path.name)
-    return selected, skipped
+            continue
+        selected_with_keys.append(
+            (int(match.group("year")), int(match.group("month")), path.name.casefold(), path)
+        )
+    selected_with_keys.sort(key=lambda item: item[:3])
+    return [item[3] for item in selected_with_keys], skipped
 
 
 def _context_value(row:pd.Series, name:str) -> Any:
@@ -264,8 +278,9 @@ def parse_monthly_file(path:Path, participant_id:str,
     return by_feature, result
 
 
-def parse_participant_directory(participant_dir:str|Path,
-                                config:ProcessingConfig,) -> tuple[dict[str, pd.DataFrame], dict[str, Any], list[dict[str, Any]]]:
+def parse_participant_directory(
+    participant_dir:str|Path, config:ProcessingConfig,
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any], list[dict[str, Any]]]:
     """ Parse all monthly files for one participant and return cleaned feature tables. """
 
     participant_path= Path(participant_dir)
@@ -304,6 +319,8 @@ def parse_participant_directory(participant_dir:str|Path,
                 sensitive_columns=config.sensitive_columns,
                 separate_sources=config.separate_sources,
                 source_identity_columns=config.source_identity_columns,
+                sample_identity_columns=config.sample_identity_columns,
+                deduplicate_no_id_content=config.deduplicate_no_id_content,
             )
         except SchemaError as exc:
             feature_reports[feature_name]= {
@@ -323,15 +340,10 @@ def parse_participant_directory(participant_dir:str|Path,
         chosen_policy= resolve_feature_policy(feature_name, config.feature_policies)
         policy_origin= feature_policy_origin(feature_name, config.feature_policies)
         unit_columns= [column for column in ("unit", "units") if column in normalized.columns]
-        unit_values= sorted(
-            {
-                str(value).strip()
-                for column in unit_columns
-                for value in normalized[column].dropna().tolist()
-                if str(value).strip()
-            },
-            key=str.casefold,
-        )
+        unit_values= sorted({
+            str(value).strip()
+            for column in unit_columns for value in normalized[column].dropna().tolist() if str(value).strip()
+        }, key=str.casefold,)
         windowed= False
         if config.window is not None and canonical_feature_name(feature_name) != "activitysummary":
             try:
@@ -360,9 +372,7 @@ def parse_participant_directory(participant_dir:str|Path,
                         feature_aliases[feature_key], key=lambda value: (value.casefold(), value)
                     ),
                     "unit_values": unit_values,
-                    "source_adjudication_required": (
-                        cleaning_report.get("source_identity_count", 0) > 1
-                    ),
+                    "source_adjudication_required": (cleaning_report.get("source_identity_count", 0) > 1),
                 }
                 continue
         elif "is_windowed" not in normalized.columns:
@@ -395,6 +405,16 @@ def parse_participant_directory(participant_dir:str|Path,
             "rejected_top_level_rows": sum(item["rejected_rows"] for item in file_reports),
             "features_written": len(feature_tables),
             "records_written": sum(len(table) for table in feature_tables.values()),
+            "duplicates_removed": sum(details.get("duplicates_removed", 0) for details in feature_reports.values()),
+            "ambiguous_no_id_duplicate_candidates": sum(
+                details.get("ambiguous_no_id_duplicate_candidates", 0) for details in feature_reports.values()
+            ),
+            "stable_id_conflict_groups": sum(
+                details.get("stable_id_conflict_groups", 0) for details in feature_reports.values()
+            ),
+            "user_entered_true_records": sum(
+                details.get("user_entered_true_records", 0) for details in feature_reports.values()
+            ),
         },
     }
     final_files, _= discover_input_files(participant_path, monthly_only=config.monthly_filename_only)
@@ -492,11 +512,7 @@ def process_participant(participant_dir:str|Path, output_root:str|Path,
             "records_written": 0,
         }
 
-    temporary= Path(
-        tempfile.mkdtemp(
-            prefix=f".{safe_feature_stem(participant_id)}.tmp-", dir=output_path,
-        )
-    )
+    temporary= Path(tempfile.mkdtemp(prefix=f".{safe_feature_stem(participant_id)}.tmp-", dir=output_path,))
     try:
         feature_tables, quality_report, parsed_fingerprints= parse_participant_directory(participant_path, config)
         feature_manifest:dict[str, dict[str, Any]]= {}
@@ -510,7 +526,8 @@ def process_participant(participant_dir:str|Path, output_root:str|Path,
             table= feature_tables[feature_name]
             atomic_write_dataframe(table, temporary / filename, config.output_format)
             feature_manifest[feature_name]= {
-                "file": filename, "rows": int(len(table)),
+                "file": filename,
+                "rows": int(len(table)),
                 "windowed": bool(table.get("is_windowed", pd.Series([False])).astype(bool).any()),
             }
 
@@ -530,6 +547,8 @@ def process_participant(participant_dir:str|Path, output_root:str|Path,
             or details.get("participant_mismatch_records", 0) > 0
             or details.get("policy_origin") == "unknown_conservative"
             or details.get("source_adjudication_required", False)
+            or details.get("stable_id_conflict_groups", 0) > 0
+            or details.get("ambiguous_no_id_duplicate_candidates", 0) > 0
             for details in quality_report["features"].values()
         )
         run_status= (

@@ -3,7 +3,6 @@ Wearable Data Processing and Modeling project
 Filesystem, table I/O and fingerprint helpers.
 """
 
-
 from __future__ import annotations
 from collections.abc import Iterable
 import hashlib
@@ -19,7 +18,6 @@ from .serialization import serialize_nested_columns
 MONTHLY_FILE_RE= re.compile(r"^(?P<year>\d{4})-(?P<month>0?[1-9]|1[0-2])\.csv$")
 SAFE_FEATURE_RE= re.compile(r"^[A-Za-z0-9_-]+$")
 MAX_FEATURE_STEM_LENGTH= 120
-
 
 
 def safe_feature_stem(feature_name:str) -> str:

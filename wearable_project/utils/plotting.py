@@ -391,6 +391,7 @@ def data_sizes_by_folders(file_path:str|Path, *, show:bool= True):
 def plot_monthly_data_trends(df:pd.DataFrame, start_date:Any, end_date:Any, remove_first_year_label:bool= True, *,
                              show:bool= True,):
     """ Plots the evolution of data volume over time for multiple participants. """
+
     plt, sns, _, _, _= _plot_imports()
     frame= df.copy()
     frame.columns= pd.to_datetime(frame.columns, format="%Y-%m", errors="coerce")

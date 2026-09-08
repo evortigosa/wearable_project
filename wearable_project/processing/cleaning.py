@@ -50,6 +50,7 @@ def _is_missing_scalar(value:Any) -> bool:
 
 def _canonical_identity_value(value:Any, *, casefold_strings:bool) -> Any:
     """ Return a stable, privacy-conscious representation for identity hashing. """
+
     if _is_missing_scalar(value):
         return None
     if isinstance(value, str):
@@ -60,6 +61,7 @@ def _canonical_identity_value(value:Any, *, casefold_strings:bool) -> Any:
 
 def _identity_columns_present(frame:pd.DataFrame, identity_columns:Iterable[str],) -> list[tuple[str, str]]:
     """ Return ``(canonical_name, actual_column)`` pairs in deterministic order. """
+
     requested= {
         canonical_feature_name(column): str(column)
         for column in identity_columns
@@ -78,6 +80,7 @@ def _pseudonymous_identity_keys(
     prefix:str, casefold_strings:bool,
 ) -> tuple[pd.Series, int, list[str]]:
     """ Hash stable raw identities into participant-scoped pseudonymous keys. """
+
     ordered_columns= _identity_columns_present(frame, identity_columns)
     keys= pd.Series(pd.NA, index=frame.index, dtype="string")
     if not ordered_columns:
@@ -136,6 +139,7 @@ def pseudonymous_source_keys(frame:pd.DataFrame, *, participant_id:str|None,
 def pseudonymous_sample_keys(frame:pd.DataFrame, *, participant_id:str|None,
                              identity_columns:Iterable[str]= DEFAULT_SAMPLE_IDENTITY_COLUMNS,) -> tuple[pd.Series, int]:
     """ Create stable participant-scoped keys for payload sample identities. """
+
     keys, count, _= _pseudonymous_identity_keys(
         frame, participant_id=participant_id, identity_columns=identity_columns, identity_kind="sample",
         prefix="sample_", casefold_strings=False,
@@ -156,6 +160,7 @@ def parse_serialized_payload(value:Any, *, max_decode_depth:int= 4) -> list[dict
     Decode a payload that may be JSON, a Python literal, or multiply encoded. No characters are removed speculatively.
     This prevents the silent corruption caused by unconditional ``value[1:-1]`` slicing.
     """
+
     validated= _validate_payload_object(value)
     if validated is not None:
         return validated
@@ -427,6 +432,7 @@ def _metadata_user_entered_value(value:Any) -> Any:
 
 def extract_user_entered_flags(frame:pd.DataFrame) -> pd.Series:
     """ Extract HealthKit's manual-entry marker into a bounded boolean column. """
+
     result= pd.Series(pd.NA, index=frame.index, dtype="boolean")
     if "is_user_entered" in frame.columns:
         result= frame["is_user_entered"].map(_coerce_user_entered_value).astype("boolean")
@@ -443,6 +449,7 @@ def normalize_feature_frame(
     sample_identity_columns:Iterable[str]= DEFAULT_SAMPLE_IDENTITY_COLUMNS, deduplicate_no_id_content:bool= False,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """ Validate, pseudonymize, timestamp-normalize and exactly deduplicate a feature. """
+
     report= {
         "input_records": int(len(frame)),
         "invalid_timestamp_records": 0,

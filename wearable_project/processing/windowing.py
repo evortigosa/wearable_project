@@ -25,6 +25,7 @@ _INTERNAL_COLUMNS= {
 
 def fixed_window_timedelta(frequency:str) -> pd.Timedelta:
     """ Validate a fixed-width frequency and return its duration. """
+
     try:
         offset= to_offset(frequency)
     except (TypeError, ValueError) as exc:
@@ -119,6 +120,7 @@ def _mode_any(series:pd.Series) -> Any:
 
 def aggregate_values_by_type(series:pd.Series, aggregation:str= "median") -> Any:
     """ Aggregate numeric, categorical, and nested values without unhashable-mode errors. """
+
     numeric, is_numeric= _numeric_view(series)
     if is_numeric:
         if aggregation == "sum":
@@ -179,6 +181,7 @@ def _consistent_or_explicitly_mixed(series:pd.Series) -> Any:
 
 def _timezone_aware_series(values:pd.Series, *, name:str) -> pd.Series:
     """ Return a timezone-aware series while retaining one common timezone. """
+
     if isinstance(values.dtype, pd.DatetimeTZDtype):
         result= values.copy()
     else:
@@ -204,6 +207,7 @@ def _expand_events_vectorized(working:pd.DataFrame, *, frequency:str, value_name
                               numeric_columns:Mapping[str, bool], policy:FeaturePolicy,
                               max_windows_per_event:int,) -> pd.DataFrame:
     """ Expand events into intersected windows using vectorized index arithmetic. """
+
     starts= _timezone_aware_series(working["start_date"], name="start")
     timezone= starts.dt.tz
     ends= _timezone_aware_series(working["end_date"], name="end").dt.tz_convert(timezone)
@@ -282,6 +286,7 @@ def _expand_events_vectorized(working:pd.DataFrame, *, frequency:str, value_name
 
 def _union_seconds_by_group(group_ids:pd.Series, starts:pd.Series, ends:pd.Series,) -> pd.Series:
     """ Calculate interval-union duration for each integer group without Python loops. """
+
     intervals= pd.DataFrame({
         "_group": group_ids.to_numpy(dtype=np.int64),
         "_start": starts.astype("int64").to_numpy(),
@@ -316,6 +321,7 @@ def _weighted_mean_by_group(values:pd.Series, weights:pd.Series, group_ids:pd.Se
 
 def _aggregate_metadata_column(values:pd.Series, group_ids:pd.Series, group_index:pd.Index,) -> pd.Series:
     """ Keep one value when consistent; serialize the unique set when it disagrees. """
+
     result= pd.Series(pd.NA, index=group_index, dtype="object")
     non_missing= values.notna()
     if not non_missing.any():

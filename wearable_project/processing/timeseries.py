@@ -14,7 +14,6 @@ from pathlib import Path
 import shutil
 import tempfile
 from typing import Any, Literal, Sequence
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from .cleaning import normalize_datetime_series

@@ -31,6 +31,7 @@ DayBasis= Literal["utc", "timezone", "source_offset"]
 @dataclass(slots=True)
 class StatisticsConfig:
     """ Controls date grouping and participant-level parallelism. """
+
     max_workers:int|None= 4
     day_basis:DayBasis= "utc"
     timezone:str= "UTC"

@@ -3,13 +3,11 @@ Wearable Data Processing and Modeling project
 Runtime and path-safety helpers.
 """
 
-
 from __future__ import annotations
 from datetime import datetime, timezone
 import os
 from pathlib import Path
 from ..exceptions import ConfigurationError
-
 
 
 def utc_now_iso() -> str:
