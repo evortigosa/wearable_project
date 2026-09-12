@@ -11,6 +11,7 @@ from typing import Iterable
 
 
 REGISTRY_VERSION = "2026-09-native-milestone-1"
+SPECS: dict[str, FeatureSpec] = {}
 
 
 class FeatureFamily(str, Enum):
@@ -62,16 +63,12 @@ def U(raw: str, canonical: str, scale: float = 1.0, *, status: str = "source_con
     return UnitPolicy(raw, canonical, scale, 0.0, status, evidence)
 
 
-SPECS: dict[str, FeatureSpec] = {}
-
-
 def add(*specs: FeatureSpec) -> None:
     for spec in specs:
         SPECS[spec.name] = spec
 
 
-# Additive interval aggregates. These retain their original intervals; no
-# fixed-window allocation occurs in milestone one.
+# Additive interval aggregates. These retain their original intervals; no fixed-window allocation occurs in milestone one.
 add(
     FeatureSpec("StepCount", FeatureFamily.INTERVAL_TOTAL, ("value",), DedupStrategy.INTERVAL_REVISION, U("count", "count"), resolve_boundary_revisions=True),
     FeatureSpec("DistanceWalkingRunning", FeatureFamily.INTERVAL_TOTAL, ("value",), DedupStrategy.INTERVAL_REVISION, U("m", "m", status="validated_source_convention"), resolve_boundary_revisions=True),
@@ -137,8 +134,8 @@ add(
     FeatureSpec("Mindful", FeatureFamily.DURATION_EVENT, tuple(), DedupStrategy.RECORD_ID_THEN_CONTENT),
 )
 
-# Nutrition entries may contain two legitimate identical food items at the same
-# timestamp. Do not content-deduplicate different record IDs.
+# Nutrition entries may contain two legitimate identical food items at the same timestamp. Do not content-deduplicate
+# different record IDs.
 add(
     FeatureSpec("EnergyConsumed", FeatureFamily.POINT_SCALAR, ("value",), DedupStrategy.RECORD_ID_ONLY, U("kcal", "kcal", status="feature_convention"), preserve_content_duplicates=True),
     FeatureSpec("Carbohydrates", FeatureFamily.POINT_SCALAR, ("value",), DedupStrategy.RECORD_ID_ONLY, U("g", "g", status="feature_convention"), preserve_content_duplicates=True),

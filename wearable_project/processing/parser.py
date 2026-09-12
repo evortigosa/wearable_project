@@ -22,8 +22,8 @@ from wearable_project.exceptions import DuplicateMonthError, ParticipantProcessi
 APPLE_SOURCE = "applehealthkit"
 MONTH_RE = re.compile(r"^(?P<year>\d{4})-(?P<month>\d{1,2})\.csv$")
 EXPECTED_COLUMNS = {
-    "id", "participant_id", "data_source", "name", "datetime", "data",
-    "collecting_method_version", "created_at", "updated_at",
+    "id", "participant_id", "data_source", "name", "datetime", "data", "collecting_method_version",
+    "created_at", "updated_at",
 }
 
 
@@ -104,12 +104,11 @@ def _load_literal(text: str) -> Any:
 
 
 def decode_payload(value: Any, max_layers: int = 8) -> Any:
-    """Decode repeated JSON/Python-literal string layers safely.
-
-    Some exported cells contain literal outer quote characters while an inner
-    user-entered string contains unescaped double quotes. In that exact shape,
-    stripping one visibly paired outer quote reproduces parse_v4's successful
-    `data[1:-1]` behavior without applying it unconditionally.
+    """
+    Decode repeated JSON/Python-literal string layers safely. Some exported cells contain literal outer
+    quote characters while an inner user-entered string contains unescaped double quotes. In that exact shape,
+    stripping one visibly paired outer quote reproduces parse_v4's successful `data[1:-1]` behavior without
+    applying it unconditionally.
     """
     if value is None or (isinstance(value, float) and math.isnan(value)):
         raise PayloadDecodeError("Payload is null")

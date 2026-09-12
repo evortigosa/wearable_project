@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from wearable_project.exceptions import OutputValidationError
 from wearable_project.processing.parser import SourceFile, sha256_file
+from wearable_project.processing.registry import FeatureFamily, get_feature_spec
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +79,10 @@ def atomic_write_csv(dataframe: Any, destination: Path) -> None:
 
 
 def drop_file_cache(path: Path) -> None:
-    """Best-effort release of file-backed page cache on Linux.
-
-    Large participant CSVs can otherwise keep hundreds of megabytes charged to
-    a memory-constrained single node after a worker exits. This does not alter
-    file contents and is a no-op where posix_fadvise is unavailable.
+    """
+    Best-effort release of file-backed page cache on Linux. Large participant CSVs can otherwise keep hundreds
+    of megabytes charged to a memory-constrained single node after a worker exits. This does not alter file
+    contents and is a no-op where posix_fadvise is unavailable.
     """
     if not hasattr(os, "posix_fadvise") or not hasattr(os, "POSIX_FADV_DONTNEED"):
         return
@@ -122,17 +122,18 @@ def validate_feature_file(path: Path, participant_id: str, expected_feature: str
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            missing_columns = {"event_id", "participant_id", "feature"}.difference(reader.fieldnames or [])
+            fields = set(reader.fieldnames or [])
+            spec = get_feature_spec(expected_feature, fields)
+            required = {"datetime", "created_at", "updated_at", "data_source", "collecting_method_version"}
+            if spec.family != FeatureFamily.DAILY_SUMMARY:
+                required.update({"start_date", "end_date"})
+            required.update(spec.measurement_columns)
+            missing_columns = required.difference(fields)
             if missing_columns:
                 raise OutputValidationError(f"{path} lacks required columns: {sorted(missing_columns)}")
             for row in reader:
-                if row.get("participant_id") != participant_id:
-                    raise OutputValidationError(f"{path} contains a different participant_id")
-                if row.get("feature") != expected_feature:
-                    raise OutputValidationError(f"{path} contains a different feature label")
-                event_id = row.get("event_id", "")
-                if not event_id:
-                    raise OutputValidationError(f"{path} contains a missing event_id")
+                if str(row.get("data_source", "")).strip().lower() != "applehealthkit":
+                    raise OutputValidationError(f"{path} contains a non-AppleHealthkit row")
                 row_count += 1
     except csv.Error as exc:
         raise OutputValidationError(f"Could not parse {path}: {exc}") from exc
@@ -144,12 +145,11 @@ def validate_feature_file(path: Path, participant_id: str, expected_feature: str
 def validate_participant_stage(
     stage_dir: Path, participant_id: str, expected_outputs: Iterable[FeatureOutputInfo]
 ) -> list[FeatureOutputInfo]:
-    """Validate a worker-produced manifest without scanning every data row.
-
-    The worker already checks event-ID uniqueness while the cleaned DataFrame is
-    in memory. The parent verifies the committed file set, size, checksum, and
-    first-row identity. This keeps parent-process memory bounded for very large
-    participants.
+    """
+    Validate a worker-produced manifest without scanning every data row. Participant and feature identity are
+    intentionally encoded by the parent directory and CSV filename rather than repeated in every row. The worker
+    validates internal event identity before projection; the parent verifies the committed file set, checksums,
+    native feature schema, and first-row Apple source marker.
     """
     _csv_field_limit()
     outputs = list(expected_outputs)
@@ -175,14 +175,21 @@ def validate_participant_stage(
         drop_file_cache(path)
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
+            fields = set(reader.fieldnames or [])
+            spec = get_feature_spec(info.feature, fields)
+            required = {"datetime", "created_at", "updated_at", "data_source", "collecting_method_version"}
+            if spec.family != FeatureFamily.DAILY_SUMMARY:
+                required.update({"start_date", "end_date"})
+            required.update(spec.measurement_columns)
+            missing_columns = required.difference(fields)
+            if missing_columns:
+                raise OutputValidationError(f"{path} lacks required columns: {sorted(missing_columns)}")
             try:
                 first = next(reader)
             except StopIteration as exc:
                 raise OutputValidationError(f"{path} contains no data rows") from exc
-        if first.get("participant_id") != participant_id or first.get("feature") != info.feature:
-            raise OutputValidationError(f"First-row identity mismatch in {path}")
-        if not first.get("event_id"):
-            raise OutputValidationError(f"First row in {path} has no event_id")
+        if str(first.get("data_source", "")).strip().lower() != "applehealthkit":
+            raise OutputValidationError(f"First row in {path} is not AppleHealthkit data")
     return outputs
 
 
@@ -230,11 +237,14 @@ class StateDatabase:
         )
         self.connection.commit()
 
+
     def __enter__(self) -> "StateDatabase":
         return self
 
+
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.connection.close()
+
 
     def begin_run(self, run_id: str, input_root: Path, output_root: Path) -> None:
         self.connection.execute(
@@ -243,6 +253,7 @@ class StateDatabase:
         )
         self.connection.commit()
 
+
     def finish_run(self, run_id: str, status: str, summary: dict[str, Any]) -> None:
         self.connection.execute(
             "UPDATE runs SET finished_at=?,status=?,summary_json=? WHERE run_id=?",
@@ -250,8 +261,10 @@ class StateDatabase:
         )
         self.connection.commit()
 
+
     def participant_ids(self) -> set[str]:
         return {row[0] for row in self.connection.execute("SELECT participant_id FROM participants")}
+
 
     def get_participant(self, participant_id: str) -> StoredParticipantState | None:
         row = self.connection.execute("SELECT * FROM participants WHERE participant_id=?", (participant_id,)).fetchone()
@@ -267,6 +280,7 @@ class StateDatabase:
         }
         return StoredParticipantState(row["participant_id"], row["status"], row["parser_version"], row["registry_version"], row["source_signature"], row["last_error"], sources, outputs)
 
+
     def mark_in_progress(self, participant_id: str, parser_version: str, registry_version: str) -> None:
         self.connection.execute(
             """INSERT INTO participants(participant_id,status,parser_version,registry_version,updated_at)
@@ -277,6 +291,7 @@ class StateDatabase:
         )
         self.connection.commit()
 
+
     def mark_failed(self, participant_id: str, message: str) -> None:
         self.connection.execute(
             """INSERT INTO participants(participant_id,status,last_error,updated_at) VALUES(?,?,?,?)
@@ -284,6 +299,7 @@ class StateDatabase:
             (participant_id, "failed", message, now_utc()),
         )
         self.connection.commit()
+
 
     def commit_participant(
         self, participant_id: str, parser_version: str, registry_version: str,
@@ -346,12 +362,14 @@ class DirectorySwap:
                 os.replace(self.backup_dir, self.final_dir)
             raise
 
+
     def rollback(self) -> None:
         if self.applied and self.final_dir.exists():
             os.replace(self.final_dir, self.stage_dir)
         if self.had_previous and self.backup_dir.exists():
             os.replace(self.backup_dir, self.final_dir)
         self.applied = False
+
 
     def finalize(self) -> None:
         shutil.rmtree(self.backup_dir, ignore_errors=True)

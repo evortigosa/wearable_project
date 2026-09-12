@@ -54,7 +54,7 @@ def test_waist_duplicates_and_canonical_unit():
     result = clean_feature("WaistCircumference", rows)
     assert len(result.dataframe) == 2
     assert result.exact_duplicates_removed == 1
-    row = result.dataframe[result.dataframe["start_date_local"].str.contains("20:47")].iloc[0]
+    row = result.dataframe[result.dataframe["start_date"].str.contains("17:47")].iloc[0]
     assert abs(row["canonical_value"] - 0.99) < 1e-12
     assert row["occurrence_count"] == 2
 
@@ -93,4 +93,51 @@ def test_iana_local_time_is_preserved_when_metadata_zone_exists():
         time_zone="Asia/Jerusalem",
     )
     frame = clean_feature("BloodGlucose", [row]).dataframe
-    assert frame.iloc[0]["start_date_iana"].startswith("2024-01-01T12:00:00")
+    assert frame.iloc[0]["start_date"] == "2024-01-01T10:00:00Z"
+    assert frame.iloc[0]["utc_offset_minutes"] == 120
+    assert frame.iloc[0]["time_zone"] == "Asia/Jerusalem"
+    assert "start_date_iana" not in frame.columns
+
+
+def test_compact_output_omits_folder_and_filename_identity_columns():
+    frame = clean_feature("StepCount", [base(value=100)]).dataframe
+    assert list(frame.columns[:8]) == [
+        "start_date", "end_date", "value", "datetime", "created_at",
+        "updated_at", "data_source", "collecting_method_version",
+    ]
+    for redundant in (
+        "event_id", "participant_id", "feature", "start_date_local",
+        "end_date_local", "start_date_raw", "end_date_raw", "datetime_raw",
+        "duration_seconds", "source_file", "source_month", "outer_id",
+        "metadata_raw", "metadata_present",
+    ):
+        assert redundant not in frame.columns
+
+
+def test_compact_existing_row_preserves_boundary_revision_logic():
+    first = clean_feature("StepCount", [base(value=10)]).dataframe.iloc[0].to_dict()
+    first.update({"participant_id": "P1", "feature": "StepCount", "_from_existing_output": True})
+    recovered = base(
+        value=100,
+        datetime_raw="2024-01-02 00:00:00",
+        outer_id="new",
+        payload_index=1,
+    )
+    result = clean_feature("StepCount", [first, recovered])
+    assert len(result.dataframe) == 1
+    assert result.dataframe.iloc[0]["value"] == 100
+    assert "boundary_revision_resolved" in result.dataframe.iloc[0]["quality_flags"]
+
+
+def test_metadata_output_contains_only_unflattened_residual_keys():
+    row = base(
+        feature="HeartRate",
+        record_id="H",
+        value=72,
+        metadata='{"h_k_metadata_key_heart_rate_motion_context":0,"custom_key":"kept"}',
+        heart_rate_motion_context=0,
+    )
+    frame = clean_feature("HeartRate", [row]).dataframe
+    assert frame.iloc[0]["heart_rate_motion_context"] == 0
+    assert frame.iloc[0]["metadata"] == '{"custom_key":"kept"}'
+    assert "metadata_raw" not in frame.columns

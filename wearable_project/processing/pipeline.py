@@ -197,15 +197,13 @@ def feature_filename_map(features: Iterable[str]) -> dict[str, str]:
 
 def build_participant(task: ParticipantTask) -> BuildResult:
     gc_was_enabled = gc.isenabled()
-    # A worker processes one participant and exits. Parsed event dictionaries
-    # are overwhelmingly acyclic; disabling cyclic GC prevents long full-heap
-    # scans on dense HeartRate/CGM participants while reference counting still
+    # A worker processes one participant and exits. Parsed event dictionaries are overwhelmingly acyclic; disabling
+    # cyclic GC prevents long full-heap scans on dense HeartRate/CGM participants while reference counting still
     # releases each feature after it is written.
     gc.disable()
     try:
-        # Keep pandas and feature-cleaning machinery out of the parent process.
-        # Under spawn, this materially reduces peak memory because only workers
-        # import the heavy tabular stack.
+        # Keep pandas and feature-cleaning machinery out of the parent process. Under spawn, this materially reduces
+        # peak memory because only workers import the heavy tabular stack.
         from wearable_project.processing.cleaners import clean_feature
         incremental = task.action == PlanAction.INCREMENTAL.value
         prepare_stage(task.stage_dir, task.existing_dir, incremental)
@@ -223,14 +221,22 @@ def build_participant(task: ParticipantTask) -> BuildResult:
         for feature in sorted(list(parsed.records_by_feature)):
             incoming = parsed.records_by_feature.pop(feature)
             destination = task.stage_dir / filenames[feature]
-            combined = load_csv_records(destination) + incoming if incremental and destination.exists() else incoming
+            if incremental and destination.exists():
+                existing = load_csv_records(destination)
+                for row in existing:
+                    # participant_id and feature are encoded by the directory and filename in compact output files.
+                    # Reattach them only for the internal reconciliation pass.
+                    row["participant_id"] = task.participant_id
+                    row["feature"] = feature
+                    row["_from_existing_output"] = True
+                combined = existing + incoming
+            else:
+                combined = incoming
             result = clean_feature(feature, combined)
             if result.dataframe.empty:
                 destination.unlink(missing_ok=True)
                 manifest.pop(feature, None)
                 continue
-            if result.dataframe["event_id"].isna().any() or not result.dataframe["event_id"].is_unique:
-                raise ParticipantProcessingError(f"Cleaner produced missing or duplicate event_id values for {feature}")
             atomic_write_csv(result.dataframe, destination)
             output_hash = sha256_file(destination)
             manifest[feature] = FeatureOutputInfo(
@@ -300,7 +306,11 @@ def process_dataset(
     output_root.mkdir(parents=True, exist_ok=True)
     state_file = state_file or output_root / ".wearable_state.sqlite"
     run_id = uuid.uuid4().hex
-    temp_root = output_root / ".wearable_tmp" / run_id
+    temp_parent = output_root / ".wearable_tmp"
+    # Participant commits are transactional; staging directories from an interrupted earlier process are never
+    # authoritative and can be removed safely before a new single-node run starts.
+    shutil.rmtree(temp_parent, ignore_errors=True)
+    temp_root = temp_parent / run_id
     stage_root, backup_root = temp_root / "staging", temp_root / "backups"
     stage_root.mkdir(parents=True, exist_ok=True)
     participants = discover_participants(export_root, selected_participants)
@@ -332,9 +342,8 @@ def process_dataset(
                     plans.append(plan)
                     state.mark_in_progress(participant_id, PARSER_VERSION, REGISTRY_VERSION)
 
-            # Process the largest participant snapshots first. On memory-limited
-            # single nodes this avoids accumulating page cache and allocator
-            # residue from many smaller participants before the largest task.
+            # Process the largest participant snapshots first. On memory-limited single nodes this avoids
+            # accumulating page cache and allocator residue from many smaller participants before the largest task.
             plans.sort(
                 key=lambda item: sum(source.size_bytes for source in item.sources_to_parse),
                 reverse=True,
@@ -471,7 +480,7 @@ def process_dataset(
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
             try:
-                (output_root / ".wearable_tmp").rmdir()
+                temp_parent.rmdir()
             except OSError:
                 pass
     return summary
