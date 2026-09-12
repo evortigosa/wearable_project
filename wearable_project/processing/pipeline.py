@@ -1,656 +1,477 @@
 """
 Wearable Data Processing and Modeling project
-End-to-end processing of participant-level Apple HealthKit-style CSV exports.
+Participant-level orchestration, incremental planning, and atomic commits.
 """
 
+
 from __future__ import annotations
-from collections import defaultdict
-from collections.abc import Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, field
-import json
-import logging
 import multiprocessing as mp
-from numbers import Integral
 import os
-from pathlib import Path
 import shutil
-import tempfile
 import traceback
-from typing import Any
-import pandas as pd
+import uuid
+import time
+import gc
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Iterable
 from tqdm import tqdm
-from .._version import __version__
-from .cleaning import (
-    DEFAULT_SENSITIVE_COLUMNS,
-    DEFAULT_SAMPLE_IDENTITY_COLUMNS,
-    DEFAULT_SOURCE_IDENTITY_COLUMNS,
-    normalize_feature_frame,
-    parse_serialized_payload,
-    validate_naive_timezone,
+from wearable_project import __version__
+from wearable_project.exceptions import InputLayoutError, ParticipantProcessingError
+from wearable_project.processing.parser import SourceFile, canonical_month_from_name, discover_month_files, merge_parse_results, parse_month_file, sha256_file
+from wearable_project.processing.registry import REGISTRY_VERSION
+from wearable_project.processing.writer import (
+    DirectorySwap, FeatureOutputInfo, StateDatabase, atomic_write_csv, drop_file_cache, existing_output_is_usable,
+    load_csv_records, prepare_stage, safe_feature_filename, source_signature,
+    validate_participant_stage,
 )
-from ..exceptions import ConfigurationError, PayloadParseError, SchemaError
-from .policies import (
-    FeaturePolicy,
-    canonical_feature_name,
-    feature_policy_origin,
-    policies_to_jsonable,
-    resolve_feature_policy,
-)
-from ..utils.filesystem import (
-    MONTHLY_FILE_RE,
-    atomic_write_dataframe,
-    atomic_write_json,
-    file_fingerprint,
-    safe_feature_stem,
-)
-from ..utils.runtime import cap_workers, ensure_disjoint_roots, utc_now_iso
-from ..utils.serialization import config_digest
-from .windowing import fixed_window_timedelta, window_feature
 
-LOGGER= logging.getLogger(__name__)
-MANIFEST_NAME= ".wearable_manifest.json"
-QUALITY_REPORT_NAME= "quality_report.json"
-MAX_ISSUE_EXAMPLES= 100
+
+PARSER_VERSION = f"native-parser-{__version__}"
+
+
+class PlanAction(str, Enum):
+    SKIP = "skip"
+    INCREMENTAL = "incremental"
+    REBUILD = "rebuild"
+    BLOCK = "block"
 
 
 @dataclass(slots=True)
-class ProcessingConfig:
-    """ Configuration for raw export processing. """
+class ParticipantPlan:
+    participant_id: str
+    participant_dir: Path
+    action: PlanAction
+    reason: str
+    all_sources: list[SourceFile]
+    sources_to_parse: list[SourceFile]
+    effective_sources: list[SourceFile]
+    existing_outputs: dict[str, FeatureOutputInfo] = field(default_factory=dict)
 
-    target_data_source:str= "applehealthkit"
-    window:str|None= None
-    max_workers:int|None= 4
-    resume:bool= True
-    strict:bool= False
-    chunksize:int= 10_000
-    output_format:str= "csv"
-    naive_timezone:str= "UTC"
-    retain_participant_id:bool= True
-    sensitive_columns:tuple[str, ...]= DEFAULT_SENSITIVE_COLUMNS
-    separate_sources:bool= True
-    source_identity_columns:tuple[str, ...]= DEFAULT_SOURCE_IDENTITY_COLUMNS
-    sample_identity_columns:tuple[str, ...]= DEFAULT_SAMPLE_IDENTITY_COLUMNS
-    deduplicate_no_id_content:bool= False
-    fingerprint_mode:str= "metadata"
-    monthly_filename_only:bool= True
-    max_windows_per_event:int= 100_000
-    feature_policies:Mapping[str, FeaturePolicy | Mapping[str, Any]]= field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.target_data_source, str):
-            raise ConfigurationError("target_data_source must be a string.")
-        self.target_data_source= self.target_data_source.strip().casefold()
-        if not self.target_data_source:
-            raise ConfigurationError("target_data_source cannot be empty.")
-        if self.window is not None:
-            if not isinstance(self.window, str):
-                raise ConfigurationError("window must be a fixed-duration string or None.")
-            self.window= self.window.strip() or None
-            if self.window is not None:
-                fixed_window_timedelta(self.window)
-        if isinstance(self.chunksize, bool) or not isinstance(self.chunksize, Integral):
-            raise ConfigurationError("chunksize must be a positive integer.")
-        if self.chunksize <= 0:
-            raise ConfigurationError("chunksize must be positive.")
-        if self.output_format not in {"csv", "parquet"}:
-            raise ConfigurationError("output_format must be 'csv' or 'parquet'.")
-        if self.fingerprint_mode not in {"metadata", "sha256"}:
-            raise ConfigurationError("fingerprint_mode must be 'metadata' or 'sha256'.")
-        if (
-            isinstance(self.max_windows_per_event, bool)
-            or not isinstance(self.max_windows_per_event, Integral)
-            or self.max_windows_per_event <= 0
-        ):
-            raise ConfigurationError("max_windows_per_event must be positive.")
-        try:
-            self.naive_timezone= validate_naive_timezone(self.naive_timezone)
-        except SchemaError as exc:
-            raise ConfigurationError(str(exc)) from exc
-        if not all(str(column).strip() for column in self.source_identity_columns):
-            raise ConfigurationError("source_identity_columns cannot contain empty names.")
-        if not all(str(column).strip() for column in self.sample_identity_columns):
-            raise ConfigurationError("sample_identity_columns cannot contain empty names.")
-        if not isinstance(self.deduplicate_no_id_content, bool):
-            raise ConfigurationError("deduplicate_no_id_content must be a boolean.")
-        # Validate early, even when processing runs in worker subprocesses.
-        cap_workers(self.max_workers)
-        policies_to_jsonable(self.feature_policies)
+@dataclass(slots=True)
+class ParticipantTask:
+    participant_id: str
+    action: str
+    sources_to_parse: list[SourceFile]
+    existing_dir: Path | None
+    stage_dir: Path
+    row_error_policy: str
+    existing_outputs: dict[str, FeatureOutputInfo] = field(default_factory=dict)
 
-    @property
-    def extension(self) -> str:
-        return ".parquet" if self.output_format == "parquet" else ".csv"
 
-    def manifest_payload(self) -> dict[str, Any]:
+@dataclass(slots=True)
+class BuildResult:
+    participant_id: str
+    stage_dir: Path
+    feature_stats: dict[str, dict[str, Any]]
+    outer_rows: int = 0
+    apple_rows: int = 0
+    payload_items: int = 0
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    output_infos: list[FeatureOutputInfo] = field(default_factory=list)
+    empty: bool = False
+    error: str | None = None
+    traceback_text: str | None = None
+
+
+@dataclass(slots=True)
+class RunSummary:
+    run_id: str
+    discovered: int = 0
+    skipped: int = 0
+    incremental: int = 0
+    rebuilt: int = 0
+    committed: int = 0
+    empty: int = 0
+    blocked: int = 0
+    failed: int = 0
+    blocks: dict[str, str] = field(default_factory=dict)
+    failures: dict[str, str] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
         return {
-            "target_data_source": self.target_data_source,
-            "window": self.window,
-            "strict": self.strict,
-            "output_format": self.output_format,
-            "naive_timezone": self.naive_timezone,
-            "retain_participant_id": self.retain_participant_id,
-            "sensitive_columns": list(self.sensitive_columns),
-            "separate_sources": self.separate_sources,
-            "source_identity_columns": list(self.source_identity_columns),
-            "sample_identity_columns": list(self.sample_identity_columns),
-            "deduplicate_no_id_content": self.deduplicate_no_id_content,
-            "fingerprint_mode": self.fingerprint_mode,
-            "monthly_filename_only": self.monthly_filename_only,
-            "max_windows_per_event": self.max_windows_per_event,
-            "feature_policies": policies_to_jsonable(self.feature_policies),
-            "pipeline_version": __version__,
+            "run_id": self.run_id, "discovered": self.discovered,
+            "skipped": self.skipped, "incremental": self.incremental,
+            "rebuilt": self.rebuilt, "committed": self.committed,
+            "empty": self.empty, "blocked": self.blocked, "failed": self.failed,
+            "blocks": self.blocks, "failures": self.failures,
         }
 
 
-@dataclass(slots=True)
-class FileParseResult:
-    path:str
-    status:str= "pending"
-    rows_seen:int= 0
-    rows_selected:int= 0
-    payload_records:int= 0
-    rejected_rows:int= 0
-    issues:list[dict[str, Any]]= field(default_factory=list)
-
-    def add_issue(self, *, row:int | None, code:str, message:str) -> None:
-        self.rejected_rows += 1
-        if len(self.issues) < MAX_ISSUE_EXAMPLES:
-            self.issues.append({"row": row, "code": code, "message": message})
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-def discover_input_files(participant_dir:Path, *, monthly_only:bool= True) -> tuple[list[Path], list[str]]:
-    """ Return deterministic input files and names skipped by the monthly-file rule. """
-
-    csv_files= sorted(
-        (path for path in participant_dir.glob("*.csv") if path.is_file()),
-        key=lambda path: (path.name.casefold(), path.name),
+def contains_month_file(path: Path) -> bool:
+    return path.is_dir() and any(
+        child.is_file() and canonical_month_from_name(child.name) is not None
+        for child in path.iterdir()
     )
-    if not monthly_only:
-        return csv_files, []
-    selected_with_keys:list[tuple[int, int, str, Path]]= []
-    skipped:list[str]= []
-    for path in csv_files:
-        match= MONTHLY_FILE_RE.fullmatch(path.name)
-        if match is None:
-            skipped.append(path.name)
-            continue
-        selected_with_keys.append(
-            (int(match.group("year")), int(match.group("month")), path.name.casefold(), path)
-        )
-    selected_with_keys.sort(key=lambda item: item[:3])
-    return [item[3] for item in selected_with_keys], skipped
 
 
-def _context_value(row:pd.Series, name:str) -> Any:
-    value= row.get(name, pd.NA)
-    try:
-        if pd.isna(value):
-            return pd.NA
-    except (TypeError, ValueError):
-        pass
-    return value
+def resolve_export_root(input_root: Path) -> Path:
+    root = input_root.expanduser().resolve()
+    if not root.is_dir():
+        raise InputLayoutError(f"Input is not a directory: {root}")
+    if any(contains_month_file(child) for child in root.iterdir() if child.is_dir()):
+        return root
+    children = [child for child in root.iterdir() if child.is_dir() and not child.name.startswith(".")]
+    if len(children) == 1 and any(contains_month_file(child) for child in children[0].iterdir() if child.is_dir()):
+        return children[0]
+    raise InputLayoutError(f"No participant directories with YYYY-M.csv or YYYY-MM.csv were found under {root}")
 
 
-def parse_monthly_file(path:Path, participant_id:str,
-                       config:ProcessingConfig,) -> tuple[dict[str, list[pd.DataFrame]], FileParseResult]:
-    """ Parse one monthly export without mutating source data. """
-
-    result= FileParseResult(path=path.name)
-    by_feature:dict[str, list[pd.DataFrame]]= defaultdict(list)
-    reader:Any|None= None
-    try:
-        reader= pd.read_csv(path, chunksize=config.chunksize, on_bad_lines="error")
-        for chunk in reader:
-            required= {"data_source", "name", "data"}
-            missing= required.difference(chunk.columns)
-            if missing:
-                raise SchemaError(f"Missing required top-level columns: {sorted(missing)}.")
-            result.rows_seen += int(len(chunk))
-            source= chunk["data_source"].astype("string").str.strip().str.casefold()
-            selected= chunk.loc[source.eq(config.target_data_source)]
-            result.rows_selected += int(len(selected))
-
-            for source_index, row in selected.iterrows():
-                line_number= int(source_index) + 2 if isinstance(source_index, Integral) else None
-                raw_name= row.get("name", pd.NA)
-                if pd.isna(raw_name) or not str(raw_name).strip():
-                    result.add_issue(row=line_number, code="missing_feature_name", message="Feature name is empty.")
-                    if config.strict:
-                        raise SchemaError(f"Missing feature name in {path} at row {line_number}.")
-                    continue
-                feature_name= str(raw_name).strip()
-                feature_key= canonical_feature_name(feature_name)
-                if feature_key == "mindful":
-                    # The legacy export represents this marker without processable values.
-                    continue
-                try:
-                    records= parse_serialized_payload(row.get("data", pd.NA))
-                except PayloadParseError as exc:
-                    result.add_issue(row=line_number, code="payload_parse_error", message=str(exc))
-                    if config.strict:
-                        raise
-                    continue
-                payload= pd.DataFrame.from_records(records)
-                if payload.empty:
-                    result.add_issue(row=line_number, code="empty_payload", message="Decoded payload has no records.")
-                    if config.strict:
-                        raise PayloadParseError(f"Empty payload in {path} at row {line_number}.")
-                    continue
-
-                top_level_participant= _context_value(row, "participant_id")
-                if "participant_id" not in payload.columns and top_level_participant is not pd.NA:
-                    payload["participant_id"]= top_level_participant
-                payload["data_source"]= config.target_data_source
-                payload["source_file"]= path.name
-                payload["source_month"]= path.stem
-                payload["source_row"]= line_number
-
-                export_datetime= _context_value(row, "datetime")
-                if (
-                    feature_key == "activitysummary"
-                    and "datetime" not in payload.columns
-                    and export_datetime is not pd.NA
-                ):
-                    payload["datetime"]= export_datetime
-                payload["source_export_datetime"]= export_datetime
-                payload["source_created_at"]= _context_value(row, "created_at")
-                payload["source_updated_at"]= _context_value(row, "updated_at")
-
-                by_feature[feature_name].append(payload)
-                result.payload_records += int(len(payload))
-    except Exception as exc:
-        result.status= "failed"
-        if not result.issues or result.issues[-1].get("message") != str(exc):
-            if len(result.issues) < MAX_ISSUE_EXAMPLES:
-                result.issues.append({"row": None, "code": "file_error", "message": str(exc)})
-        # Row-level, expected payload problems are handled above.  A file-level
-        # exception means the file was not completely inspected, so returning a
-        # partial table would make the manifest incorrectly certify incomplete data.
-        raise
-    finally:
-        if reader is not None and hasattr(reader, "close"):
-            reader.close()
-
-    result.status= "completed_with_rejections" if result.rejected_rows else "completed"
-    return by_feature, result
-
-
-def parse_participant_directory(
-    participant_dir:str|Path, config:ProcessingConfig,
-) -> tuple[dict[str, pd.DataFrame], dict[str, Any], list[dict[str, Any]]]:
-    """ Parse all monthly files for one participant and return cleaned feature tables. """
-
-    participant_path= Path(participant_dir)
-    participant_id= participant_path.name
-    files, skipped_files= discover_input_files(participant_path, monthly_only=config.monthly_filename_only)
-    fingerprints= [file_fingerprint(path, config.fingerprint_mode) for path in files]
-    raw_by_feature:dict[str, list[pd.DataFrame]]= defaultdict(list)
-    display_names:dict[str, str]= {}
-    feature_aliases:dict[str, set[str]]= defaultdict(set)
-    file_reports:list[dict[str, Any]]= []
-
-    for path in files:
-        parsed, file_report= parse_monthly_file(path, participant_id, config)
-        file_reports.append(file_report.to_dict())
-        for feature_name, frames in parsed.items():
-            # Case-only variation is export noise, not a distinct HealthKit type.
-            # Punctuation is retained to avoid conflating genuinely different custom
-            # study variables such as ``A-B`` and ``AB``.
-            key= feature_name.casefold()
-            display_names.setdefault(key, feature_name)
-            feature_aliases[key].add(feature_name)
-            raw_by_feature[key].extend(frames)
-
-    feature_tables:dict[str, pd.DataFrame]= {}
-    feature_reports:dict[str, dict[str, Any]]= {}
-    for feature_key in sorted(raw_by_feature):
-        feature_name= display_names[feature_key]
-        combined= pd.concat(raw_by_feature[feature_key], ignore_index=True, sort=False)
-        try:
-            normalized, cleaning_report= normalize_feature_frame(
-                feature_name,
-                combined,
-                participant_id=participant_id,
-                retain_participant_id=config.retain_participant_id,
-                naive_timezone=config.naive_timezone,
-                sensitive_columns=config.sensitive_columns,
-                separate_sources=config.separate_sources,
-                source_identity_columns=config.source_identity_columns,
-                sample_identity_columns=config.sample_identity_columns,
-                deduplicate_no_id_content=config.deduplicate_no_id_content,
-            )
-        except SchemaError as exc:
-            feature_reports[feature_name]= {
-                "status": "rejected", "error": str(exc), "input_records": int(len(combined)),
-            }
-            if config.strict:
-                raise
-            continue
-
-        if config.strict and cleaning_report["participant_mismatch_records"]:
-            raise SchemaError(
-                f"Feature {feature_name!r} contains "
-                f"{cleaning_report['participant_mismatch_records']} participant IDs that "
-                f"do not match folder {participant_id!r}."
-            )
-
-        chosen_policy= resolve_feature_policy(feature_name, config.feature_policies)
-        policy_origin= feature_policy_origin(feature_name, config.feature_policies)
-        unit_columns= [column for column in ("unit", "units") if column in normalized.columns]
-        unit_values= sorted({
-            str(value).strip()
-            for column in unit_columns for value in normalized[column].dropna().tolist() if str(value).strip()
-        }, key=str.casefold,)
-        windowed= False
-        if config.window is not None and canonical_feature_name(feature_name) != "activitysummary":
-            try:
-                normalized= window_feature(
-                    normalized, feature_name, config.window, policy=chosen_policy,
-                    max_windows_per_event=config.max_windows_per_event,
-                )
-                windowed= bool(chosen_policy.windowable)
-            except (ConfigurationError, SchemaError) as exc:
-                if config.strict:
-                    raise
-                # Preserve validated raw events instead of silently deleting an
-                # entire feature because an aggregation assumption was unsafe.
-                normalized= normalized.copy()
-                normalized["is_windowed"]= False
-                feature_tables[feature_name]= normalized
-                feature_reports[feature_name]= {
-                    **cleaning_report,
-                    "status": "preserved_after_windowing_failure",
-                    "error": str(exc),
-                    "windowed": False,
-                    "output_records": int(len(normalized)),
-                    "policy": chosen_policy.to_dict(),
-                    "policy_origin": policy_origin,
-                    "aliases": sorted(
-                        feature_aliases[feature_key], key=lambda value: (value.casefold(), value)
-                    ),
-                    "unit_values": unit_values,
-                    "source_adjudication_required": (cleaning_report.get("source_identity_count", 0) > 1),
-                }
-                continue
-        elif "is_windowed" not in normalized.columns:
-            normalized["is_windowed"]= False
-
-        feature_tables[feature_name]= normalized
-        feature_reports[feature_name]= {
-            **cleaning_report,
-            "status": "completed",
-            "windowed": windowed,
-            "output_records": int(len(normalized)),
-            "policy": chosen_policy.to_dict(),
-            "policy_origin": policy_origin,
-            "aliases": sorted(feature_aliases[feature_key], key=lambda value: (value.casefold(), value)),
-            "unit_values": unit_values,
-            "source_adjudication_required": (cleaning_report.get("source_identity_count", 0) > 1),
-        }
-
-    quality_report:dict[str, Any]= {
-        "participant_id": participant_id,
-        "created_at_utc": utc_now_iso(),
-        "input_file_count": len(files),
-        "skipped_non_monthly_csv_files": skipped_files,
-        "files": file_reports,
-        "features": feature_reports,
-        "summary": {
-            "top_level_rows_seen": sum(item["rows_seen"] for item in file_reports),
-            "top_level_rows_selected": sum(item["rows_selected"] for item in file_reports),
-            "payload_records_decoded": sum(item["payload_records"] for item in file_reports),
-            "rejected_top_level_rows": sum(item["rejected_rows"] for item in file_reports),
-            "features_written": len(feature_tables),
-            "records_written": sum(len(table) for table in feature_tables.values()),
-            "duplicates_removed": sum(details.get("duplicates_removed", 0) for details in feature_reports.values()),
-            "ambiguous_no_id_duplicate_candidates": sum(
-                details.get("ambiguous_no_id_duplicate_candidates", 0) for details in feature_reports.values()
-            ),
-            "stable_id_conflict_groups": sum(
-                details.get("stable_id_conflict_groups", 0) for details in feature_reports.values()
-            ),
-            "user_entered_true_records": sum(
-                details.get("user_entered_true_records", 0) for details in feature_reports.values()
-            ),
-        },
-    }
-    final_files, _= discover_input_files(participant_path, monthly_only=config.monthly_filename_only)
-    final_fingerprints= [file_fingerprint(path, config.fingerprint_mode) for path in final_files]
-    if final_fingerprints != fingerprints:
-        raise ConfigurationError(
-            f"Raw files changed while participant {participant_id!r} was being processed; "
-            "no output was committed. Re-run after the export directory is stable."
-        )
-    return feature_tables, quality_report, final_fingerprints
-
-
-def _manifest_matches(participant_output:Path, *, input_fingerprints:list[dict[str, Any]],
-                      config_hash:str,) -> bool:
-    manifest_path= participant_output / MANIFEST_NAME
-    try:
-        manifest= json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if manifest.get("config_digest") != config_hash:
-        return False
-    if manifest.get("input_files") != input_fingerprints:
-        return False
-    features= manifest.get("features", {})
-    if not isinstance(features, dict):
-        return False
-    root= participant_output.resolve()
-    for details in features.values():
-        if not isinstance(details, dict) or not isinstance(details.get("file"), str):
-            return False
-        candidate= (participant_output / details["file"]).resolve()
-        if not candidate.is_relative_to(root) or not candidate.is_file():
-            return False
-    return True
-
-
-def _swap_participant_directory(temporary:Path, destination:Path) -> None:
-    """ Replace a participant directory with rollback on commit failure. """
-
-    backup= destination.with_name(f".{safe_feature_stem(destination.name)}.backup-{os.getpid()}")
-    if backup.exists():
-        shutil.rmtree(backup)
-    moved_old= False
-    try:
-        if destination.exists():
-            os.replace(destination, backup)
-            moved_old= True
-        os.replace(temporary, destination)
-    except Exception:
-        if moved_old and backup.exists() and not destination.exists():
-            os.replace(backup, destination)
-        raise
-    else:
-        if backup.exists():
-            shutil.rmtree(backup)
-
-
-def process_participant(participant_dir:str|Path, output_root:str|Path,
-                        config:ProcessingConfig|None= None,) -> dict[str, Any]:
-    """ Process one participant transactionally and return a summary dictionary. """
-
-    config= config or ProcessingConfig()
-    participant_path= Path(participant_dir)
-    if not participant_path.is_dir():
-        raise ConfigurationError(f"Participant directory does not exist: {participant_path}")
-    output_path= Path(output_root)
-    ensure_disjoint_roots(participant_path, output_path)
-    output_path.mkdir(parents=True, exist_ok=True)
-    participant_id= participant_path.name
-    files, skipped= discover_input_files(participant_path, monthly_only=config.monthly_filename_only)
-    input_fingerprints= [file_fingerprint(path, config.fingerprint_mode) for path in files]
-    config_payload= config.manifest_payload()
-    config_hash= config_digest(config_payload)
-    destination= output_path / participant_id
-
-    if config.resume and _manifest_matches(
-        destination, input_fingerprints=input_fingerprints, config_hash=config_hash,
-    ):
-        return {
-            "participant_id": participant_id,
-            "status": "skipped_unchanged",
-            "input_files": len(files),
-            "skipped_non_monthly_csv_files": len(skipped),
-            "features_written": 0,
-            "records_written": 0,
-        }
-
-    if not files:
-        return {
-            "participant_id": participant_id,
-            "status": "no_input_files",
-            "input_files": 0,
-            "skipped_non_monthly_csv_files": len(skipped),
-            "features_written": 0,
-            "records_written": 0,
-        }
-
-    temporary= Path(tempfile.mkdtemp(prefix=f".{safe_feature_stem(participant_id)}.tmp-", dir=output_path,))
-    try:
-        feature_tables, quality_report, parsed_fingerprints= parse_participant_directory(participant_path, config)
-        feature_manifest:dict[str, dict[str, Any]]= {}
-        used_filenames:set[str]= set()
-        for feature_name in sorted(feature_tables, key=str.casefold):
-            stem= safe_feature_stem(feature_name)
-            filename= f"{stem}{config.extension}"
-            if filename in used_filenames:
-                raise ConfigurationError(f"Feature filename collision for {feature_name!r}: {filename}")
-            used_filenames.add(filename)
-            table= feature_tables[feature_name]
-            atomic_write_dataframe(table, temporary / filename, config.output_format)
-            feature_manifest[feature_name]= {
-                "file": filename,
-                "rows": int(len(table)),
-                "windowed": bool(table.get("is_windowed", pd.Series([False])).astype(bool).any()),
-            }
-
-        manifest= {
-            "manifest_schema_version": 1,
-            "pipeline_version": __version__,
-            "participant_id": participant_id,
-            "created_at_utc": utc_now_iso(),
-            "config": config_payload,
-            "config_digest": config_hash,
-            "input_files": parsed_fingerprints,
-            "features": feature_manifest,
-            "quality_report": QUALITY_REPORT_NAME,
-        }
-        feature_warnings= any(
-            details.get("status") != "completed"
-            or details.get("participant_mismatch_records", 0) > 0
-            or details.get("policy_origin") == "unknown_conservative"
-            or details.get("source_adjudication_required", False)
-            or details.get("stable_id_conflict_groups", 0) > 0
-            or details.get("ambiguous_no_id_duplicate_candidates", 0) > 0
-            for details in quality_report["features"].values()
-        )
-        run_status= (
-            "completed_with_warnings"
-            if (
-                quality_report["summary"]["rejected_top_level_rows"] or feature_warnings or not feature_tables
-            )
-            else "completed"
-        )
-        quality_report["status"]= run_status
-        atomic_write_json(temporary / QUALITY_REPORT_NAME, quality_report)
-        manifest["status"]= run_status
-        atomic_write_json(temporary / MANIFEST_NAME, manifest)
-        _swap_participant_directory(temporary, destination)
-    except Exception:
-        if temporary.exists():
-            shutil.rmtree(temporary, ignore_errors=True)
-        raise
-
+def discover_participants(root: Path, selected: set[str] | None = None) -> dict[str, Path]:
     return {
-        "participant_id": participant_id,
-        "status": run_status,
-        "input_files": len(files),
-        "skipped_non_monthly_csv_files": len(skipped),
-        "features_written": len(feature_tables),
-        "records_written": int(sum(len(table) for table in feature_tables.values())),
-        "rejected_top_level_rows": quality_report["summary"]["rejected_top_level_rows"],
+        child.name: child for child in sorted(root.iterdir(), key=lambda item: item.name)
+        if child.is_dir() and not child.name.startswith(".")
+        and (selected is None or child.name in selected) and contains_month_file(child)
     }
 
 
-def _participant_worker(participant_dir:str, output_root:str, config:ProcessingConfig,) -> dict[str, Any]:
-    try:
-        return process_participant(participant_dir, output_root, config)
-    except Exception as exc:
-        LOGGER.exception("Participant processing failed for %s", participant_dir)
-        return {
-            "participant_id": Path(participant_dir).name,
-            "status": "failed",
-            "error": str(exc),
-            "traceback": traceback.format_exc(limit=20),
-            "input_files": 0,
-            "features_written": 0,
-            "records_written": 0,
-        }
+def map_sources(sources: Iterable[SourceFile]) -> dict[str, SourceFile]:
+    return {item.canonical_month: item for item in sources}
 
 
-def process_dataset(input_root:str|Path, output_root:str|Path, config:ProcessingConfig|None= None, *,
-                    participant_ids:Sequence[str]|None= None, select_root:str|Path|None= None,) -> list[dict[str, Any]]:
-    """ Process all participant directories, continuing after participant-level failures. """
+def stored_source(month: str, value: dict[str, Any]) -> SourceFile:
+    return SourceFile(Path(value["filename"]), month, value["sha256"], int(value["size_bytes"]))
 
-    config= config or ProcessingConfig()
-    input_path= Path(input_root)
-    output_path= Path(output_root)
-    if not input_path.is_dir():
-        raise ConfigurationError(f"Input root does not exist or is not a directory: {input_path}")
-    ensure_disjoint_roots(input_path, output_path)
-    output_path.mkdir(parents=True, exist_ok=True)
 
-    available= {path.name:path for path in input_path.iterdir() if path.is_dir()}
-    if participant_ids is not None:
-        requested= set(participant_ids)
-    elif select_root is not None:
-        selection= Path(select_root)
-        if not selection.is_dir():
-            raise ConfigurationError(f"Selection root is not a directory: {selection}")
-        requested= {path.name for path in selection.iterdir() if path.is_dir()}
-    else:
-        requested= set(available)
-    selected= [available[name] for name in sorted(requested.intersection(available), key=str.casefold)]
-    missing_requested= sorted(requested.difference(available), key=str.casefold)
+def plan_participant(
+    participant_id: str, participant_dir: Path, sources: list[SourceFile], stored: Any,
+    output_root: Path, *, mode: str, snapshot_policy: str, verify_existing_hashes: bool,
+) -> ParticipantPlan:
+    rebuild = lambda reason: ParticipantPlan(participant_id, participant_dir, PlanAction.REBUILD, reason, sources, sources, sources)
+    if mode == "rebuild":
+        return rebuild("forced rebuild")
+    if stored is None:
+        return rebuild("participant has no committed state")
+    if stored.status not in {"complete", "complete_empty"}:
+        return rebuild(f"previous state is {stored.status!r}")
+    if stored.parser_version != PARSER_VERSION or stored.registry_version != REGISTRY_VERSION:
+        return rebuild("parser or feature registry version changed")
+    if stored.status == "complete" and not existing_output_is_usable(output_root / participant_id, stored, verify_existing_hashes):
+        return rebuild("committed output is missing or invalid")
 
-    reports:list[dict[str, Any]]= []
-    workers= cap_workers(config.max_workers)
-    if workers == 1:
-        for participant in tqdm(selected, desc="Processing participants", unit="participant"):
-            reports.append(_participant_worker(str(participant), str(output_path), config))
-    else:
-        with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),) as executor:
-            futures= {
-                executor.submit(_participant_worker, str(participant), str(output_path), config): participant.name
-                for participant in selected
-            }
-            for future in tqdm(
-                as_completed(futures), total=len(futures), desc="Processing participants", unit="participant",
-            ):
-                reports.append(future.result())
+    current, old = map_sources(sources), stored.sources
+    old_months, current_months = set(old), set(current)
+    missing = sorted(old_months - current_months)
+    added = sorted(current_months - old_months)
+    changed = sorted(month for month in old_months & current_months if old[month]["sha256"] != current[month].sha256)
 
-    reports.sort(key=lambda item: item["participant_id"].casefold())
-    summary= {
-        "created_at_utc": utc_now_iso(),
-        "input_root": str(input_path.resolve()),
-        "output_root": str(output_path.resolve()),
-        "participants_discovered": len(available),
-        "participants_requested": len(requested),
-        "participants_selected": len(selected),
-        "participants_missing": missing_requested,
-        "status_counts": pd.Series([item["status"] for item in reports]).value_counts().to_dict(),
-        "records_written": int(sum(item.get("records_written", 0) for item in reports)),
-        "reports": reports,
-    }
-    atomic_write_json(output_path / "processing_summary.json", summary)
-    atomic_write_dataframe(
-        pd.DataFrame(reports).drop(columns=["traceback"], errors="ignore"), output_path / "processing_summary.csv", "csv",
+    if missing:
+        if snapshot_policy == "strict-cumulative":
+            return ParticipantPlan(participant_id, participant_dir, PlanAction.BLOCK, f"snapshot omits committed months: {missing}", sources, [], sources)
+        if snapshot_policy == "authoritative":
+            return rebuild(f"authoritative snapshot removed months: {missing}")
+        if changed:
+            return ParticipantPlan(participant_id, participant_dir, PlanAction.BLOCK, f"append-only snapshot omits old months and changes {changed}", sources, [], sources)
+    if changed:
+        return rebuild(f"historical monthly content changed: {changed}")
+    if not added:
+        return ParticipantPlan(participant_id, participant_dir, PlanAction.SKIP, "snapshot unchanged", sources, [], sources)
+    max_old = max(old_months) if old_months else None
+    historical = [month for month in added if max_old is not None and month <= max_old]
+    if historical:
+        return rebuild(f"recovered historical months: {historical}")
+    effective = sources
+    if missing and snapshot_policy == "append-only":
+        union = {month: stored_source(month, value) for month, value in old.items()}
+        union.update(current)
+        effective = [union[month] for month in sorted(union)]
+    return ParticipantPlan(
+        participant_id, participant_dir, PlanAction.INCREMENTAL,
+        f"only later months were added: {added}", sources,
+        [current[month] for month in added], effective, stored.outputs,
     )
-    return reports
+
+
+def feature_filename_map(features: Iterable[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    reverse: dict[str, str] = {}
+    for feature in features:
+        filename = safe_feature_filename(feature)
+        if filename in reverse and reverse[filename] != feature:
+            raise ParticipantProcessingError(f"Feature filename collision: {feature!r} and {reverse[filename]!r} -> {filename}")
+        mapping[feature], reverse[filename] = filename, feature
+    return mapping
+
+
+def build_participant(task: ParticipantTask) -> BuildResult:
+    gc_was_enabled = gc.isenabled()
+    # A worker processes one participant and exits. Parsed event dictionaries
+    # are overwhelmingly acyclic; disabling cyclic GC prevents long full-heap
+    # scans on dense HeartRate/CGM participants while reference counting still
+    # releases each feature after it is written.
+    gc.disable()
+    try:
+        # Keep pandas and feature-cleaning machinery out of the parent process.
+        # Under spawn, this materially reduces peak memory because only workers
+        # import the heavy tabular stack.
+        from wearable_project.processing.cleaners import clean_feature
+        incremental = task.action == PlanAction.INCREMENTAL.value
+        prepare_stage(task.stage_dir, task.existing_dir, incremental)
+        parse_results = []
+        for source in task.sources_to_parse:
+            parse_results.append(
+                parse_month_file(source, task.participant_id, row_error_policy=task.row_error_policy)
+            )
+            drop_file_cache(source.path)
+        parsed = merge_parse_results(parse_results)
+        del parse_results
+        filenames = feature_filename_map(parsed.records_by_feature)
+        stats: dict[str, dict[str, Any]] = {}
+        manifest: dict[str, FeatureOutputInfo] = dict(task.existing_outputs) if incremental else {}
+        for feature in sorted(list(parsed.records_by_feature)):
+            incoming = parsed.records_by_feature.pop(feature)
+            destination = task.stage_dir / filenames[feature]
+            combined = load_csv_records(destination) + incoming if incremental and destination.exists() else incoming
+            result = clean_feature(feature, combined)
+            if result.dataframe.empty:
+                destination.unlink(missing_ok=True)
+                manifest.pop(feature, None)
+                continue
+            if result.dataframe["event_id"].isna().any() or not result.dataframe["event_id"].is_unique:
+                raise ParticipantProcessingError(f"Cleaner produced missing or duplicate event_id values for {feature}")
+            atomic_write_csv(result.dataframe, destination)
+            output_hash = sha256_file(destination)
+            manifest[feature] = FeatureOutputInfo(
+                feature, destination.name, result.output_rows,
+                destination.stat().st_size, output_hash,
+            )
+            drop_file_cache(destination)
+            stats[feature] = {
+                "input_rows": result.input_rows, "output_rows": result.output_rows,
+                "exact_duplicates_removed": result.exact_duplicates_removed,
+                "revisions_resolved": result.revisions_resolved,
+                "unresolved_conflicts": result.unresolved_conflicts,
+                "invalid_timestamp_rows": result.invalid_timestamp_rows,
+            }
+            del combined, result, incoming
+        return BuildResult(
+            participant_id=task.participant_id, stage_dir=task.stage_dir, feature_stats=stats,
+            outer_rows=parsed.outer_rows_seen, apple_rows=parsed.apple_rows_seen,
+            payload_items=parsed.payload_items_seen,
+            diagnostics=[asdict(item) for item in parsed.diagnostics],
+            output_infos=[manifest[key] for key in sorted(manifest)],
+            empty=not any(task.stage_dir.glob("*.csv")),
+        )
+    except Exception as exc:
+        return BuildResult(task.participant_id, task.stage_dir, {}, error=str(exc), traceback_text=traceback.format_exc())
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+
+
+def worker_entry(task: ParticipantTask, connection: Any) -> None:
+    """Run exactly one participant in a fresh spawned process."""
+    try:
+        connection.send(build_participant(task))
+    except BaseException as exc:
+        connection.send(BuildResult(
+            task.participant_id, task.stage_dir, {}, error=str(exc),
+            traceback_text=traceback.format_exc(),
+        ))
+    finally:
+        connection.close()
+
+
+def remove_output_then_commit(final_dir: Path, backup_dir: Path, commit: Any) -> None:
+    shutil.rmtree(backup_dir, ignore_errors=True)
+    had_previous = final_dir.exists()
+    if had_previous:
+        backup_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(final_dir, backup_dir)
+    try:
+        commit()
+    except Exception:
+        if had_previous and backup_dir.exists() and not final_dir.exists():
+            os.replace(backup_dir, final_dir)
+        raise
+    shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def process_dataset(
+    input_root: Path, output_root: Path, *, workers: int = 4, max_in_flight: int | None = None,
+    mode: str = "auto", snapshot_policy: str = "strict-cumulative",
+    row_error_policy: str = "fail-participant", selected_participants: set[str] | None = None,
+    verify_existing_hashes: bool = False, fail_fast: bool = False, state_file: Path | None = None,
+) -> RunSummary:
+    export_root = resolve_export_root(input_root)
+    output_root = output_root.expanduser().resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    state_file = state_file or output_root / ".wearable_state.sqlite"
+    run_id = uuid.uuid4().hex
+    temp_root = output_root / ".wearable_tmp" / run_id
+    stage_root, backup_root = temp_root / "staging", temp_root / "backups"
+    stage_root.mkdir(parents=True, exist_ok=True)
+    participants = discover_participants(export_root, selected_participants)
+    summary = RunSummary(run_id, discovered=len(participants))
+    workers = max(1, min(int(workers), max(1, (os.cpu_count() or 2) - 1)))
+    max_in_flight = max(1, int(max_in_flight or workers))
+
+    with StateDatabase(state_file) as state:
+        state.begin_run(run_id, export_root, output_root)
+        try:
+            plans: list[ParticipantPlan] = []
+            if snapshot_policy == "strict-cumulative" and selected_participants is None:
+                missing_participants = sorted(state.participant_ids().difference(participants))
+                for participant_id in missing_participants:
+                    summary.blocked += 1
+                    summary.blocks[participant_id] = "participant is absent from the new cumulative snapshot"
+            for participant_id, participant_dir in tqdm(participants.items(), desc="Hashing source months", unit="participant"):
+                sources = discover_month_files(participant_dir)
+                plan = plan_participant(
+                    participant_id, participant_dir, sources, state.get_participant(participant_id), output_root,
+                    mode=mode, snapshot_policy=snapshot_policy, verify_existing_hashes=verify_existing_hashes,
+                )
+                if plan.action == PlanAction.SKIP:
+                    summary.skipped += 1
+                elif plan.action == PlanAction.BLOCK:
+                    summary.blocked += 1
+                    summary.blocks[participant_id] = plan.reason
+                else:
+                    plans.append(plan)
+                    state.mark_in_progress(participant_id, PARSER_VERSION, REGISTRY_VERSION)
+
+            # Process the largest participant snapshots first. On memory-limited
+            # single nodes this avoids accumulating page cache and allocator
+            # residue from many smaller participants before the largest task.
+            plans.sort(
+                key=lambda item: sum(source.size_bytes for source in item.sources_to_parse),
+                reverse=True,
+            )
+
+            context = mp.get_context("spawn")
+            task_iterator = iter(plans)
+            concurrency = min(workers, max_in_flight)
+            running: dict[str, tuple[Any, Any, ParticipantPlan]] = {}
+
+            def make_task(plan: ParticipantPlan) -> ParticipantTask:
+                return ParticipantTask(
+                    plan.participant_id, plan.action.value, plan.sources_to_parse,
+                    output_root / plan.participant_id if plan.action == PlanAction.INCREMENTAL else None,
+                    stage_root / plan.participant_id, row_error_policy, plan.existing_outputs,
+                )
+
+            def start_more() -> None:
+                while len(running) < concurrency:
+                    try:
+                        plan = next(task_iterator)
+                    except StopIteration:
+                        break
+                    parent_connection, child_connection = context.Pipe(duplex=False)
+                    process = context.Process(
+                        target=worker_entry, args=(make_task(plan), child_connection),
+                        name=f"wearable-{plan.participant_id}",
+                    )
+                    process.start()
+                    child_connection.close()
+                    running[plan.participant_id] = (process, parent_connection, plan)
+
+            with tqdm(total=len(plans), desc="Processing participants", unit="participant") as progress:
+                start_more()
+                try:
+                    while running:
+                        completed_id = None
+                        for participant_id, (process, connection, _) in running.items():
+                            if connection.poll() or not process.is_alive():
+                                completed_id = participant_id
+                                break
+                        if completed_id is None:
+                            time.sleep(0.05)
+                            continue
+                        process, connection, plan = running.pop(completed_id)
+                        try:
+                            if connection.poll():
+                                result = connection.recv()
+                            else:
+                                result = BuildResult(
+                                    plan.participant_id, stage_root / plan.participant_id, {},
+                                    error=f"Worker exited with code {process.exitcode} without returning a result",
+                                )
+                        except EOFError:
+                            result = BuildResult(
+                                plan.participant_id, stage_root / plan.participant_id, {},
+                                error=f"Worker pipe closed unexpectedly (exit code {process.exitcode})",
+                            )
+                        finally:
+                            connection.close()
+                            process.join(timeout=5)
+                            if process.is_alive():
+                                process.kill()
+                                process.join()
+                        progress.update(1)
+
+                        if result.error:
+                            summary.failed += 1
+                            summary.failures[plan.participant_id] = result.error
+                            state.mark_failed(plan.participant_id, result.error)
+                            shutil.rmtree(result.stage_dir, ignore_errors=True)
+                            if fail_fast:
+                                raise ParticipantProcessingError(
+                                    f"{plan.participant_id}: {result.error}\n{result.traceback_text or ''}"
+                                )
+                            start_more()
+                            continue
+
+                        final_dir = output_root / plan.participant_id
+                        backup_dir = backup_root / plan.participant_id
+                        try:
+                            if result.empty:
+                                remove_output_then_commit(
+                                    final_dir, backup_dir,
+                                    lambda: state.commit_participant(
+                                        plan.participant_id, PARSER_VERSION, REGISTRY_VERSION,
+                                        source_signature(plan.effective_sources),
+                                        plan.effective_sources, [], status="complete_empty",
+                                    ),
+                                )
+                                shutil.rmtree(result.stage_dir, ignore_errors=True)
+                                summary.empty += 1
+                            else:
+                                outputs = validate_participant_stage(
+                                    result.stage_dir, plan.participant_id, result.output_infos
+                                )
+                                swap = DirectorySwap(final_dir, result.stage_dir, backup_dir)
+                                swap.apply()
+                                try:
+                                    state.commit_participant(
+                                        plan.participant_id, PARSER_VERSION, REGISTRY_VERSION,
+                                        source_signature(plan.effective_sources),
+                                        plan.effective_sources, outputs,
+                                    )
+                                except Exception:
+                                    swap.rollback()
+                                    raise
+                                swap.finalize()
+                                summary.committed += 1
+                            if plan.action == PlanAction.INCREMENTAL:
+                                summary.incremental += 1
+                            else:
+                                summary.rebuilt += 1
+                        except Exception as exc:
+                            summary.failed += 1
+                            summary.failures[plan.participant_id] = str(exc)
+                            state.mark_failed(plan.participant_id, str(exc))
+                            shutil.rmtree(result.stage_dir, ignore_errors=True)
+                            if fail_fast:
+                                raise
+                        start_more()
+                finally:
+                    for process, connection, _ in running.values():
+                        connection.close()
+                        if process.is_alive():
+                            process.terminate()
+                        process.join(timeout=5)
+
+            status = "complete" if not summary.failed and not summary.blocked else "complete_with_errors"
+            state.finish_run(run_id, status, summary.as_dict())
+        except Exception:
+            state.finish_run(run_id, "failed", summary.as_dict())
+            raise
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            try:
+                (output_root / ".wearable_tmp").rmdir()
+            except OSError:
+                pass
+    return summary
