@@ -33,7 +33,13 @@ INTERNAL_OUTPUT_COLUMNS = {
     "updated_at_raw", "interval_group_id", "quality_flags_raw", "_from_existing_output", "unit", "units",
 }
 
-NOISY_QUALITY_FLAGS = {
+# ``quality_flags`` in the compact participant-feature files is intentionally a sparse collection of retained,
+# non-redundant warnings.  These conditions are deterministic from other persisted columns and therefore are
+# not repeated in every affected row.  An empty ``quality_flags`` cell consequently means "no retained flags",
+# not "the row passed an exhaustive QC procedure".
+QUALITY_FLAGS_SCOPE = "retained_nonrecomputable_flags_only"
+
+RECOMPUTABLE_QUALITY_FLAGS = {
     "interval_feature_has_zero_duration", "point_feature_has_nonzero_duration",
     "outer_bucket_differs_from_local_start_date", "unit_inferred_not_explicit",
 }
@@ -650,7 +656,7 @@ def compact_output_row(row: dict[str, Any], spec: FeatureSpec) -> dict[str, Any]
 
     # Remove flags that describe normal geometry or duplicate information that is already captured by explicit
     # unit-status columns.
-    remaining_flags = flags_from(compact.get("quality_flags")) - NOISY_QUALITY_FLAGS
+    remaining_flags = flags_from(compact.get("quality_flags")) - RECOMPUTABLE_QUALITY_FLAGS
     compact["quality_flags"] = flags_text(remaining_flags)
 
     # Keep raw and canonical values together only when a real conversion has occurred. Identity conversions
@@ -683,15 +689,6 @@ def compact_output_row(row: dict[str, Any], spec: FeatureSpec) -> dict[str, Any]
     if spec.family != FeatureFamily.DAILY_SUMMARY:
         compact["payload_index"] = None
 
-    # Audit counters are exceptional information. Leave ordinary rows blank when the surrounding file needs the
-    # column because another row contains a duplicate or revision.
-    if integer(compact.get("occurrence_count"), 1) == 1:
-        compact["occurrence_count"] = None
-    if integer(compact.get("duplicate_count"), 0) == 0:
-        compact["duplicate_count"] = None
-    if integer(compact.get("revision_count"), 0) == 0:
-        compact["revision_count"] = None
-
     for name in INTERNAL_OUTPUT_COLUMNS:
         compact.pop(name, None)
     return compact
@@ -714,15 +711,26 @@ def output_dataframe(rows: list[dict[str, Any]], spec: FeatureSpec) -> pd.DataFr
     if frame.empty:
         return frame
 
-    # Columns that are completely absent or consist only of default audit values are not useful in
-    # participant-feature files.
+    # Audit columns are omitted when every row has its default.  When an audit column is needed by at least
+    # one exceptional row, retain a semantically complete integer column for every row.  In particular, blank
+    # ``occurrence_count`` cannot mean zero: its default is one source occurrence.  Explicit integer
+    # normalization also prevents pandas from serializing surviving counts as floating-point values such as ``2.0``.
     for column, default in (
         ("occurrence_count", 1),
         ("duplicate_count", 0),
         ("revision_count", 0),
     ):
-        if column in frame.columns and all(integer(value, default) == default for value in frame[column].tolist()):
+        if column not in frame.columns:
+            continue
+        normalized = pd.Series(
+            [integer(value, default) for value in frame[column].tolist()],
+            index=frame.index,
+            dtype="int64",
+        )
+        if bool((normalized == default).all()):
             frame = frame.drop(columns=[column])
+        else:
+            frame[column] = normalized
 
     empty_columns = [
         column for column in frame.columns

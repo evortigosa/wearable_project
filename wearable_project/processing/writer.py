@@ -65,7 +65,41 @@ def safe_feature_filename(feature: str) -> str:
     return f"{stem or 'feature'}.csv"
 
 
+def validate_audit_count_columns(dataframe: Any, destination: Path) -> None:
+    """
+    Reject ambiguous or noninteger reconciliation counters before CSV IO. Audit columns are optional at the
+    file level.  Once present, however, every row must carry its real integer value: occurrence defaults to one,
+    while duplicate and revision counts default to zero.  This prevents blank cells from silently changing the
+    meaning of sums and prevents pandas from promoting sparse counters to floating-point CSV values.
+    """
+
+    limits = {
+        "occurrence_count": 1,
+        "duplicate_count": 0,
+        "revision_count": 0,
+    }
+    for column, minimum in limits.items():
+        if column not in dataframe.columns:
+            continue
+        series = dataframe[column]
+        if bool(series.isna().any()):
+            raise OutputValidationError(
+                f"{destination} contains blank values in {column}; "
+                "audit counts must be explicit when the column is present"
+            )
+        if getattr(series.dtype, "kind", None) not in {"i", "u"}:
+            raise OutputValidationError(
+                f"{destination} contains non-integer {column} values "
+                f"(dtype={series.dtype})"
+            )
+        if bool((series < minimum).any()):
+            raise OutputValidationError(
+                f"{destination} contains {column} below its minimum {minimum}"
+            )
+
+
 def atomic_write_csv(dataframe: Any, destination: Path) -> None:
+    validate_audit_count_columns(dataframe, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     os.close(fd)

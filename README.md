@@ -165,6 +165,56 @@ Frequently used metadata is flattened into columns. The `metadata` column,
 when present, contains only normalized residual keys not already represented
 elsewhere; a duplicate raw metadata dictionary is not written.
 
+### Audit count columns
+
+The reconciliation counters are optional at the file level:
+
+```text
+occurrence_count
+duplicate_count
+revision_count
+```
+
+If every row in a participant-feature file has the ordinary defaults
+`(1, 0, 0)`, these columns are omitted. If at least one row represents a
+duplicate or revision, the needed columns are retained and **every row has an
+explicit integer value**:
+
+```text
+occurrence_count default = 1
+duplicate_count  default = 0
+revision_count   default = 0
+```
+
+Consequently, `occurrence_count.sum()` is the number of represented source
+occurrences for that file, while the duplicate and revision sums recover the
+corresponding reconciled occurrence counts. Blank cells never stand for an
+implicit count.
+
+### `quality_flags` scope
+
+`quality_flags` is deliberately a sparse column of retained, non-redundant
+warnings. It is **not an exhaustive QC record**. An absent column or empty
+cell means only that the row has no retained flags; it does not certify that
+every possible structural or clinical check passed.
+
+The native compact writer intentionally omits deterministic conditions that
+can be reconstructed from other persisted fields, including:
+
+```text
+interval_feature_has_zero_duration
+point_feature_has_nonzero_duration
+outer_bucket_differs_from_local_start_date
+unit_inferred_not_explicit
+```
+
+For example, zero/nonzero duration is recoverable from `start_date` and
+`end_date`, local-date displacement is recoverable from UTC timestamps plus
+`utc_offset_minutes` or `time_zone`, and inferred-unit status is represented
+by the unit columns. Milestone 2 will add a reviewed feature-specific quality
+status; the milestone-1 `quality_flags` column should not be used as a single
+boolean definition of a clean row.
+
 ## Deduplication and revision policy
 
 The cleaner separates:
@@ -204,7 +254,7 @@ A participant is built under `.wearable_tmp`, validated, and swapped into place
 as one directory. The state database is committed only after the new directory
 is in place. A failed worker cannot partially append to a live feature CSV.
 
-Version 0.1.2 adds its telemetry through the dedicated module:
+Telemetry through the dedicated module:
 
 ```text
 wearable_project/processing/tracker.py
@@ -340,9 +390,7 @@ The detailed records are stored in four additive tables:
 | `run_diagnostics`  | Exceptional row/schema/parse diagnostics only              |
 
 The pre-existing `runs`, `participants`, `source_files`, and `feature_outputs`
-tables remain the authoritative incremental state. Existing v0.1.1 databases
-are migrated in place; participant feature files are not rewritten merely by
-installing v0.1.2.
+tables remain the authoritative incremental state.
 
 Because telemetry did not exist during earlier runs, upgrading an existing
 v0.1.1 output and immediately receiving a no-op skip can only report the

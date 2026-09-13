@@ -1,14 +1,12 @@
-"""Run-scoped processing telemetry and reports.
-
-This module is deliberately operational: it tracks what the native parser did,
-how much work it performed, which exceptional schemas it encountered, and how
-the single-node worker configuration behaved. It does not compute cohort
-statistics from physiological values and does not modify participant feature
-CSVs.
+"""
+Wearable Data Processing and Modeling project
+Run-scoped processing telemetry and reports.This module is deliberately operational: it tracks what the native
+parser did, how much work it performed, which exceptional schemas it encountered, and how the single-node worker
+configuration behaved. It does not compute cohort statistics from physiological values and does not modify
+participant feature CSVs.
 """
 
 from __future__ import annotations
-
 import json
 import math
 import os
@@ -27,12 +25,11 @@ def now_utc() -> str:
 
 
 def total_system_memory_bytes() -> int | None:
-    """Return the effective memory ceiling using standard Linux interfaces.
-
-    On a bare-metal machine this is physical RAM. Inside a container or
-    systemd/cgroup slice it is the smaller of physical RAM and the active
-    cgroup memory limit. The worker-count recommendation must not use host RAM
-    when the process is operating under a tighter memory ceiling.
+    """
+    Return the effective memory ceiling using standard Linux interfaces. On a bare-metal machine this is physical
+    RAM. Inside a container or systemd/cgroup slice it is the smaller of physical RAM and the active cgroup memory
+    limit. The worker-count recommendation must not use host RAM when the process is operating under a tighter
+    memory ceiling.
     """
     candidates: list[int] = []
     try:
@@ -71,11 +68,10 @@ def total_system_memory_bytes() -> int | None:
 
 
 def peak_rss_bytes() -> int | None:
-    """Return the current process high-water RSS where supported.
-
-    Linux and most BSD systems report ``ru_maxrss`` in KiB; macOS reports
-    bytes. A worker handles exactly one participant and then exits, so this
-    process high-water mark is also the participant worker peak.
+    """
+    Return the current process high-water RSS where supported. Linux and most BSD systems report ``ru_maxrss``
+    in KiB; macOS reports bytes. A worker handles exactly one participant and then exits, so this process
+    high-water mark is also the participant worker peak.
     """
     try:
         import resource
@@ -120,12 +116,10 @@ def _dict_rows(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
 
 
 class ProcessingTracker:
-    """Persist run activity without changing participant feature outputs.
-
-    The parent process is the only writer. Worker processes return compact
-    counters through their existing result pipe; this class stores those
-    counters in the same hidden SQLite state file already used for incremental
-    correctness.
+    """
+    Persist run activity without changing participant feature outputs. The parent process is the only writer.
+    Worker processes return compact counters through their existing result pipe; this class stores those
+    counters in the same hidden SQLite state file already used for incremental correctness.
     """
 
     SCHEMA_WARNING_STAGES = {"unknown-feature", "schema-warning"}
@@ -240,16 +234,10 @@ class ProcessingTracker:
         )
         self.connection.commit()
 
+
     def begin_run(
-        self,
-        run_id: str,
-        *,
-        mode: str,
-        snapshot_policy: str,
-        row_error_policy: str,
-        workers_requested: int,
-        workers_effective: int,
-        max_in_flight: int,
+        self, run_id: str, *, mode: str, snapshot_policy: str, row_error_policy: str, workers_requested: int,
+        workers_effective: int, max_in_flight: int,
     ) -> None:
         self.connection.execute(
             """
@@ -267,17 +255,10 @@ class ProcessingTracker:
         )
         self.connection.commit()
 
+
     def record_plan(
-        self,
-        run_id: str,
-        participant_id: str,
-        *,
-        action: str,
-        reason: str,
-        final_status: str,
-        source_files_discovered: int,
-        source_files_planned: int,
-        source_bytes_discovered: int,
+        self, run_id: str, participant_id: str, *, action: str, reason: str, final_status: str,
+        source_files_discovered: int, source_files_planned: int, source_bytes_discovered: int,
     ) -> None:
         self.connection.execute(
             """
@@ -300,6 +281,7 @@ class ProcessingTracker:
         )
         self.connection.commit()
 
+
     def mark_participant_started(self, run_id: str, participant_id: str) -> None:
         self.connection.execute(
             """
@@ -311,17 +293,10 @@ class ProcessingTracker:
         )
         self.connection.commit()
 
+
     def record_participant_result(
-        self,
-        run_id: str,
-        participant_id: str,
-        *,
-        final_status: str,
-        result: Any,
-        worker_exit_code: int | None,
-        committed_output_size_bytes: int,
-        error_message: str | None = None,
-        traceback_text: str | None = None,
+        self, run_id: str, participant_id: str, *, final_status: str, result: Any, worker_exit_code: int | None,
+        committed_output_size_bytes: int, error_message: str | None = None, traceback_text: str | None = None,
     ) -> None:
         diagnostics = list(getattr(result, "diagnostics", []) or [])
         unknown_features = sorted(set(getattr(result, "unknown_features", []) or []))
@@ -429,6 +404,7 @@ class ProcessingTracker:
             )
         self.connection.commit()
 
+
     def finish_run(self, run_id: str, *, status: str, wall_clock_seconds: float) -> None:
         finished = now_utc()
         self.connection.execute(
@@ -451,11 +427,13 @@ class ProcessingTracker:
         )
         self.connection.commit()
 
+
     def latest_run_id(self) -> str | None:
         row = self.connection.execute(
             "SELECT run_id FROM run_tracking ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         return None if row is None else str(row[0])
+
 
     def build_report(
         self, run_id: str, *, include_details: bool = False
@@ -578,13 +556,11 @@ class ProcessingTracker:
         memories = [float(row["peak_rss_bytes"]) for row in participant_rows if row["peak_rss_bytes"] is not None]
         longest = max(
             (row for row in participant_rows if row["runtime_seconds"] is not None),
-            key=lambda row: float(row["runtime_seconds"]),
-            default=None,
+            key=lambda row: float(row["runtime_seconds"]), default=None,
         )
         highest_memory = max(
             (row for row in participant_rows if row["peak_rss_bytes"] is not None),
-            key=lambda row: int(row["peak_rss_bytes"]),
-            default=None,
+            key=lambda row: int(row["peak_rss_bytes"]), default=None,
         )
         peak_memory = int(max(memories)) if memories else None
         total_memory = tracking.get("total_memory_bytes")
