@@ -27,8 +27,7 @@ from wearable_project.processing.registry import REGISTRY_VERSION, get_feature_s
 from wearable_project.processing.tracker import peak_rss_bytes
 from wearable_project.processing.writer import (
     DirectorySwap, FeatureOutputInfo, StateDatabase, atomic_write_csv, drop_file_cache, existing_output_is_usable,
-    load_csv_records, prepare_stage, safe_feature_filename, source_signature,
-    validate_participant_stage,
+    load_csv_records, prepare_stage, safe_feature_filename, source_signature, validate_participant_stage,
 )
 
 

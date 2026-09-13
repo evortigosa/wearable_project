@@ -108,12 +108,31 @@ def _load_literal(text: str) -> Any:
         raise PayloadDecodeError(f"JSON error: {json_error}; Python-literal error: {exc}") from exc
 
 
+def _decode_structured_quote_envelope(text: str) -> Any | None:
+    """
+    Decode a visibly quoted structured literal without unescaping it first. A small legacy subset is serialized
+    as a JSON string whose contents are a Python-literal list or dictionary. If JSON decodes that wrapper first,
+    an escaped ``\n`` inside a single-quoted metadata string becomes a literal newline and the subsequent
+    Python-literal pass fails with an unterminated string. Returning ``None`` means the ordinary layered
+    decoder should continue unchanged.
+    """
+    if len(text) < 2 or text[0] != text[-1] or text[0] not in {"\"", "'"}:
+        return None
+    inner = text[1:-1].strip()
+    if len(inner) < 2 or (inner[0], inner[-1]) not in {("[", "]"), ("{", "}"), ("(", ")")}:
+        return None
+    try:
+        return _load_literal(inner)
+    except PayloadDecodeError:
+        return None
+
+
 def decode_payload(value: Any, max_layers: int = 8) -> Any:
     """
-    Decode repeated JSON/Python-literal string layers safely. Some exported cells contain literal outer
-    quote characters while an inner user-entered string contains unescaped double quotes. In that exact shape,
-    stripping one visibly paired outer quote reproduces parse_v4's successful `data[1:-1]` behavior without
-    applying it unconditionally.
+    Decode repeated JSON/Python-literal string layers safely. Some exported cells contain literal outer quote
+    characters around a Python-literal payload.  Decode a demonstrably structured quote envelope before
+    generic JSON unescaping, then retain the ordinary iterative JSON / ``ast.literal_eval`` fallbacks for
+    every other representation.
     """
     if value is None or (isinstance(value, float) and math.isnan(value)):
         raise PayloadDecodeError("Payload is null")
@@ -124,13 +143,18 @@ def decode_payload(value: Any, max_layers: int = 8) -> Any:
         text = current.strip()
         if not text:
             raise PayloadDecodeError("Payload is empty")
-        try:
-            decoded = _load_literal(text)
-        except PayloadDecodeError:
-            if len(text) >= 2 and text[0] == text[-1] and text[0] in {"\"", "'"}:
-                current = text[1:-1]
-                continue
-            raise
+
+        envelope = _decode_structured_quote_envelope(text)
+        if envelope is not None:
+            decoded = envelope
+        else:
+            try:
+                decoded = _load_literal(text)
+            except PayloadDecodeError:
+                if len(text) >= 2 and text[0] == text[-1] and text[0] in {"\"", "'"}:
+                    current = text[1:-1]
+                    continue
+                raise
         if decoded == current:
             break
         current = decoded

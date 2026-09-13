@@ -16,7 +16,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-
 from wearable_project.processing.registry import is_registered_feature
 
 

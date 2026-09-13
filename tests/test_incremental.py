@@ -42,3 +42,19 @@ def test_recovered_historical_month_rebuilds(tmp_path):
 
 def test_missing_month_blocks_strict_snapshot(tmp_path):
     assert plan(tmp_path, [source("2025-01", "b")], stored({"2024-12": "a"})).action == PlanAction.BLOCK
+
+
+def test_older_audit_count_contract_forces_rebuild(tmp_path):
+    state = stored({"2024-12": "a"})
+    state.parser_version = "native-parser-0.1.1"
+    result = plan(tmp_path, [source("2024-12", "a")], state)
+    assert result.action == PlanAction.REBUILD
+    assert "parser or feature registry version changed" in result.reason
+
+
+def test_failed_v013_participant_rebuilds_under_v014_compatibility_patch(tmp_path):
+    state = stored({"2024-12": "a"})
+    state.status = "failed"
+    result = plan(tmp_path, [source("2024-12", "a")], state)
+    assert result.action == PlanAction.REBUILD
+    assert "previous state" in result.reason
