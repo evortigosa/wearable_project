@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 from wearable_project.exceptions import DuplicateMonthError, ParticipantProcessingError, PayloadDecodeError
+from wearable_project.processing.registry import get_feature_spec, is_registered_feature
 
 
 APPLE_SOURCE = "applehealthkit"
@@ -50,7 +51,11 @@ class ParseResult:
     diagnostics: list[ParseDiagnostic] = field(default_factory=list)
     outer_rows_seen: int = 0
     apple_rows_seen: int = 0
+    payloads_decoded: int = 0
+    payload_decode_failures: int = 0
     payload_items_seen: int = 0
+    unknown_features: set[str] = field(default_factory=set)
+    schema_warning_features: set[str] = field(default_factory=set)
 
 
 def canonical_month_from_name(name: str) -> str | None:
@@ -264,9 +269,31 @@ def build_event_record(
     return event
 
 
-def parse_month_file(source: SourceFile, participant_id: str, *, row_error_policy: str = "fail-participant") -> ParseResult:
+def parse_month_file(
+    source: SourceFile, participant_id: str, *, row_error_policy: str = "fail-participant",
+    result: ParseResult | None = None,
+) -> ParseResult:
+    """
+    Parse one monthly file while retaining partial counters on failure. ``result`` is optional for ordinary
+    callers. Participant workers pass an empty result object so counters and diagnostics remain available even
+    when the strict row policy aborts partway through a monthly file.
+    """
     _csv_field_limit()
-    result = ParseResult(records_by_feature=defaultdict(list))
+    if result is None:
+        result = ParseResult(records_by_feature=defaultdict(list))
+    elif not isinstance(result.records_by_feature, defaultdict):
+        result.records_by_feature = defaultdict(list, result.records_by_feature)
+    seen_diagnostics: set[tuple[str | None, str, str]] = set()
+
+    def add_diagnostic(
+        row_number: int | None, feature: str | None, stage: str, message: str, *, once: bool = False,
+    ) -> None:
+        key = (feature, stage, message)
+        if once and key in seen_diagnostics:
+            return
+        seen_diagnostics.add(key)
+        result.diagnostics.append(ParseDiagnostic(source.path.name, row_number, feature, stage, message))
+
     try:
         handle = source.path.open("r", encoding="utf-8-sig", newline="")
     except OSError as exc:
@@ -283,27 +310,63 @@ def parse_month_file(source: SourceFile, participant_id: str, *, row_error_polic
             result.apple_rows_seen += 1
             feature = str(outer.get("name", "")).strip()
             if not feature:
-                diagnostic = ParseDiagnostic(source.path.name, row_number, None, "outer-row", "Missing feature name")
-                result.diagnostics.append(diagnostic)
+                add_diagnostic(row_number, None, "outer-row", "Missing feature name")
                 if row_error_policy == "fail-participant":
-                    raise ParticipantProcessingError(str(diagnostic))
+                    raise ParticipantProcessingError(
+                        f"{participant_id}/{source.path.name}:{row_number} Missing feature name"
+                    )
                 continue
+            if not is_registered_feature(feature):
+                result.unknown_features.add(feature)
+                add_diagnostic(
+                    row_number, feature, "unknown-feature",
+                    "Feature is not explicitly registered; generic native policy was used", once=True,
+                )
             outer_participant = str(outer.get("participant_id", "")).strip()
             if outer_participant and outer_participant != participant_id:
                 message = f"Outer participant_id {outer_participant!r} differs from folder {participant_id!r}"
-                result.diagnostics.append(ParseDiagnostic(source.path.name, row_number, feature, "outer-row", message))
+                add_diagnostic(row_number, feature, "outer-row", message)
                 if row_error_policy == "fail-participant":
                     raise ParticipantProcessingError(message)
                 continue
             try:
                 payload = decode_payload(outer.get("data"))
+                result.payloads_decoded += 1
                 items = list(iter_payload_items(payload))
             except Exception as exc:
-                result.diagnostics.append(ParseDiagnostic(source.path.name, row_number, feature, "payload-decode", str(exc)))
+                result.payload_decode_failures += 1
+                add_diagnostic(row_number, feature, "payload-decode", str(exc))
                 if row_error_policy == "fail-participant":
-                    raise ParticipantProcessingError(f"{participant_id}/{source.path.name}:{row_number} {feature}: {exc}") from exc
+                    raise ParticipantProcessingError(
+                        f"{participant_id}/{source.path.name}:{row_number} {feature}: {exc}"
+                    ) from exc
                 continue
+            if not items:
+                result.schema_warning_features.add(feature)
+                add_diagnostic(
+                    row_number, feature, "schema-warning", "Decoded payload contains no items",
+                    once=True,
+                )
             for payload_index, item in enumerate(items):
+                shape_warning = item.get("_payload_shape_warning")
+                if shape_warning:
+                    result.schema_warning_features.add(feature)
+                    add_diagnostic(
+                        row_number, feature, "schema-warning", str(shape_warning), once=True,
+                    )
+                if is_registered_feature(feature):
+                    spec = get_feature_spec(feature, item.keys())
+                    missing_measurements = [
+                        column for column in spec.measurement_columns if column not in item
+                    ]
+                    if missing_measurements:
+                        result.schema_warning_features.add(feature)
+                        add_diagnostic(
+                            row_number, feature, "schema-warning",
+                            "Missing expected measurement columns "
+                            f"{missing_measurements}; observed keys={sorted(str(key) for key in item)}",
+                            once=True,
+                        )
                 result.records_by_feature[feature].append(
                     build_event_record(item, outer, participant_id, feature, source, row_number, payload_index)
                 )
@@ -317,7 +380,11 @@ def merge_parse_results(results: list[ParseResult]) -> ParseResult:
     for result in results:
         merged.outer_rows_seen += result.outer_rows_seen
         merged.apple_rows_seen += result.apple_rows_seen
+        merged.payloads_decoded += result.payloads_decoded
+        merged.payload_decode_failures += result.payload_decode_failures
         merged.payload_items_seen += result.payload_items_seen
+        merged.unknown_features.update(result.unknown_features)
+        merged.schema_warning_features.update(result.schema_warning_features)
         merged.diagnostics.extend(result.diagnostics)
         for feature, records in result.records_by_feature.items():
             merged.records_by_feature[feature].extend(records)

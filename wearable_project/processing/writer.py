@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from wearable_project.exceptions import OutputValidationError
 from wearable_project.processing.parser import SourceFile, sha256_file
 from wearable_project.processing.registry import FeatureFamily, get_feature_spec
+from wearable_project.processing.tracker import ProcessingTracker
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class FeatureOutputInfo:
     row_count: int
     size_bytes: int
     sha256: str
+    represented_occurrences: int | None = None
 
 
 @dataclass(slots=True)
@@ -139,7 +141,7 @@ def validate_feature_file(path: Path, participant_id: str, expected_feature: str
         raise OutputValidationError(f"Could not parse {path}: {exc}") from exc
     if row_count == 0:
         raise OutputValidationError(f"{path} has no data rows")
-    return FeatureOutputInfo(expected_feature, path.name, row_count, path.stat().st_size, sha256_file(path))
+    return FeatureOutputInfo(expected_feature, path.name, row_count, path.stat().st_size, sha256_file(path), row_count)
 
 
 def validate_participant_stage(
@@ -231,10 +233,19 @@ class StateDatabase:
             CREATE TABLE IF NOT EXISTS feature_outputs(
               participant_id TEXT NOT NULL, feature TEXT NOT NULL, filename TEXT NOT NULL,
               row_count INTEGER NOT NULL, size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL,
+              represented_occurrences INTEGER,
               PRIMARY KEY(participant_id, feature)
             );
             """
         )
+        feature_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(feature_outputs)")
+        }
+        if "represented_occurrences" not in feature_columns:
+            self.connection.execute(
+                "ALTER TABLE feature_outputs ADD COLUMN represented_occurrences INTEGER"
+            )
+        self.tracker = ProcessingTracker(self.connection)
         self.connection.commit()
 
 
@@ -275,8 +286,13 @@ class StateDatabase:
             for item in self.connection.execute("SELECT * FROM source_files WHERE participant_id=?", (participant_id,))
         }
         outputs = {
-            item["feature"]: FeatureOutputInfo(item["feature"], item["filename"], item["row_count"], item["size_bytes"], item["sha256"])
-            for item in self.connection.execute("SELECT * FROM feature_outputs WHERE participant_id=?", (participant_id,))
+            item["feature"]: FeatureOutputInfo(
+                item["feature"], item["filename"], item["row_count"], item["size_bytes"],
+                item["sha256"], item["represented_occurrences"],
+            )
+            for item in self.connection.execute(
+                "SELECT * FROM feature_outputs WHERE participant_id=?", (participant_id,)
+            )
         }
         return StoredParticipantState(row["participant_id"], row["status"], row["parser_version"], row["registry_version"], row["source_signature"], row["last_error"], sources, outputs)
 
@@ -323,8 +339,16 @@ class StateDatabase:
             )
             self.connection.execute("DELETE FROM feature_outputs WHERE participant_id=?", (participant_id,))
             self.connection.executemany(
-                "INSERT INTO feature_outputs VALUES(?,?,?,?,?,?)",
-                [(participant_id, item.feature, item.filename, item.row_count, item.size_bytes, item.sha256) for item in outputs],
+                """INSERT INTO feature_outputs(
+                     participant_id,feature,filename,row_count,size_bytes,sha256,represented_occurrences
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                [
+                    (
+                        participant_id, item.feature, item.filename, item.row_count,
+                        item.size_bytes, item.sha256, item.represented_occurrences,
+                    )
+                    for item in outputs
+                ],
             )
 
 

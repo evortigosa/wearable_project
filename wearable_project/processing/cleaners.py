@@ -60,6 +60,7 @@ class CleanResult:
     dataframe: pd.DataFrame
     input_rows: int
     output_rows: int
+    represented_occurrences: int
     exact_duplicates_removed: int
     revisions_resolved: int
     unresolved_conflicts: int
@@ -753,7 +754,7 @@ def output_dataframe(rows: list[dict[str, Any]], spec: FeatureSpec) -> pd.DataFr
 def clean_feature(feature: str, raw_rows: list[dict[str, Any]]) -> CleanResult:
     input_rows = len(raw_rows)
     if not raw_rows:
-        return CleanResult(pd.DataFrame(), 0, 0, 0, 0, 0, 0)
+        return CleanResult(pd.DataFrame(), 0, 0, 0, 0, 0, 0, 0)
     all_columns = {key for row in raw_rows for key in row}
     spec = get_feature_spec(feature, all_columns)
     rows = [standardize_record(row, spec) for row in raw_rows]
@@ -764,5 +765,10 @@ def clean_feature(feature: str, raw_rows: list[dict[str, Any]]) -> CleanResult:
     if any(value is None for value in event_ids) or len(set(event_ids)) != len(event_ids):
         raise ValueError(f"Cleaner produced missing or duplicate internal event IDs for {feature}")
     invalid = sum("timestamp_parse_failed" in flags_from(row.get("quality_flags")) or "missing_event_timestamp" in flags_from(row.get("quality_flags")) for row in rows)
+    represented_occurrences = sum(max(1, integer(row.get("occurrence_count"), 1)) for row in rows)
     frame = output_dataframe(rows, spec)
-    return CleanResult(frame, input_rows, len(frame), record_duplicates + content_duplicates, record_revisions + interval_revisions, unresolved, invalid)
+
+    return CleanResult(
+        frame, input_rows, len(frame), represented_occurrences, record_duplicates + content_duplicates,
+        record_revisions + interval_revisions, unresolved, invalid,
+    )

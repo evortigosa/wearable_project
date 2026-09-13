@@ -7,10 +7,12 @@ CLI for native participant-feature processing.
 from __future__ import annotations
 import argparse
 import json
+import sys
 from pathlib import Path
 from wearable_project import __version__
 from wearable_project.processing.pipeline import process_dataset
 from wearable_project.processing.registry import REGISTRY_VERSION, known_features
+from wearable_project.processing.tracker import format_processing_report, load_processing_report
 
 
 def participant_selection(path: Path | None) -> set[str] | None:
@@ -46,7 +48,18 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--verify-existing-hashes", action="store_true")
     process.add_argument("--fail-fast", action="store_true")
     process.add_argument("--state-file", type=Path, help="Defaults to OUTPUT/.wearable_state.sqlite")
-    process.add_argument("--json-summary", action="store_true")
+    process.add_argument("--json-summary", action="store_true", help="Print the complete processing report as JSON")
+
+    report = commands.add_parser("report", help="Read a persisted processing report")
+    location = report.add_mutually_exclusive_group(required=True)
+    location.add_argument("--output", type=Path, help="Cleaned output root containing .wearable_state.sqlite")
+    location.add_argument("--state-file", type=Path, help="Explicit processing-state SQLite file")
+    report.add_argument("--run-id", help="Specific run ID; defaults to the latest tracked run")
+    report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    report.add_argument(
+        "--include-details", action="store_true",
+        help="Include participant, feature, and diagnostic rows in JSON output",
+    )
 
     registry = commands.add_parser("registry", help="List explicitly registered feature policies")
     registry.add_argument("--json", action="store_true")
@@ -64,6 +77,31 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(payload["features"]))
         return 0
 
+    if args.command == "report":
+        state_file = args.state_file or (args.output.expanduser().resolve() / ".wearable_state.sqlite")
+        try:
+            report_payload = load_processing_report(
+                state_file, args.run_id, include_details=args.include_details
+            )
+        except (FileNotFoundError, KeyError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(report_payload, indent=2, sort_keys=True))
+        else:
+            print(format_processing_report(report_payload))
+            for participant, reason in sorted(
+                report_payload["failure_behavior"]["blocked_participants"].items()
+            ):
+                print(f"BLOCKED {participant}: {reason}")
+            for participant, reason in sorted(
+                report_payload["failure_behavior"]["failed_participants"].items()
+            ):
+                print(f"FAILED {participant}: {reason}")
+        return 1 if (
+            report_payload["participants"]["failed"] or report_payload["participants"]["blocked"]
+        ) else 0
+
     summary = process_dataset(
         args.input, args.output, workers=args.workers, max_in_flight=args.max_in_flight,
         mode=args.mode, snapshot_policy=args.snapshot_policy,
@@ -75,12 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json_summary:
         print(json.dumps(summary.as_dict(), indent=2, sort_keys=True))
     else:
-        print(
-            f"discovered={summary.discovered} committed={summary.committed} "
-            f"incremental={summary.incremental} rebuilt={summary.rebuilt} "
-            f"skipped={summary.skipped} empty={summary.empty} "
-            f"blocked={summary.blocked} failed={summary.failed}"
-        )
+        print(format_processing_report(summary.as_dict()))
         for participant, reason in sorted(summary.blocks.items()):
             print(f"BLOCKED {participant}: {reason}")
         for participant, reason in sorted(summary.failures.items()):

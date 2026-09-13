@@ -19,8 +19,12 @@ from typing import Any, Iterable
 from tqdm import tqdm
 from wearable_project import __version__
 from wearable_project.exceptions import InputLayoutError, ParticipantProcessingError
-from wearable_project.processing.parser import SourceFile, canonical_month_from_name, discover_month_files, merge_parse_results, parse_month_file, sha256_file
-from wearable_project.processing.registry import REGISTRY_VERSION
+from wearable_project.processing.parser import (
+    ParseResult, SourceFile, canonical_month_from_name, discover_month_files,
+    merge_parse_results, parse_month_file, sha256_file,
+)
+from wearable_project.processing.registry import REGISTRY_VERSION, get_feature_spec, is_registered_feature
+from wearable_project.processing.tracker import peak_rss_bytes
 from wearable_project.processing.writer import (
     DirectorySwap, FeatureOutputInfo, StateDatabase, atomic_write_csv, drop_file_cache, existing_output_is_usable,
     load_csv_records, prepare_stage, safe_feature_filename, source_signature,
@@ -66,11 +70,20 @@ class BuildResult:
     participant_id: str
     stage_dir: Path
     feature_stats: dict[str, dict[str, Any]]
+    source_files_read: int = 0
+    source_files_completed: int = 0
+    source_bytes_read: int = 0
     outer_rows: int = 0
     apple_rows: int = 0
+    payloads_decoded: int = 0
+    payload_decode_failures: int = 0
     payload_items: int = 0
+    unknown_features: list[str] = field(default_factory=list)
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
     output_infos: list[FeatureOutputInfo] = field(default_factory=list)
+    runtime_seconds: float | None = None
+    peak_rss_bytes: int | None = None
+    worker_exit_code: int | None = None
     empty: bool = False
     error: str | None = None
     traceback_text: str | None = None
@@ -89,8 +102,9 @@ class RunSummary:
     failed: int = 0
     blocks: dict[str, str] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
+    report: dict[str, Any] | None = None
 
-    def as_dict(self) -> dict[str, Any]:
+    def basic_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id, "discovered": self.discovered,
             "skipped": self.skipped, "incremental": self.incremental,
@@ -98,6 +112,9 @@ class RunSummary:
             "empty": self.empty, "blocked": self.blocked, "failed": self.failed,
             "blocks": self.blocks, "failures": self.failures,
         }
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.report if self.report is not None else self.basic_dict()
 
 
 def contains_month_file(path: Path) -> bool:
@@ -196,28 +213,47 @@ def feature_filename_map(features: Iterable[str]) -> dict[str, str]:
 
 
 def build_participant(task: ParticipantTask) -> BuildResult:
+    started = time.perf_counter()
     gc_was_enabled = gc.isenabled()
     # A worker processes one participant and exits. Parsed event dictionaries are overwhelmingly acyclic; disabling
     # cyclic GC prevents long full-heap scans on dense HeartRate/CGM participants while reference counting still
     # releases each feature after it is written.
     gc.disable()
+    parse_results: list[ParseResult] = []
+    parsed: ParseResult | None = None
+    stats: dict[str, dict[str, Any]] = {}
+    manifest: dict[str, FeatureOutputInfo] = {}
+    source_files_read = 0
+    source_files_completed = 0
+    source_bytes_read = 0
+    build_result: BuildResult
     try:
         # Keep pandas and feature-cleaning machinery out of the parent process. Under spawn, this materially reduces
         # peak memory because only workers import the heavy tabular stack.
         from wearable_project.processing.cleaners import clean_feature
+
         incremental = task.action == PlanAction.INCREMENTAL.value
         prepare_stage(task.stage_dir, task.existing_dir, incremental)
-        parse_results = []
+        manifest = dict(task.existing_outputs) if incremental else {}
+
         for source in task.sources_to_parse:
-            parse_results.append(
-                parse_month_file(source, task.participant_id, row_error_policy=task.row_error_policy)
-            )
-            drop_file_cache(source.path)
+            source_files_read += 1
+            source_bytes_read += source.size_bytes
+            partial = ParseResult()
+            try:
+                parse_month_file(
+                    source, task.participant_id, row_error_policy=task.row_error_policy, result=partial
+                )
+                source_files_completed += 1
+            finally:
+                # parse_month_file mutates the supplied result before raising,
+                # allowing failed participants to retain partial telemetry.
+                parse_results.append(partial)
+                drop_file_cache(source.path)
+
         parsed = merge_parse_results(parse_results)
         del parse_results
         filenames = feature_filename_map(parsed.records_by_feature)
-        stats: dict[str, dict[str, Any]] = {}
-        manifest: dict[str, FeatureOutputInfo] = dict(task.existing_outputs) if incremental else {}
         for feature in sorted(list(parsed.records_by_feature)):
             incoming = parsed.records_by_feature.pop(feature)
             destination = task.stage_dir / filenames[feature]
@@ -232,39 +268,87 @@ def build_participant(task: ParticipantTask) -> BuildResult:
                 combined = existing + incoming
             else:
                 combined = incoming
-            result = clean_feature(feature, combined)
-            if result.dataframe.empty:
+
+            spec = get_feature_spec(feature, {key for row in combined for key in row})
+            clean_result = clean_feature(feature, combined)
+            registered = is_registered_feature(feature)
+            if not registered:
+                schema_status = "unknown_feature"
+            elif feature in parsed.schema_warning_features:
+                schema_status = "warning"
+            else:
+                schema_status = "known"
+            stats[feature] = {
+                "registered_policy": registered,
+                "feature_family": spec.family.value,
+                "schema_status": schema_status,
+                "input_rows": clean_result.input_rows,
+                "output_rows": clean_result.output_rows,
+                "represented_occurrences": clean_result.represented_occurrences,
+                "exact_duplicates_removed": clean_result.exact_duplicates_removed,
+                "revisions_resolved": clean_result.revisions_resolved,
+                "unresolved_conflicts": clean_result.unresolved_conflicts,
+                "invalid_timestamp_rows": clean_result.invalid_timestamp_rows,
+            }
+            if clean_result.dataframe.empty:
                 destination.unlink(missing_ok=True)
                 manifest.pop(feature, None)
+                del combined, clean_result, incoming
                 continue
-            atomic_write_csv(result.dataframe, destination)
+            atomic_write_csv(clean_result.dataframe, destination)
             output_hash = sha256_file(destination)
             manifest[feature] = FeatureOutputInfo(
-                feature, destination.name, result.output_rows,
-                destination.stat().st_size, output_hash,
+                feature, destination.name, clean_result.output_rows,
+                destination.stat().st_size, output_hash, clean_result.represented_occurrences,
             )
             drop_file_cache(destination)
-            stats[feature] = {
-                "input_rows": result.input_rows, "output_rows": result.output_rows,
-                "exact_duplicates_removed": result.exact_duplicates_removed,
-                "revisions_resolved": result.revisions_resolved,
-                "unresolved_conflicts": result.unresolved_conflicts,
-                "invalid_timestamp_rows": result.invalid_timestamp_rows,
-            }
-            del combined, result, incoming
-        return BuildResult(
-            participant_id=task.participant_id, stage_dir=task.stage_dir, feature_stats=stats,
-            outer_rows=parsed.outer_rows_seen, apple_rows=parsed.apple_rows_seen,
+            del combined, clean_result, incoming
+
+        build_result = BuildResult(
+            participant_id=task.participant_id,
+            stage_dir=task.stage_dir,
+            feature_stats=stats,
+            source_files_read=source_files_read,
+            source_files_completed=source_files_completed,
+            source_bytes_read=source_bytes_read,
+            outer_rows=parsed.outer_rows_seen,
+            apple_rows=parsed.apple_rows_seen,
+            payloads_decoded=parsed.payloads_decoded,
+            payload_decode_failures=parsed.payload_decode_failures,
             payload_items=parsed.payload_items_seen,
+            unknown_features=sorted(parsed.unknown_features),
             diagnostics=[asdict(item) for item in parsed.diagnostics],
             output_infos=[manifest[key] for key in sorted(manifest)],
             empty=not any(task.stage_dir.glob("*.csv")),
         )
     except Exception as exc:
-        return BuildResult(task.participant_id, task.stage_dir, {}, error=str(exc), traceback_text=traceback.format_exc())
+        if parsed is None:
+            parsed = merge_parse_results(parse_results)
+        build_result = BuildResult(
+            participant_id=task.participant_id,
+            stage_dir=task.stage_dir,
+            feature_stats=stats,
+            source_files_read=source_files_read,
+            source_files_completed=source_files_completed,
+            source_bytes_read=source_bytes_read,
+            outer_rows=parsed.outer_rows_seen,
+            apple_rows=parsed.apple_rows_seen,
+            payloads_decoded=parsed.payloads_decoded,
+            payload_decode_failures=parsed.payload_decode_failures,
+            payload_items=parsed.payload_items_seen,
+            unknown_features=sorted(parsed.unknown_features),
+            diagnostics=[asdict(item) for item in parsed.diagnostics],
+            output_infos=[manifest[key] for key in sorted(manifest)],
+            error=str(exc),
+            traceback_text=traceback.format_exc(),
+        )
     finally:
         if gc_was_enabled:
             gc.enable()
+
+    build_result.runtime_seconds = time.perf_counter() - started
+    build_result.peak_rss_bytes = peak_rss_bytes()
+    return build_result
 
 
 def worker_entry(task: ParticipantTask, connection: Any) -> None:
@@ -273,7 +357,12 @@ def worker_entry(task: ParticipantTask, connection: Any) -> None:
         connection.send(build_participant(task))
     except BaseException as exc:
         connection.send(BuildResult(
-            task.participant_id, task.stage_dir, {}, error=str(exc),
+            participant_id=task.participant_id,
+            stage_dir=task.stage_dir,
+            feature_stats={},
+            runtime_seconds=None,
+            peak_rss_bytes=peak_rss_bytes(),
+            error=str(exc),
             traceback_text=traceback.format_exc(),
         ))
     finally:
@@ -301,6 +390,7 @@ def process_dataset(
     row_error_policy: str = "fail-participant", selected_participants: set[str] | None = None,
     verify_existing_hashes: bool = False, fail_fast: bool = False, state_file: Path | None = None,
 ) -> RunSummary:
+    run_started = time.perf_counter()
     export_root = resolve_export_root(input_root)
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -315,23 +405,85 @@ def process_dataset(
     stage_root.mkdir(parents=True, exist_ok=True)
     participants = discover_participants(export_root, selected_participants)
     summary = RunSummary(run_id, discovered=len(participants))
-    workers = max(1, min(int(workers), max(1, (os.cpu_count() or 2) - 1)))
-    max_in_flight = max(1, int(max_in_flight or workers))
+    workers_requested = int(workers)
+    workers_effective = max(1, min(workers_requested, max(1, (os.cpu_count() or 2) - 1)))
+    max_in_flight_effective = max(1, int(max_in_flight or workers_effective))
 
     with StateDatabase(state_file) as state:
         state.begin_run(run_id, export_root, output_root)
+        tracker = state.tracker
+        tracker.begin_run(
+            run_id, mode=mode, snapshot_policy=snapshot_policy,
+            row_error_policy=row_error_policy, workers_requested=workers_requested,
+            workers_effective=workers_effective, max_in_flight=max_in_flight_effective,
+        )
         try:
             plans: list[ParticipantPlan] = []
             if snapshot_policy == "strict-cumulative" and selected_participants is None:
                 missing_participants = sorted(state.participant_ids().difference(participants))
                 for participant_id in missing_participants:
+                    reason = "participant is absent from the new cumulative snapshot"
                     summary.blocked += 1
-                    summary.blocks[participant_id] = "participant is absent from the new cumulative snapshot"
-            for participant_id, participant_dir in tqdm(participants.items(), desc="Hashing source months", unit="participant"):
-                sources = discover_month_files(participant_dir)
-                plan = plan_participant(
-                    participant_id, participant_dir, sources, state.get_participant(participant_id), output_root,
-                    mode=mode, snapshot_policy=snapshot_policy, verify_existing_hashes=verify_existing_hashes,
+                    summary.blocks[participant_id] = reason
+                    tracker.record_plan(
+                        run_id, participant_id, action="missing_participant", reason=reason,
+                        final_status="blocked", source_files_discovered=0,
+                        source_files_planned=0, source_bytes_discovered=0,
+                    )
+
+            for participant_id, participant_dir in tqdm(
+                participants.items(), desc="Hashing source months", unit="participant"
+            ):
+                planning_started = time.perf_counter()
+                candidates = [
+                    path for path in participant_dir.iterdir()
+                    if path.is_file() and canonical_month_from_name(path.name) is not None
+                ]
+                candidate_bytes = 0
+                for path in candidates:
+                    try:
+                        candidate_bytes += path.stat().st_size
+                    except OSError:
+                        pass
+                try:
+                    sources = discover_month_files(participant_dir)
+                    plan = plan_participant(
+                        participant_id, participant_dir, sources, state.get_participant(participant_id),
+                        output_root, mode=mode, snapshot_policy=snapshot_policy,
+                        verify_existing_hashes=verify_existing_hashes,
+                    )
+                except Exception as exc:
+                    message = f"Source discovery or planning failed: {exc}"
+                    summary.failed += 1
+                    summary.failures[participant_id] = message
+                    tracker.record_plan(
+                        run_id, participant_id, action="planning_error", reason=message,
+                        final_status="failed", source_files_discovered=len(candidates),
+                        source_files_planned=0, source_bytes_discovered=candidate_bytes,
+                    )
+                    planning_result = BuildResult(
+                        participant_id=participant_id, stage_dir=stage_root / participant_id,
+                        feature_stats={}, runtime_seconds=time.perf_counter() - planning_started,
+                        error=message, traceback_text=traceback.format_exc(),
+                    )
+                    state.mark_failed(participant_id, message)
+                    tracker.record_participant_result(
+                        run_id, participant_id, final_status="failed", result=planning_result,
+                        worker_exit_code=None, committed_output_size_bytes=0,
+                    )
+                    if fail_fast:
+                        raise ParticipantProcessingError(f"{participant_id}: {message}") from exc
+                    continue
+
+                initial_status = (
+                    "skipped" if plan.action == PlanAction.SKIP else
+                    "blocked" if plan.action == PlanAction.BLOCK else "planned"
+                )
+                tracker.record_plan(
+                    run_id, participant_id, action=plan.action.value, reason=plan.reason,
+                    final_status=initial_status, source_files_discovered=len(sources),
+                    source_files_planned=len(plan.sources_to_parse),
+                    source_bytes_discovered=sum(source.size_bytes for source in sources),
                 )
                 if plan.action == PlanAction.SKIP:
                     summary.skipped += 1
@@ -351,7 +503,7 @@ def process_dataset(
 
             context = mp.get_context("spawn")
             task_iterator = iter(plans)
-            concurrency = min(workers, max_in_flight)
+            concurrency = min(workers_effective, max_in_flight_effective)
             running: dict[str, tuple[Any, Any, ParticipantPlan]] = {}
 
             def make_task(plan: ParticipantPlan) -> ParticipantTask:
@@ -372,6 +524,7 @@ def process_dataset(
                         target=worker_entry, args=(make_task(plan), child_connection),
                         name=f"wearable-{plan.participant_id}",
                     )
+                    tracker.mark_participant_started(run_id, plan.participant_id)
                     process.start()
                     child_connection.close()
                     running[plan.participant_id] = (process, parent_connection, plan)
@@ -394,13 +547,21 @@ def process_dataset(
                                 result = connection.recv()
                             else:
                                 result = BuildResult(
-                                    plan.participant_id, stage_root / plan.participant_id, {},
-                                    error=f"Worker exited with code {process.exitcode} without returning a result",
+                                    participant_id=plan.participant_id,
+                                    stage_dir=stage_root / plan.participant_id,
+                                    feature_stats={},
+                                    error=(
+                                        f"Worker exited with code {process.exitcode} without returning a result"
+                                    ),
                                 )
                         except EOFError:
                             result = BuildResult(
-                                plan.participant_id, stage_root / plan.participant_id, {},
-                                error=f"Worker pipe closed unexpectedly (exit code {process.exitcode})",
+                                participant_id=plan.participant_id,
+                                stage_dir=stage_root / plan.participant_id,
+                                feature_stats={},
+                                error=(
+                                    f"Worker pipe closed unexpectedly (exit code {process.exitcode})"
+                                ),
                             )
                         finally:
                             connection.close()
@@ -408,16 +569,22 @@ def process_dataset(
                             if process.is_alive():
                                 process.kill()
                                 process.join()
+                        result.worker_exit_code = process.exitcode
                         progress.update(1)
 
                         if result.error:
                             summary.failed += 1
                             summary.failures[plan.participant_id] = result.error
                             state.mark_failed(plan.participant_id, result.error)
+                            tracker.record_participant_result(
+                                run_id, plan.participant_id, final_status="failed", result=result,
+                                worker_exit_code=result.worker_exit_code, committed_output_size_bytes=0,
+                            )
                             shutil.rmtree(result.stage_dir, ignore_errors=True)
                             if fail_fast:
                                 raise ParticipantProcessingError(
-                                    f"{plan.participant_id}: {result.error}\n{result.traceback_text or ''}"
+                                    f"{plan.participant_id}: {result.error}\n"
+                                    f"{result.traceback_text or ''}"
                                 )
                             start_more()
                             continue
@@ -436,6 +603,8 @@ def process_dataset(
                                 )
                                 shutil.rmtree(result.stage_dir, ignore_errors=True)
                                 summary.empty += 1
+                                final_status = "complete_empty"
+                                output_size = 0
                             else:
                                 outputs = validate_participant_stage(
                                     result.stage_dir, plan.participant_id, result.output_infos
@@ -453,14 +622,26 @@ def process_dataset(
                                     raise
                                 swap.finalize()
                                 summary.committed += 1
+                                final_status = "committed"
+                                output_size = sum(item.size_bytes for item in outputs)
                             if plan.action == PlanAction.INCREMENTAL:
                                 summary.incremental += 1
                             else:
                                 summary.rebuilt += 1
+                            tracker.record_participant_result(
+                                run_id, plan.participant_id, final_status=final_status, result=result,
+                                worker_exit_code=result.worker_exit_code,
+                                committed_output_size_bytes=output_size,
+                            )
                         except Exception as exc:
                             summary.failed += 1
                             summary.failures[plan.participant_id] = str(exc)
                             state.mark_failed(plan.participant_id, str(exc))
+                            tracker.record_participant_result(
+                                run_id, plan.participant_id, final_status="failed", result=result,
+                                worker_exit_code=result.worker_exit_code, committed_output_size_bytes=0,
+                                error_message=str(exc), traceback_text=traceback.format_exc(),
+                            )
                             shutil.rmtree(result.stage_dir, ignore_errors=True)
                             if fail_fast:
                                 raise
@@ -473,9 +654,17 @@ def process_dataset(
                         process.join(timeout=5)
 
             status = "complete" if not summary.failed and not summary.blocked else "complete_with_errors"
-            state.finish_run(run_id, status, summary.as_dict())
-        except Exception:
-            state.finish_run(run_id, "failed", summary.as_dict())
+            tracker.finish_run(
+                run_id, status=status, wall_clock_seconds=time.perf_counter() - run_started
+            )
+            summary.report = tracker.build_report(run_id)
+            state.finish_run(run_id, status, summary.report)
+        except BaseException:
+            tracker.finish_run(
+                run_id, status="failed", wall_clock_seconds=time.perf_counter() - run_started
+            )
+            summary.report = tracker.build_report(run_id)
+            state.finish_run(run_id, "failed", summary.report)
             raise
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)

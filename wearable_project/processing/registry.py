@@ -163,5 +163,10 @@ def get_feature_spec(name: str, columns: Iterable[str] = ()) -> FeatureSpec:
     return FeatureSpec(name, family, measures, DedupStrategy.RECORD_ID_THEN_CONTENT, provisional=True)
 
 
+def is_registered_feature(name: str) -> bool:
+    """Return whether a feature has an explicit reviewed registry policy."""
+    return name in SPECS
+
+
 def known_features() -> tuple[str, ...]:
     return tuple(sorted(SPECS))

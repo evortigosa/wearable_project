@@ -25,7 +25,8 @@ wearable_project/
 │   │   ├── cleaners.py
 │   │   ├── resampling.py
 │   │   ├── writer.py
-│   │   └── pipeline.py
+│   │   ├── pipeline.py
+│   │   └── tracker.py
 │   ├── cli.py
 │   ├── exceptions.py
 │   └── __main__.py
@@ -192,22 +193,179 @@ only for reviewed feature/source conventions. `canonical_value` and
 Inferred or unresolved policies retain `unit_status`; repetitive evidence text
 remains in the versioned registry rather than every event row.
 
-## Internal state and atomic commits
+## Internal state, atomic commits, and processing telemetry
 
-`.wearable_state.sqlite` contains source-file hashes, parser/registry versions,
-participant status, and committed feature checksums. It is implementation
-state, not an analysis product.
+`.wearable_state.sqlite` remains the only non-feature object in the cleaned
+output root. It stores source-file hashes, parser/registry versions,
+participant status, committed feature checksums, and run-scoped processing
+telemetry. It is operational state, not a physiological analysis product.
 
 A participant is built under `.wearable_tmp`, validated, and swapped into place
 as one directory. The state database is committed only after the new directory
-is in place. A crash leaves the previous commit recoverable and forces a safe
-participant rebuild on the next run.
+is in place. A failed worker cannot partially append to a live feature CSV.
+
+Version 0.1.2 adds its telemetry through the dedicated module:
+
+```text
+wearable_project/processing/tracker.py
+```
+
+The tracker does not alter participant feature CSVs, feature-cleaning policies,
+or incremental planning. The parser and cleaner expose counters that already
+exist during processing; the parent process persists those counters in the
+same hidden SQLite database.
+
+### Two report scopes
+
+Every report separates two quantities that must not be conflated.
+
+**Run activity** describes only work performed by the selected invocation:
+
+```text
+monthly files discovered, planned, read, and completed
+outer and Apple rows read
+payloads decoded and payload failures
+raw payload observations parsed
+features touched
+canonical rows written for touched features
+duplicates and revisions reconciled
+unresolved conflicts and invalid timestamps
+unknown feature names and schema warnings
+```
+
+**Current snapshot** describes the complete committed output after the run:
+
+```text
+committed and Apple-empty participants
+committed monthly files
+feature files
+canonical rows
+represented source occurrences
+total output size
+largest participant output
+```
+
+For example, an unchanged no-op run correctly reports zero monthly files read,
+while the current snapshot still reports all committed files and rows.
+
+### Performance and failure telemetry
+
+Each participant worker records:
+
+```text
+worker processing time
+peak resident memory high-water mark
+source bytes and files read
+output size
+worker exit code
+error message and traceback when applicable
+```
+
+The run report includes wall-clock time, median and 95th-percentile participant
+runtime and peak RSS, the slowest participant, the highest-memory participant,
+and the largest participant output. On Linux, the memory ceiling is the smaller
+of physical RAM and an active cgroup limit when one exists.
+
+The safe-worker value is deliberately an advisory:
+
+```text
+min(CPU count - 1,
+    floor(70% of effective memory limit / maximum observed worker RSS))
+```
+
+It is a conservative first estimate for the same machine and dataset shape,
+not a guarantee. The first complete cohort run should still be monitored for
+page cache, parent-process memory, filesystem pressure, and unusually large
+future participants.
+
+Automatic retries remain disabled. Deterministic source or schema errors should
+not be hidden by immediately repeating the same operation. Failed participants
+retain their previous committed outputs and are rebuilt on the next invocation.
+The tracker records attempt number, retry count, worker exit code, error, and
+traceback.
+
+### Report commands
+
+Print the complete summary from the processing command:
+
+```bash
+wearable-project process \
+  --input /data/exported-at-latest \
+  --output /data/cleaned_apple_healthkit \
+  --workers 8 \
+  --max-in-flight 8 \
+  --json-summary > processing-report.json
+```
+
+Read the latest persisted report without processing data again:
+
+```bash
+wearable-project report \
+  --output /data/cleaned_apple_healthkit
+```
+
+Machine-readable summary:
+
+```bash
+wearable-project report \
+  --output /data/cleaned_apple_healthkit \
+  --json > processing-report.json
+```
+
+Include every participant row, touched feature row, and exceptional diagnostic:
+
+```bash
+wearable-project report \
+  --output /data/cleaned_apple_healthkit \
+  --json \
+  --include-details > processing-report-detailed.json
+```
+
+Select a historical run:
+
+```bash
+wearable-project report \
+  --output /data/cleaned_apple_healthkit \
+  --run-id RUN_ID \
+  --json
+```
+
+The detailed records are stored in four additive tables:
+
+| Table              | Purpose                                                    |
+|--------------------|------------------------------------------------------------|
+| `run_tracking`     | Run configuration, system resources, status, and wall time |
+| `run_participants` | One participant plan/result row per invocation             |
+| `run_features`     | One touched participant-feature result per invocation      |
+| `run_diagnostics`  | Exceptional row/schema/parse diagnostics only              |
+
+The pre-existing `runs`, `participants`, `source_files`, and `feature_outputs`
+tables remain the authoritative incremental state. Existing v0.1.1 databases
+are migrated in place; participant feature files are not rewritten merely by
+installing v0.1.2.
+
+Because telemetry did not exist during earlier runs, upgrading an existing
+v0.1.1 output and immediately receiving a no-op skip can only report the
+current snapshot plus the no-op activity. To populate complete parse, cleaning,
+runtime, and worker-memory telemetry for the production acceptance run, perform
+one explicit rebuild:
+
+```bash
+wearable-project process \
+  --input /data/exported-at-latest \
+  --output /data/cleaned_apple_healthkit \
+  --mode rebuild \
+  --workers 8 \
+  --max-in-flight 8 \
+  --json-summary > first-full-acceptance-report.json
+```
 
 ## Commands
 
 ```bash
 wearable-project --help
 wearable-project process --help
+wearable-project report --help
 wearable-project registry
 python -m wearable_project process --help
 ```
@@ -221,7 +379,9 @@ pytest
 The suite covers payload decoding, malformed metadata keys, sleep-state
 preservation, paired blood pressure, boundary revisions, units, exact
 waist-circumference duplicates, incremental/from-scratch equivalence,
-historical corrections, and strict cumulative-snapshot blocking.
+historical corrections, strict cumulative-snapshot blocking, 
+run/snapshot telemetry, persisted detailed reports, and
+participant-level planning failures.
 
 ## License
 
