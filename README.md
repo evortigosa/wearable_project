@@ -20,14 +20,23 @@ CSV per month.
 wearable_project/
 ├── wearable_project/
 │   ├── processing/
-│   │   ├── parser.py
-│   │   ├── registry.py
-│   │   ├── cleaners.py
-│   │   ├── resampling.py
-│   │   ├── writer.py
-│   │   ├── pipeline.py
-│   │   └── tracker.py
-│   ├── cli.py
+│   │   ├── parser.py       # Read raw CSVs and decode nested feature payloads
+│   │   ├── registry.py     # Map each feature to its schema and processing policy
+│   │   ├── cleaners.py     # Apply feature-specific cleaning and deduplication
+│   │   ├── resampling.py   # Optional time transformations
+│   │   ├── writer.py       # Write one feature CSV atomically
+│   │   ├── pipeline.py     # Process one participant and orchestrate multiprocessing
+│   │   └── tracker.py      # Track and report processing metrics
+│   ├── curation/
+│   │   ├── 
+│   │   ├── 
+│   │   └── 
+│   ├── utils/
+│   │   ├── 
+│   │   ├── 
+│   │   └── 
+│   ├── loaders/
+│   ├── cli.py              # Expose simple commands
 │   ├── exceptions.py
 │   └── __main__.py
 ├── tests/
