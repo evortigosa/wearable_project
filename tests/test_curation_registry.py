@@ -1,0 +1,179 @@
+"""
+Wearable Data Processing and Modeling project
+"""
+
+
+from __future__ import annotations
+import csv
+import hashlib
+import io
+import json
+from pathlib import Path
+import pytest
+from wearable_project.curation.models import (
+    CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport,
+)
+from wearable_project.curation.registry import (
+    COHORT_OBSERVED_FEATURES, CURATION_POLICIES, CURATION_REGISTRY_VERSION, UNKNOWN_POLICY,
+    get_policy, known_curation_features, matrix_csv, registry_fingerprint, registry_payload, validate_registry,
+)
+
+
+EXPECTED_PROCESSING_HASHES = {
+    "__init__.py": "83af96eeb0831dc64ede0e88d26664fe5abebaa4b2fe9a83f66dea0fd618b10c",
+    "cleaners.py": "d39c0815858e66edea43f976813375ec14527942d2f615365766df5e975926c8",
+    "parser.py": "588d8f7a1836355146be6663201cac1bc8378f778f99221f171a520e603bea24",
+    "pipeline.py": "e4c4bf6a7ab16b022ef2c45e095db3deda46d0de93c4d3ddbd67deb62d42a92d",
+    "registry.py": "6182345bed1bd8fca32727c052301fbf3908955793e7011cd8860c0dab2220ef",
+    "resampling.py": "2732a7c0025cd5266115310ce88b22f686be0b7eab26e68b102da2a1556394df",
+    "tracker.py": "e94c294293547ed85b409bce27c103287f37253f12b65427f6fd59335d34dbaa",
+    "writer.py": "82fed4478741bb6c1df7babc1575ba3bd47fe25e489eb42c86e3a3fa50a0ed86",
+}
+
+
+def test_registry_covers_exactly_the_33_full_cohort_features() -> None:
+    assert len(COHORT_OBSERVED_FEATURES) == 33
+    assert len(CURATION_POLICIES) == 33
+    assert set(known_curation_features()) == set(COHORT_OBSERVED_FEATURES)
+
+
+def test_registry_validation_passes() -> None:
+    result = validate_registry()
+    assert result.valid, result.errors
+    assert not result.errors
+    assert result.warnings  # provisional evidence is intentionally visible
+
+
+def test_all_cohort_policies_have_complete_contracts() -> None:
+    for name, policy in CURATION_POLICIES.items():
+        assert policy.name == name
+        assert policy.identity.cohort_observed
+        assert policy.identity.maturity is not PolicyMaturity.UNKNOWN
+        assert policy.schema.feature_family
+        assert policy.schema.accepted_payload_shapes
+        assert policy.semantics.native_resolution
+        assert policy.provenance.acquisition_method_strategy
+        assert policy.reconciliation.occurrence_identity_strategy
+        assert policy.curation.rule_ids
+        assert policy.output.column_order_prefix
+        assert policy.resampling.strategy
+        assert policy.resampling.default_enabled is False
+        assert policy.tests.fixture_ids
+        assert policy.tests.invariants
+        assert len(policy.fingerprint()) == 64
+
+
+def test_unknown_feature_fallback_is_safe_and_non_destructive() -> None:
+    policy = get_policy("FutureHealthKitFeature")
+    assert policy.name == "FutureHealthKitFeature"
+    assert policy.identity.maturity is PolicyMaturity.UNKNOWN
+    assert policy.curation.default_status is CurationStatus.REVIEW
+    assert policy.curation.default_inclusion is InclusionPolicy.EXCLUDE
+    assert policy.resampling.support is ResamplingSupport.UNSUPPORTED
+    assert policy.units.measurements[0].canonical_unit is None
+    assert policy.units.measurements[0].conversion_rule == "not_applicable"
+
+
+def test_sleep_policy_has_no_numeric_or_lexical_state_reducer() -> None:
+    policy = get_policy("Sleep", allow_fallback=False)
+    assert "finite_numeric" not in policy.curation.rule_ids
+    assert policy.resampling.strategy == "state_interval_union"
+    assert policy.resampling.state_handling == "multi_state_interval_union_and_coverage"
+    assert policy.resampling.aggregation == "none"
+    assert any("no_lexical_state_selection" == item for item in policy.tests.invariants)
+
+
+def test_blood_pressure_components_remain_coupled() -> None:
+    policy = get_policy("BloodPressure", allow_fallback=False)
+    roles = {field.role for field in policy.schema.measurements}
+    assert roles == {"systolic_pressure", "diastolic_pressure"}
+    assert policy.semantics.measurement_kind.value == "multivariate_point"
+    assert "no_componentwise_synthetic_pair_is_created" in policy.tests.invariants
+
+
+def test_ecg_policy_is_waveform_native_only() -> None:
+    policy = get_policy("Electrocardiogram", allow_fallback=False)
+    assert policy.schema.waveform_columns == ("voltage_measurements",)
+    assert policy.resampling.support is ResamplingSupport.WAVEFORM_SPECIFIC_ONLY
+    assert policy.resampling.broadcasting == "prohibited"
+
+
+def test_cgm_policy_retains_status_trend_and_timezone() -> None:
+    policy = get_policy("BloodGlucose", allow_fallback=False)
+    expected = {"status", "trend_arrow", "trend_rate", "time_zone", "metadata_device_name"}
+    assert expected.issubset(set(policy.schema.context_columns))
+    assert expected.issubset(set(policy.output.retained_context_columns))
+
+
+def test_participant_source_unit_policies_are_not_silent_identity_conversions() -> None:
+    expected = {
+        "Weight": "resolved_mass_to_kilograms",
+        "LeanBodyMass": "resolved_mass_to_kilograms",
+        "Height": "resolved_length_to_metres",
+        "WaistCircumference": "resolved_length_to_metres",
+        "BodyTemperature": "resolved_temperature_to_celsius",
+        "BloodGlucose": "resolved_glucose_to_mmol_l",
+        "DailyDistanceCycling": "resolved_distance_to_metres",
+        "EnergyConsumed": "resolved_energy_to_kcal",
+    }
+    for feature, strategy in expected.items():
+        unit = get_policy(feature, allow_fallback=False).units.measurements[0]
+        assert unit.conversion_rule == strategy
+
+
+def test_activity_summary_remains_ambiguous_and_excluded_by_default() -> None:
+    policy = get_policy("ActivitySummary", allow_fallback=False)
+    assert policy.identity.maturity is PolicyMaturity.PROVISIONAL
+    assert "activity_summary_date_ambiguity" in policy.curation.rule_ids
+    assert policy.curation.default_status is CurationStatus.REVIEW
+    assert policy.curation.default_inclusion is InclusionPolicy.EXCLUDE
+    assert policy.resampling.strategy == "daily_context_only"
+    assert policy.resampling.broadcasting == "prohibited_by_default"
+
+
+def test_bac_has_source_specific_calculator_policy() -> None:
+    policy = get_policy("BloodAlcoholContent", allow_fallback=False)
+    calculator = [rule for rule in policy.provenance.source_rules if rule.source_id == "com.rwichmann.intellidrink-lite"]
+    assert len(calculator) == 1
+    assert calculator[0].acquisition_method.value == "calculator_estimate"
+    assert calculator[0].inclusion_effect is InclusionPolicy.EXCLUDE
+
+
+def test_registry_fingerprint_and_serialization_are_deterministic() -> None:
+    first = registry_fingerprint()
+    second = registry_fingerprint()
+    assert first == second
+    payload = registry_payload(include_evidence=True, include_rules=True)
+    rendered = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    assert CURATION_REGISTRY_VERSION in rendered
+    assert len(payload["policies"]) == 33
+    assert payload["validation"]["valid"] is True
+
+
+def test_matrix_csv_contains_one_row_per_feature() -> None:
+    rows = list(csv.DictReader(io.StringIO(matrix_csv())))
+    assert len(rows) == 33
+    assert {row["feature"] for row in rows} == set(COHORT_OBSERVED_FEATURES)
+    assert all(row["resampling_default_enabled"] == "False" for row in rows)
+
+
+def test_milestone_one_processing_modules_are_byte_frozen() -> None:
+    processing = Path(__file__).parents[1] / "wearable_project" / "processing"
+    actual = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(processing.glob("*.py"))
+    }
+    assert actual == EXPECTED_PROCESSING_HASHES
+
+
+def test_discrete_heart_features_allow_point_or_short_interval_support() -> None:
+    for feature in ("HeartRate", "HeartRateVariability"):
+        policy = get_policy(feature, allow_fallback=False)
+        assert policy.semantics.event_kind.value == "point_or_interval"
+        assert policy.semantics.duration_model.value == "zero_or_explicit_interval"
+        assert "interval_duration_positive" not in policy.curation.rule_ids
+
+
+def test_ratio_features_are_declared_as_ratios() -> None:
+    for feature in ("BodyFatPercentage", "OxygenSaturation", "BloodAlcoholContent"):
+        assert get_policy(feature, allow_fallback=False).semantics.measurement_kind.value == "ratio"

@@ -28,8 +28,11 @@ wearable_project/
 │   │   ├── pipeline.py     # Process one participant and orchestrate multiprocessing
 │   │   └── tracker.py      # Track and report processing metrics
 │   ├── curation/
-│   │   ├── 
-│   │   ├── 
+│   │   ├── models.py       # Typed policy contracts
+│   │   ├── evidence.py     # Literature and project evidence catalog
+│   │   ├── strategies.py   # Named strategy declarations
+│   │   ├── rules.py        # Standardized rule and flag definitions
+│   │   ├── registry.py     # All feature policies
 │   │   └── 
 │   ├── utils/
 │   │   ├── 

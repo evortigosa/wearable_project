@@ -38,8 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--max-in-flight", type=int, help="Maximum submitted unfinished participant tasks")
     process.add_argument("--mode", choices=("auto", "rebuild"), default="auto")
     process.add_argument(
-        "--snapshot-policy", choices=("strict-cumulative", "authoritative", "append-only"),
-        default="strict-cumulative",
+        "--snapshot-policy", choices=("strict-cumulative", "authoritative", "append-only"), default="strict-cumulative",
     )
     process.add_argument(
         "--row-error-policy", choices=("fail-participant", "skip-row"), default="fail-participant",
@@ -57,17 +56,77 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--run-id", help="Specific run ID; defaults to the latest tracked run")
     report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     report.add_argument(
-        "--include-details", action="store_true",
-        help="Include participant, feature, and diagnostic rows in JSON output",
+        "--include-details", action="store_true", help="Include participant, feature, and diagnostic rows in JSON output",
     )
 
-    registry = commands.add_parser("registry", help="List explicitly registered feature policies")
+    registry = commands.add_parser("registry", help="List native processing feature policies")
     registry.add_argument("--json", action="store_true")
+
+    curation_registry = commands.add_parser(
+        "curation-registry", help="Inspect and validate the Milestone 2 feature-policy matrix",
+    )
+    curation_registry.add_argument(
+        "--format", choices=("table", "json", "csv"), default="table", help="Output representation",
+    )
+    curation_registry.add_argument(
+        "--feature", action="append", dest="features", help="Restrict output to one feature; repeat for several features",
+    )
+    curation_registry.add_argument(
+        "--include-evidence", action="store_true", help="Include the evidence catalog in JSON output",
+    )
+    curation_registry.add_argument(
+        "--include-rules", action="store_true", help="Include rule declarations in JSON output",
+    )
+    curation_registry.add_argument(
+        "--output", type=Path, help="Write output to this file instead of stdout",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "curation-registry":
+        from wearable_project.curation.registry import (
+            get_policy, matrix_csv, matrix_table, registry_payload, validate_registry,
+        )
+
+        features = tuple(args.features) if args.features else None
+        if features:
+            unknown = [feature for feature in features if get_policy(feature).identity.maturity.value == "unknown"]
+            if unknown:
+                print(f"ERROR: unknown curation feature(s): {', '.join(unknown)}", file=sys.stderr)
+                return 2
+        validation = validate_registry()
+        if args.format == "json":
+            rendered = json.dumps(
+                registry_payload(
+                    features=features, include_evidence=args.include_evidence, include_rules=args.include_rules,
+                ),
+                indent=2, sort_keys=True, ensure_ascii=False,
+            ) + "\n"
+        elif args.format == "csv":
+            if args.include_evidence or args.include_rules:
+                print("ERROR: --include-evidence/--include-rules require --format json", file=sys.stderr)
+                return 2
+            rendered = matrix_csv(features)
+        else:
+            if args.include_evidence or args.include_rules:
+                print("ERROR: --include-evidence/--include-rules require --format json", file=sys.stderr)
+                return 2
+            rendered = matrix_table(features) + "\n"
+
+        if args.output is not None:
+            target = args.output.expanduser().resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(rendered, encoding="utf-8")
+        else:
+            print(rendered, end="")
+        if not validation.valid:
+            for error in validation.errors:
+                print(f"REGISTRY ERROR: {error}", file=sys.stderr)
+            return 1
+        return 0
+
     if args.command == "registry":
         payload = {"registry_version": REGISTRY_VERSION, "features": list(known_features())}
         if args.json:

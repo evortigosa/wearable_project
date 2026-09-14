@@ -200,6 +200,50 @@ def plan_participant(
     )
 
 
+def hash_participant_sources(item: tuple[str, str]) -> tuple[str, list[SourceFile] | None, str | None]:
+    """
+    Hash one participant's month files. Body of the parallel pre-pass below.
+    Read-only by construction: it walks a single participant directory and hashes the month files it finds.
+    It never opens the state database, the tracker, or the output tree, which is what makes it safe to run
+    in a separate process. Failures are returned rather than raised so the planning loop can re-raise
+    them inside its own handler and keep the existing failure accounting.
+    """
+    participant_id, participant_dir = item
+    try:
+        return participant_id, discover_month_files(Path(participant_dir)), None
+    except Exception as exc:
+        return participant_id, None, f"{type(exc).__name__}: {exc}"
+
+
+def prehash_participant_sources(
+    participants: dict[str, Path], workers: int,
+) -> dict[str, list[SourceFile] | str]:
+    """
+    Hash every participant's month files up front, in parallel.
+    Returns ``{participant_id: sources}`` on success and ``{participant_id: error_text}`` on failure.
+    An empty dict means the caller should fall back to hashing inline, so a pool that cannot start
+    degrades to the previous sequential behavior instead of failing the run.
+    Each worker holds one streaming hash state, so the memory cost per worker is negligible.
+    """
+    if workers <= 1 or len(participants) < 2:
+        return {}
+    items = [(participant_id, str(path)) for participant_id, path in participants.items()]
+    results: dict[str, list[SourceFile] | str] = {}
+    context = mp.get_context("spawn")
+    try:
+        with context.Pool(processes=workers) as pool:
+            # chunksize=1 keeps scheduling dynamic. Folder sizes in this cohort span three orders of
+            # magnitude, so static chunking would leave workers idle behind one oversized participant.
+            for participant_id, sources, error_text in tqdm(
+                pool.imap_unordered(hash_participant_sources, items, chunksize=1),
+                total=len(items), desc="Hashing source months", unit="participant",
+            ):
+                results[participant_id] = error_text if error_text is not None else sources
+    except Exception:
+        return {}
+    return results
+
+
 def feature_filename_map(features: Iterable[str]) -> dict[str, str]:
     mapping: dict[str, str] = {}
     reverse: dict[str, str] = {}
@@ -245,8 +289,8 @@ def build_participant(task: ParticipantTask) -> BuildResult:
                 )
                 source_files_completed += 1
             finally:
-                # parse_month_file mutates the supplied result before raising,
-                # allowing failed participants to retain partial telemetry.
+                # parse_month_file mutates the supplied result before raising, allowing failed participants to
+                # retain partial telemetry.
                 parse_results.append(partial)
                 drop_file_cache(source.path)
 
@@ -407,6 +451,10 @@ def process_dataset(
     workers_requested = int(workers)
     workers_effective = max(1, min(workers_requested, max(1, (os.cpu_count() or 2) - 1)))
     max_in_flight_effective = max(1, int(max_in_flight or workers_effective))
+    concurrency = min(workers_effective, max_in_flight_effective)
+    # Run the hashing pre-pass before the state database is opened. No SQLite handle exists in this process
+    # yet, so nothing database-related can be inherited by the pool workers.
+    prehashed = prehash_participant_sources(participants, concurrency)
 
     with StateDatabase(state_file) as state:
         state.begin_run(run_id, export_root, output_root)
@@ -431,7 +479,7 @@ def process_dataset(
                     )
 
             for participant_id, participant_dir in tqdm(
-                participants.items(), desc="Hashing source months", unit="participant"
+                participants.items(), desc="Planning participants", unit="participant"
             ):
                 planning_started = time.perf_counter()
                 candidates = [
@@ -445,7 +493,12 @@ def process_dataset(
                     except OSError:
                         pass
                 try:
-                    sources = discover_month_files(participant_dir)
+                    # pop, not get: releases each participant's SourceFile list as soon as it is planned, so
+                    # the pre-pass results do not stay resident for the whole run.
+                    precomputed = prehashed.pop(participant_id, None)
+                    if isinstance(precomputed, str):
+                        raise ParticipantProcessingError(precomputed)
+                    sources = precomputed if precomputed is not None else discover_month_files(participant_dir)
                     plan = plan_participant(
                         participant_id, participant_dir, sources, state.get_participant(participant_id),
                         output_root, mode=mode, snapshot_policy=snapshot_policy,
@@ -496,13 +549,11 @@ def process_dataset(
             # Process the largest participant snapshots first. On memory-limited single nodes this avoids
             # accumulating page cache and allocator residue from many smaller participants before the largest task.
             plans.sort(
-                key=lambda item: sum(source.size_bytes for source in item.sources_to_parse),
-                reverse=True,
+                key=lambda item: sum(source.size_bytes for source in item.sources_to_parse), reverse=True,
             )
 
             context = mp.get_context("spawn")
             task_iterator = iter(plans)
-            concurrency = min(workers_effective, max_in_flight_effective)
             running: dict[str, tuple[Any, Any, ParticipantPlan]] = {}
 
             def make_task(plan: ParticipantPlan) -> ParticipantTask:
@@ -549,18 +600,14 @@ def process_dataset(
                                     participant_id=plan.participant_id,
                                     stage_dir=stage_root / plan.participant_id,
                                     feature_stats={},
-                                    error=(
-                                        f"Worker exited with code {process.exitcode} without returning a result"
-                                    ),
+                                    error=f"Worker exited with code {process.exitcode} without returning a result",
                                 )
                         except EOFError:
                             result = BuildResult(
                                 participant_id=plan.participant_id,
                                 stage_dir=stage_root / plan.participant_id,
                                 feature_stats={},
-                                error=(
-                                    f"Worker pipe closed unexpectedly (exit code {process.exitcode})"
-                                ),
+                                error=f"Worker pipe closed unexpectedly (exit code {process.exitcode})",
                             )
                         finally:
                             connection.close()
