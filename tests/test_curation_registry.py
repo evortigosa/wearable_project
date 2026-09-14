@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import pytest
 from wearable_project.curation.models import (
-    CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport,
+    CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport, EvidenceGrade, PolicyExecutionMode,
 )
 from wearable_project.curation.registry import (
     COHORT_OBSERVED_FEATURES, CURATION_POLICIES, CURATION_REGISTRY_VERSION, UNKNOWN_POLICY,
@@ -177,3 +177,20 @@ def test_discrete_heart_features_allow_point_or_short_interval_support() -> None
 def test_ratio_features_are_declared_as_ratios() -> None:
     for feature in ("BodyFatPercentage", "OxygenSaturation", "BloodAlcoholContent"):
         assert get_policy(feature, allow_fallback=False).semantics.measurement_kind.value == "ratio"
+
+
+def test_provisional_policies_have_explicit_execution_gates() -> None:
+    for policy in CURATION_POLICIES.values():
+        calibration = policy.calibration
+        assert calibration.rationale
+        assert calibration.safe_fallback
+        if policy.identity.maturity is PolicyMaturity.PROVISIONAL:
+            assert calibration.execution_mode is not PolicyExecutionMode.REVIEWED_EXECUTION
+            assert calibration.required_audits
+        if calibration.evidence_grade is EvidenceGrade.D_UNRESOLVED:
+            assert calibration.execution_mode is PolicyExecutionMode.BLOCK_DERIVATION
+
+
+def test_unknown_policy_blocks_derivation() -> None:
+    assert UNKNOWN_POLICY.calibration.evidence_grade is EvidenceGrade.D_UNRESOLVED
+    assert UNKNOWN_POLICY.calibration.execution_mode is PolicyExecutionMode.BLOCK_DERIVATION

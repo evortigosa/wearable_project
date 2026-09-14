@@ -30,6 +30,9 @@ wearable_project/
 │   ├── curation/
 │   │   ├── models.py       # Typed policy contracts
 │   │   ├── evidence.py     # Literature and project evidence catalog
+│   │   ├── guidance.py     # User-facing feature descriptions
+│   │   ├── explain.py      # Assemble policy, rules, and sources
+│   │   ├── audit.py        # Read-only calibration analyses
 │   │   ├── strategies.py   # Named strategy declarations
 │   │   ├── rules.py        # Standardized rule and flag definitions
 │   │   ├── registry.py     # All feature policies

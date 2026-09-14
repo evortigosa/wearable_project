@@ -25,6 +25,27 @@ class PolicyMaturity(StringEnum):
     UNKNOWN = "unknown"
 
 
+class EvidenceGrade(StringEnum):
+    """
+    Strength of evidence supporting execution of a policy decision. Grades describe evidence for the complete
+    executable policy, not merely the existence of a feature definition. A feature may have reviewed structural
+    semantics while retaining a lower grade for unit conversion.
+    """
+    A_DIRECT = "A_direct"
+    B_CONVERGENT = "B_convergent"
+    C_SUGGESTIVE = "C_suggestive"
+    D_UNRESOLVED = "D_unresolved"
+
+
+class PolicyExecutionMode(StringEnum):
+    """Gate controlling how a later curation engine may use a policy."""
+
+    REVIEWED_EXECUTION = "reviewed_execution"
+    SOURCE_SPECIFIC_EXECUTION = "source_specific_execution"
+    CONSERVATIVE_ANNOTATION = "conservative_annotation"
+    BLOCK_DERIVATION = "block_derivation"
+
+
 class EventKind(StringEnum):
     POINT = "point"
     POINT_OR_INTERVAL = "point_or_interval"
@@ -344,6 +365,28 @@ class PolicyTestContract:
 
 
 @dataclass(frozen=True, slots=True)
+class PolicyCalibration:
+    """Execution gate and evidence state for one feature policy."""
+
+    evidence_grade: EvidenceGrade
+    execution_mode: PolicyExecutionMode
+    rationale: str
+    required_audits: tuple[str, ...]
+    safe_fallback: str
+    source_scope: str = "all_registered_sources"
+    decision_version: str = "calibration-1"
+
+
+_DEFAULT_CALIBRATION = PolicyCalibration(
+    evidence_grade=EvidenceGrade.B_CONVERGENT,
+    execution_mode=PolicyExecutionMode.REVIEWED_EXECUTION,
+    rationale="Reviewed structural semantics and convergent official/project evidence.",
+    required_audits=(),
+    safe_fallback="Preserve native values and annotate any unresolved context.",
+)
+
+
+@dataclass(frozen=True, slots=True)
 class FeaturePolicy:
     identity: IdentityPolicy
     schema: SchemaPolicy
@@ -357,6 +400,7 @@ class FeaturePolicy:
     resampling: ResamplingPolicy
     evidence_refs: tuple[str, ...]
     tests: PolicyTestContract
+    calibration: PolicyCalibration = _DEFAULT_CALIBRATION
     notes: tuple[str, ...] = ()
 
     @property

@@ -44,3 +44,32 @@ def test_evidence_requires_json(capsys) -> None:
     code = main(["curation-registry", "--format", "table", "--include-evidence"])
     assert code == 2
     assert "require --format json" in capsys.readouterr().err
+
+
+def test_describe_feature_json(capsys) -> None:
+    code = main(["describe-feature", "Sleep", "--format", "json", "--include-rules"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["feature"] == "Sleep"
+    assert "sleep_detailed_state_overlap" in payload["rules"]
+
+
+def test_describe_feature_markdown_file(tmp_path: Path) -> None:
+    target = tmp_path / "sleep.md"
+    code = main(["describe-feature", "Sleep", "--format", "markdown", "--output", str(target)])
+    assert code == 0
+    assert "# Sleep" in target.read_text()
+
+
+def test_evidence_feature_filter(capsys) -> None:
+    code = main(["evidence", "--feature", "BloodPressure", "--format", "json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "apple_blood_pressure" in payload
+
+
+def test_explain_unit_policy(capsys) -> None:
+    code = main(["explain-unit-policy", "BloodGlucose", "--format", "json"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["calibration"]["execution_mode"] == "source_specific_execution"
