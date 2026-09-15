@@ -506,7 +506,7 @@ def _load_measurements(path: Path) -> pd.DataFrame:
     frame = pd.read_csv(path, usecols=usecols, low_memory=False)
     if "start_date" not in frame or "value" not in frame:
         return pd.DataFrame(columns=["start_date", "value", "source_id"])
-    frame["start_date"] = pd.to_datetime(frame["start_date"], utc=True, errors="coerce")
+    frame["start_date"] = pd.to_datetime(frame["start_date"], format="mixed", utc=True, errors="coerce")
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
     frame = frame.dropna(subset=["start_date", "value"]).sort_values("start_date")
     if "source_id" not in frame:
