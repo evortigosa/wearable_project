@@ -6,6 +6,7 @@ data product. Its purpose is to support human review of provisional unit, source
 before execute those policies.
 """
 
+
 from __future__ import annotations
 from collections import defaultdict
 import ast
@@ -1190,7 +1191,7 @@ def run_curation_audit(
     policy_scope: str = "calibration", features: Iterable[str] | None = None,
     selected_participants: set[str] | None = None, overwrite: bool = False,
 ) -> AuditSummary:
-    """Run a read-only calibration audit over a Milestone 1 native root."""
+    """Run a read-only calibration audit over a native processing root."""
 
     native = input_native.expanduser().resolve()
     target = output.expanduser().resolve()
