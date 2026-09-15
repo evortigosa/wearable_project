@@ -73,3 +73,19 @@ def test_explain_unit_policy(capsys) -> None:
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["calibration"]["execution_mode"] == "source_specific_execution"
+
+
+def test_curation_environment_json(capsys) -> None:
+    code = main(["curation-environment", "--json"])
+    assert code in {0, 1}
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["registry_fingerprint"]
+    assert payload["import_source_kind"]
+
+
+def test_policy_decisions_json(capsys) -> None:
+    code = main(["policy-decisions", "--format", "json", "--feature", "DailyDistanceCycling"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert list(payload["decisions"]) == ["DailyDistanceCycling"]
+    assert payload["decisions"]["DailyDistanceCycling"]["execution_mode"] == "reviewed_execution"

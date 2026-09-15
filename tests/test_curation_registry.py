@@ -11,12 +11,14 @@ import json
 from pathlib import Path
 import pytest
 from wearable_project.curation.models import (
-    CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport, EvidenceGrade, PolicyExecutionMode,
+    CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport,
 )
 from wearable_project.curation.registry import (
     COHORT_OBSERVED_FEATURES, CURATION_POLICIES, CURATION_REGISTRY_VERSION, UNKNOWN_POLICY,
     get_policy, known_curation_features, matrix_csv, registry_fingerprint, registry_payload, validate_registry,
 )
+from wearable_project.curation.models import EvidenceGrade, PolicyExecutionMode
+from wearable_project.curation.environment import environment_manifest
 
 
 EXPECTED_PROCESSING_HASHES = {
@@ -105,20 +107,30 @@ def test_cgm_policy_retains_status_trend_and_timezone() -> None:
     assert expected.issubset(set(policy.output.retained_context_columns))
 
 
-def test_participant_source_unit_policies_are_not_silent_identity_conversions() -> None:
-    expected = {
+def test_unit_policies_do_not_silently_guess_unresolved_epochs() -> None:
+    unresolved = {
         "Weight": "resolved_mass_to_kilograms",
         "LeanBodyMass": "resolved_mass_to_kilograms",
         "Height": "resolved_length_to_metres",
-        "WaistCircumference": "resolved_length_to_metres",
-        "BodyTemperature": "resolved_temperature_to_celsius",
         "BloodGlucose": "resolved_glucose_to_mmol_l",
-        "DailyDistanceCycling": "resolved_distance_to_metres",
         "EnergyConsumed": "resolved_energy_to_kcal",
     }
-    for feature, strategy in expected.items():
+    for feature, strategy in unresolved.items():
         unit = get_policy(feature, allow_fallback=False).units.measurements[0]
         assert unit.conversion_rule == strategy
+        assert unit.raw_unit is None
+
+    reviewed = {
+        "WaistCircumference": "inches_to_metres",
+        "BodyTemperature": "identity",
+        "DailyDistanceCycling": "identity",
+        "HeartRateVariability": "seconds_to_milliseconds",
+        "BloodAlcoholContent": "fraction_to_percent",
+    }
+    for feature, strategy in reviewed.items():
+        unit = get_policy(feature, allow_fallback=False).units.measurements[0]
+        assert unit.conversion_rule == strategy
+        assert unit.raw_unit is not None
 
 
 def test_activity_summary_remains_ambiguous_and_excluded_by_default() -> None:
@@ -194,3 +206,10 @@ def test_provisional_policies_have_explicit_execution_gates() -> None:
 def test_unknown_policy_blocks_derivation() -> None:
     assert UNKNOWN_POLICY.calibration.evidence_grade is EvidenceGrade.D_UNRESOLVED
     assert UNKNOWN_POLICY.calibration.execution_mode is PolicyExecutionMode.BLOCK_DERIVATION
+
+
+def test_release_manifest_matches_curation_sources_and_fingerprints() -> None:
+    manifest = environment_manifest()
+    assert manifest.registry_fingerprint == registry_fingerprint()
+    assert all(manifest.module_integrity.values())
+    assert not [warning for warning in manifest.warnings if "release manifest" in warning]

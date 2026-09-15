@@ -5,26 +5,18 @@ CLI for native participant-feature processing.
 
 
 from __future__ import annotations
+
 import argparse
+import csv
+import io
 import json
 import sys
 from pathlib import Path
+
 from wearable_project import __version__
 from wearable_project.processing.pipeline import process_dataset
 from wearable_project.processing.registry import REGISTRY_VERSION, known_features
 from wearable_project.processing.tracker import format_processing_report, load_processing_report
-from wearable_project.curation.explain import (
-    feature_explanation, render_all_guides_markdown, render_feature_markdown, render_feature_text,
-    render_json, evidence_for_feature, rule_explanation, unit_policy_explanation
-)
-from wearable_project.curation.audit import (
-    AuditError, format_audit_summary, run_curation_audit,
-)
-from wearable_project.curation.registry import (
-    get_policy, matrix_csv, matrix_table, registry_payload, validate_registry,
-)
-from wearable_project.curation.guidance import known_guides
-from wearable_project.curation.evidence import EVIDENCE, evidence_by_kind
 
 
 def participant_selection(path: Path | None) -> set[str] | None:
@@ -43,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"wearable-project {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
+
     process = commands.add_parser("process", help="Build or safely update native feature CSVs")
     process.add_argument("--input", type=Path, required=True, help="Cumulative export directory")
     process.add_argument("--output", type=Path, required=True, help="Cleaned participant output root")
@@ -50,7 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--max-in-flight", type=int, help="Maximum submitted unfinished participant tasks")
     process.add_argument("--mode", choices=("auto", "rebuild"), default="auto")
     process.add_argument(
-        "--snapshot-policy", choices=("strict-cumulative", "authoritative", "append-only"), default="strict-cumulative",
+        "--snapshot-policy", choices=("strict-cumulative", "authoritative", "append-only"),
+        default="strict-cumulative",
     )
     process.add_argument(
         "--row-error-policy", choices=("fail-participant", "skip-row"), default="fail-participant",
@@ -68,33 +62,40 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--run-id", help="Specific run ID; defaults to the latest tracked run")
     report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     report.add_argument(
-        "--include-details", action="store_true", help="Include participant, feature, and diagnostic rows in JSON output",
+        "--include-details", action="store_true",
+        help="Include participant, feature, and diagnostic rows in JSON output",
     )
 
-    registry = commands.add_parser("registry", help="List native processing feature policies")
+    registry = commands.add_parser("registry", help="List Milestone 1 native feature policies")
     registry.add_argument("--json", action="store_true")
 
     curation_registry = commands.add_parser(
-        "curation-registry", help="Inspect and validate the curation feature-policy matrix",
+        "curation-registry",
+        help="Inspect and validate the Milestone 2 feature-policy matrix",
     )
     curation_registry.add_argument(
-        "--format", choices=("table", "json", "csv"), default="table", help="Output representation",
+        "--format", choices=("table", "json", "csv"), default="table",
+        help="Output representation",
     )
     curation_registry.add_argument(
-        "--feature", action="append", dest="features", help="Restrict output to one feature; repeat for several features",
+        "--feature", action="append", dest="features",
+        help="Restrict output to one feature; repeat for several features",
     )
     curation_registry.add_argument(
-        "--include-evidence", action="store_true", help="Include the evidence catalog in JSON output",
+        "--include-evidence", action="store_true",
+        help="Include the evidence catalog in JSON output",
     )
     curation_registry.add_argument(
-        "--include-rules", action="store_true", help="Include rule declarations in JSON output",
+        "--include-rules", action="store_true",
+        help="Include rule declarations in JSON output",
     )
     curation_registry.add_argument(
         "--output", type=Path, help="Write output to this file instead of stdout",
     )
 
     describe = commands.add_parser(
-        "describe-feature", help="Explain one or all HealthKit features, their native semantics, caveats, and evidence",
+        "describe-feature",
+        help="Explain one or all HealthKit features, their native semantics, caveats, and evidence",
     )
     describe.add_argument("feature", nargs="?", help="Feature name; omit only with --all")
     describe.add_argument("--all", action="store_true", help="Render the complete feature guide")
@@ -118,17 +119,32 @@ def build_parser() -> argparse.ArgumentParser:
     explain_unit.add_argument("--format", choices=("text", "json"), default="text")
 
     audit = commands.add_parser(
-        "curation-audit", help="Run a read-only policy-calibration audit over a native processing root",
+        "curation-audit",
+        help="Run a read-only policy-calibration audit over a Milestone 1 native root",
     )
     audit.add_argument("--input-native", type=Path, required=True)
     audit.add_argument("--output", type=Path, required=True)
     audit.add_argument("--workers", type=int, default=4)
     audit.add_argument("--max-in-flight", type=int)
-    audit.add_argument("--policies", choices=("provisional", "all"), default="provisional")
+    audit.add_argument("--policies", choices=("provisional", "calibration", "all"), default="calibration")
     audit.add_argument("--feature", action="append", dest="audit_features")
     audit.add_argument("--participants-file", type=Path)
     audit.add_argument("--overwrite", action="store_true")
     audit.add_argument("--json-summary", action="store_true")
+
+    environment = commands.add_parser(
+        "curation-environment",
+        help="Report the imported curation source, wheel location, fingerprints, and module integrity",
+    )
+    environment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
+    decisions = commands.add_parser(
+        "policy-decisions",
+        help="Inspect the versioned human calibration decisions used by Milestone 2",
+    )
+    decisions.add_argument("--format", choices=("table", "json", "csv"), default="table")
+    decisions.add_argument("--feature", action="append", dest="decision_features")
+    decisions.add_argument("--output", type=Path)
     return parser
 
 
@@ -136,6 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "describe-feature":
+        from wearable_project.curation.explain import (
+            feature_explanation, render_all_guides_markdown, render_feature_markdown,
+            render_feature_text, render_json,
+        )
+        from wearable_project.curation.guidance import known_guides
         if args.all and args.feature:
             print("ERROR: provide either FEATURE or --all, not both", file=sys.stderr)
             return 2
@@ -188,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "evidence":
+        from wearable_project.curation.evidence import EVIDENCE, evidence_by_kind
+        from wearable_project.curation.explain import evidence_for_feature, render_json
         try:
             sources = list(evidence_for_feature(args.feature)) if args.feature else list(EVIDENCE.values())
         except KeyError as exc:
@@ -226,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "explain-rule":
+        from wearable_project.curation.explain import render_json, rule_explanation
         try:
             payload = rule_explanation(args.rule_id)
         except KeyError as exc:
@@ -247,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "explain-unit-policy":
+        from wearable_project.curation.explain import render_json, unit_policy_explanation
         try:
             payload = unit_policy_explanation(args.feature)
         except KeyError as exc:
@@ -267,7 +292,85 @@ def main(argv: list[str] | None = None) -> int:
                 )
         return 0
 
+    if args.command == "curation-environment":
+        from wearable_project.curation.environment import environment_manifest
+        payload = environment_manifest().as_dict()
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(f"Package version: {payload['package_version']}")
+            print(f"Release label: {payload['package_release_label']}")
+            print(f"Working directory: {payload['current_working_directory']}")
+            print(f"Imported package: {payload['imported_package_path']}")
+            print(f"Installed distribution: {payload.get('distribution_package_path')}")
+            print(f"Import source: {payload['import_source_kind']}")
+            print(f"Registry fingerprint: {payload['registry_fingerprint']}")
+            print(f"Guidance fingerprint: {payload['guidance_fingerprint']}")
+            print(f"Decisions fingerprint: {payload['decisions_fingerprint']}")
+            if payload.get('git_commit'):
+                print(f"Git commit: {payload['git_commit']}")
+            if payload.get('warnings'):
+                print("Warnings:")
+                for warning in payload['warnings']:
+                    print(f"  - {warning}")
+        return 1 if payload.get("warnings") else 0
+
+    if args.command == "policy-decisions":
+        from wearable_project.curation.decisions import (
+            decisions_fingerprint, get_decision, known_decisions, validate_decisions,
+        )
+        selected = tuple(args.decision_features or known_decisions())
+        unknown = sorted(set(selected) - set(known_decisions()))
+        if unknown:
+            print(f"ERROR: unknown calibration decision feature(s): {', '.join(unknown)}", file=sys.stderr)
+            return 2
+        errors = validate_decisions()
+        rows = [get_decision(name).as_dict() | {
+            "decision_fingerprint": get_decision(name).fingerprint(),
+        } for name in sorted(set(selected))]
+        if args.format == "json":
+            rendered = json.dumps({
+                "decision_set_fingerprint": decisions_fingerprint(),
+                "validation_errors": list(errors),
+                "decisions": {row["feature"]: row for row in rows},
+            }, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        elif args.format == "csv":
+            buffer = io.StringIO()
+            fields = []
+            for row in rows:
+                for key in row:
+                    if key not in fields:
+                        fields.append(key)
+            writer = csv.DictWriter(buffer, fieldnames=fields)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({
+                    key: ";".join(value) if isinstance(value, (tuple, list)) else value
+                    for key, value in row.items()
+                })
+            rendered = buffer.getvalue()
+        else:
+            lines = [
+                "Feature                    Maturity     Grade          Execution mode",
+                "-------------------------  -----------  -------------  --------------------------",
+            ]
+            for row in rows:
+                lines.append(
+                    f"{row['feature']:<25}  {row['maturity']:<11}  {row['evidence_grade']:<13}  {row['execution_mode']}"
+                )
+            rendered = "\n".join(lines) + "\n"
+        if args.output:
+            target = args.output.expanduser().resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(rendered, encoding="utf-8")
+        else:
+            print(rendered, end="")
+        return 1 if errors else 0
+
     if args.command == "curation-audit":
+        from wearable_project.curation.audit import (
+            AuditError, format_audit_summary, run_curation_audit,
+        )
         try:
             summary = run_curation_audit(
                 args.input_native, args.output, workers=args.workers,
@@ -286,6 +389,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if summary.participants_failed else 0
 
     if args.command == "curation-registry":
+        from wearable_project.curation.registry import (
+            get_policy, matrix_csv, matrix_table, registry_payload, validate_registry,
+        )
+
         features = tuple(args.features) if args.features else None
         if features:
             unknown = [feature for feature in features if get_policy(feature).identity.maturity.value == "unknown"]
@@ -296,7 +403,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.format == "json":
             rendered = json.dumps(
                 registry_payload(
-                    features=features, include_evidence=args.include_evidence, include_rules=args.include_rules,
+                    features=features, include_evidence=args.include_evidence,
+                    include_rules=args.include_rules,
                 ),
                 indent=2, sort_keys=True, ensure_ascii=False,
             ) + "\n"

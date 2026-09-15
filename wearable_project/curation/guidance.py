@@ -14,7 +14,7 @@ from wearable_project.curation.evidence import EVIDENCE
 from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES, get_policy
 
 
-GUIDANCE_VERSION = "0.2.0a1.1-guidance-1"
+GUIDANCE_VERSION = "0.2.0a1.2-guidance-2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,9 +72,9 @@ _SPECS: dict[str, _GuideSpec] = {
         "Physical activity and energy",
         "Cycling-distance total; this exporter may store interval records despite the word Daily.",
         "One native interval distance total, not necessarily one calendar-day total.",
-        "May be estimated or imported from cycling devices and applications, with source-specific unit conventions.",
-        "Audit metre/kilometre/mile source epochs before canonical conversion; preserve raw totals when unresolved.",
-        ("The name does not prove daily granularity.", "Unit conventions are not globally resolved in the cohort."),
+        "May be estimated or imported from cycling devices and applications; the full-cohort exporter output is represented in metres.",
+        "Retain metre interval totals, source provenance, and non-destructive duration/implied-speed quality flags.",
+        ("The name does not prove daily granularity.", "Metres are the exported unit, but extreme values can still be erroneous."),
         ("A daily summary unless the timestamps demonstrate that interpretation.",),
         ("apple_cycling_distance", "project_unit_fingerprints"),
     ),
@@ -133,7 +133,7 @@ _SPECS: dict[str, _GuideSpec] = {
         "Heart-rate observation expressed as beats per minute.",
         "One native point or short interval observation with its original source and motion context when present.",
         "May come from PPG, another sensor, manual entry, or an imported application; cadence varies by source.",
-        "Preserve all native observations, source identity, motion context, duration, and provenance; do not aggregate in curation.",
+        "Preserve all native observations, source identity, motion context, duration, and provenance; do not aggregate in Milestone 2.",
         ("Sampling density is not uniform and record counts should not be treated as equal-duration support.",),
         ("An ECG rhythm diagnosis.", "A universal five-minute median heart rate."),
         ("apple_heart_rate",),
@@ -163,7 +163,7 @@ _SPECS: dict[str, _GuideSpec] = {
         "Heart-rate variability represented as SDNN over a short source interval.",
         "One native HRV estimate with source, interval, and algorithm context.",
         "Typically derived from beat-to-beat timing by a device or application algorithm.",
-        "Audit source/version unit encoding before seconds-to-milliseconds conversion; retain algorithm versions and raw values.",
+        "Convert the reviewed exporter seconds representation to millisecond SDNN while retaining raw values, source, and algorithm version.",
         ("SDNN depends on recording duration, signal quality, and algorithm; values from unlike contexts are not automatically comparable.",),
         ("A generic stress score or a diagnosis of autonomic dysfunction.",),
         ("apple_hrv_sdnn", "hrv_task_force_1996", "project_unit_fingerprints"),
@@ -252,8 +252,8 @@ _SPECS: dict[str, _GuideSpec] = {
         "Respiratory and vital signs",
         "Discrete body-temperature observation.",
         "One point measurement with source, user-entry status, and sensor-location metadata when present.",
-        "May be manually entered or imported from a thermometer/application; Celsius/Fahrenheit source conventions can differ.",
-        "Resolve units by source epoch, preserve measurement site, and avoid universal screening when site or method is missing.",
+        "May be manually entered or imported from a thermometer/application; the current exporter output is represented in degrees Celsius.",
+        "Retain Celsius values, source and measurement-site context, and avoid universal screening when site or method is missing.",
         ("Temperature thresholds depend on measurement site and method.",),
         ("A core-temperature measurement unless the source and sensor location establish it.",),
         ("apple_body_temperature", "apple_body_temperature_location", "project_unit_fingerprints"),
@@ -301,9 +301,9 @@ _SPECS: dict[str, _GuideSpec] = {
     "WaistCircumference": _GuideSpec(
         "Anthropometrics and body composition",
         "Discrete waist-circumference measurement.",
-        "One point length observation whose raw unit and measurement protocol may be source dependent.",
+        "One point length observation represented in inches by the current exporter; measurement protocol remains unknown.",
         "Usually manually entered or imported from an application.",
-        "Resolve length units by source epoch; retain protocol-context warnings because anatomical landmark and technique are absent.",
+        "Convert inches to metres while retaining a protocol-context warning because anatomical landmark and technique are absent.",
         ("Waist measurements depend on landmark, tape placement, tension, and respiratory phase.",),
         ("A protocol-standardized clinical waist measurement when protocol metadata is absent.",),
         ("apple_waist_circumference", "who_waist", "project_unit_fingerprints"),

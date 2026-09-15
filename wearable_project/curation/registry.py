@@ -14,6 +14,9 @@ import io
 import json
 from typing import Iterable, Mapping
 from wearable_project.curation.evidence import EVIDENCE, EvidenceSource
+from wearable_project.curation.decisions import (
+    POLICY_CALIBRATION_DECISIONS, validate_decisions,
+)
 from wearable_project.curation.models import (
     AcquisitionMethod,
     ConflictBehavior,
@@ -56,11 +59,12 @@ from wearable_project.curation.rules import RULES
 from wearable_project.curation.strategies import ALL_STRATEGY_CATALOGS
 
 
-CURATION_REGISTRY_VERSION = "0.2.0a1.1-policy-2"
-POLICY_CONTRACT_VERSION = "1.1.0-alpha1"
+CURATION_REGISTRY_VERSION = "0.2.0a1.2-policy-3"
+POLICY_CONTRACT_VERSION = "1.2.0-alpha1"
 
-# Exactly the 33 Apple HealthKit feature names observed in the accepted full cohort run. New names are handled
-# through UNKNOWN_POLICY and must not be silently converted.
+# Exactly the 33 Apple HealthKit feature names observed in the accepted full
+# cohort run. New names are handled through UNKNOWN_POLICY and must not be
+# silently converted.
 COHORT_OBSERVED_FEATURES: tuple[str, ...] = (
     "ActiveEnergyBurned",
     "ActivitySummary",
@@ -157,109 +161,166 @@ _COMMON_SPARSE = (
 )
 
 
-def _identity(
-    name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, aliases: tuple[str, ...] = ()
-) -> IdentityPolicy:
+def _identity(name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, aliases: tuple[str, ...] = ()) -> IdentityPolicy:
     return IdentityPolicy(
-        canonical_name=name, aliases=aliases, policy_version=POLICY_CONTRACT_VERSION,
-        maturity=maturity, cohort_observed=True,
+        canonical_name=name,
+        aliases=aliases,
+        policy_version=POLICY_CONTRACT_VERSION,
+        maturity=maturity,
+        cohort_observed=True,
     )
 
 
-def _measurement(
-    column: str = "value", role: str = "value", *, value_kind: str = "numeric", required: bool = True
-) -> MeasurementField:
+def _measurement(column: str = "value", role: str = "value", *, value_kind: str = "numeric", required: bool = True) -> MeasurementField:
     return MeasurementField(column=column, role=role, value_kind=value_kind, required=required)
 
 
 def _scalar_schema(
-    family: str, *, context: tuple[str, ...] = (), optional: tuple[str, ...] = (),
+    family: str,
+    *,
+    context: tuple[str, ...] = (),
+    optional: tuple[str, ...] = (),
     accepted: tuple[str, ...] = ("list[dict]", "dict"),
 ) -> SchemaPolicy:
     return SchemaPolicy(
-        feature_family=family, accepted_payload_shapes=accepted,
+        feature_family=family,
+        accepted_payload_shapes=accepted,
         required_columns=_COMMON_REQUIRED + ("value",),
         optional_columns=tuple(dict.fromkeys(_COMMON_OPTIONAL + optional + context)),
-        measurements=(_measurement(),), context_columns=context,
+        measurements=(_measurement(),),
+        context_columns=context,
         missing_measurement_action=MissingFieldAction.EXCLUDE_DEFAULT,
     )
 
 
 def _unit(
-    *, measurement: str = "value", status: RawUnitStatus, raw_unit: str | None, candidates: tuple[str, ...] = (),
-    canonical: str | None, resolution: str, conversion: str, confidence: ConversionConfidence,
-    unresolved: UnresolvedUnitAction, evidence: tuple[str, ...], precision: int | None = None,
+    *,
+    measurement: str = "value",
+    status: RawUnitStatus,
+    raw_unit: str | None,
+    candidates: tuple[str, ...] = (),
+    canonical: str | None,
+    resolution: str,
+    conversion: str,
+    confidence: ConversionConfidence,
+    unresolved: UnresolvedUnitAction,
+    evidence: tuple[str, ...],
+    precision: int | None = None,
 ) -> UnitPolicy:
     return UnitPolicy((MeasurementUnitPolicy(
-        measurement=measurement, raw_unit_status=status, raw_unit=raw_unit, raw_unit_candidates=candidates,
-        canonical_unit=canonical, unit_resolution_strategy=resolution, conversion_rule=conversion,
-        conversion_confidence=confidence, unresolved_action=unresolved, evidence_refs=evidence,
+        measurement=measurement,
+        raw_unit_status=status,
+        raw_unit=raw_unit,
+        raw_unit_candidates=candidates,
+        canonical_unit=canonical,
+        unit_resolution_strategy=resolution,
+        conversion_rule=conversion,
+        conversion_confidence=confidence,
+        unresolved_action=unresolved,
+        evidence_refs=evidence,
         output_precision=precision,
     ),))
 
 
 def _no_unit(measurement: str = "value") -> UnitPolicy:
     return _unit(
-        measurement=measurement, status=RawUnitStatus.NOT_APPLICABLE, raw_unit=None, canonical=None,
-        resolution="not_applicable", conversion="not_applicable", confidence=ConversionConfidence.NONE,
-        unresolved=UnresolvedUnitAction.NOT_APPLICABLE, evidence=(),
+        measurement=measurement,
+        status=RawUnitStatus.NOT_APPLICABLE,
+        raw_unit=None,
+        canonical=None,
+        resolution="not_applicable",
+        conversion="not_applicable",
+        confidence=ConversionConfidence.NONE,
+        unresolved=UnresolvedUnitAction.NOT_APPLICABLE,
+        evidence=(),
     )
 
 
-def _fixed_unit(
-    raw: str, canonical: str, *, evidence: tuple[str, ...], conversion: str = "identity",
-    precision: int | None = None
-) -> UnitPolicy:
+def _fixed_unit(raw: str, canonical: str, *, evidence: tuple[str, ...], conversion: str = "identity", precision: int | None = None) -> UnitPolicy:
     return _unit(
-        status=RawUnitStatus.SOURCE_CONVENTION, raw_unit=raw, canonical=canonical, resolution="fixed_source_convention",
-        conversion=conversion, confidence=ConversionConfidence.EXACT, unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
-        evidence=evidence, precision=precision,
+        status=RawUnitStatus.SOURCE_CONVENTION,
+        raw_unit=raw,
+        canonical=canonical,
+        resolution="fixed_source_convention",
+        conversion=conversion,
+        confidence=ConversionConfidence.EXACT,
+        unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
+        evidence=evidence,
+        precision=precision,
     )
 
 
 def _percent_fraction(*, evidence: tuple[str, ...], precision: int | None = 3) -> UnitPolicy:
     return _unit(
-        status=RawUnitStatus.SOURCE_CONVENTION, raw_unit="fraction", canonical="%",
-        resolution="healthkit_percent_fraction", conversion="fraction_to_percent",
-        confidence=ConversionConfidence.EXACT, unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
-        evidence=evidence, precision=precision,
+        status=RawUnitStatus.SOURCE_CONVENTION,
+        raw_unit="fraction",
+        canonical="%",
+        resolution="healthkit_percent_fraction",
+        conversion="fraction_to_percent",
+        confidence=ConversionConfidence.EXACT,
+        unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
+        evidence=evidence,
+        precision=precision,
     )
 
 
 def _semantics(
-    event: EventKind, measurement: MeasurementKind, duration: DurationModel, closure: IntervalClosure,
-    *, native_resolution: str, date_anchor: DateAnchor = DateAnchor.EVENT_START_UTC,
-    start_meaning: str = "native event start", end_meaning: str = "native event end",
+    event: EventKind,
+    measurement: MeasurementKind,
+    duration: DurationModel,
+    closure: IntervalClosure,
+    *,
+    native_resolution: str,
+    date_anchor: DateAnchor = DateAnchor.EVENT_START_UTC,
+    start_meaning: str = "native event start",
+    end_meaning: str = "native event end",
 ) -> SemanticPolicy:
     return SemanticPolicy(
-        event_kind=event, measurement_kind=measurement, duration_model=duration, interval_closure=closure,
-        start_time_meaning=start_meaning, end_time_meaning=end_meaning, native_resolution=native_resolution,
+        event_kind=event,
+        measurement_kind=measurement,
+        duration_model=duration,
+        interval_closure=closure,
+        start_time_meaning=start_meaning,
+        end_time_meaning=end_meaning,
+        native_resolution=native_resolution,
         date_anchor=date_anchor,
     )
 
 
 def _provenance(
-    acquisition: str = "preserve_source_context", *,
+    acquisition: str = "preserve_source_context",
+    *,
     user_entered: UserEnteredHandling = UserEnteredHandling.ACCEPT_AND_FLAG,
-    source_epoch: str = "source_id_device_version_time_zone", source_priority: str = "preserve_all_mark_conflicts",
-    context: tuple[str, ...] = (), source_rules: tuple[SourceRule, ...] = (),
+    source_epoch: str = "source_id_device_version_time_zone",
+    source_priority: str = "preserve_all_mark_conflicts",
+    context: tuple[str, ...] = (),
+    source_rules: tuple[SourceRule, ...] = (),
 ) -> ProvenancePolicy:
     return ProvenancePolicy(
-        acquisition_method_strategy=acquisition, user_entered_handling=user_entered,
-        source_epoch_strategy=source_epoch, source_priority_strategy=source_priority,
+        acquisition_method_strategy=acquisition,
+        user_entered_handling=user_entered,
+        source_epoch_strategy=source_epoch,
+        source_priority_strategy=source_priority,
         retain_context_columns=tuple(dict.fromkeys(("source_id", "source_name", "device", "was_user_entered") + context)),
         source_rules=source_rules,
     )
 
 
 def _reconcile(
-    *, duplicate: str = "inherit_native_record_id_then_content", revision: str = "inherit_native_record_revision",
-    conflict: ConflictBehavior = ConflictBehavior.PRESERVE_ALL_REVIEW, identity: str = "inherit_native_event_identity",
+    *,
+    duplicate: str = "inherit_native_record_id_then_content",
+    revision: str = "inherit_native_record_revision",
+    conflict: ConflictBehavior = ConflictBehavior.PRESERVE_ALL_REVIEW,
+    identity: str = "inherit_native_event_identity",
     note: str | None = None,
 ) -> ReconciliationPolicy:
     return ReconciliationPolicy(
-        occurrence_identity_strategy=identity, exact_duplicate_strategy=duplicate, revision_strategy=revision,
-        conflict_behavior=conflict, merge_safe=True, note=note,
+        occurrence_identity_strategy=identity,
+        exact_duplicate_strategy=duplicate,
+        revision_strategy=revision,
+        conflict_behavior=conflict,
+        merge_safe=True,
+        note=note,
     )
 
 
@@ -269,28 +330,50 @@ def _curation(*rules: str, status: CurationStatus = CurationStatus.PASS, inclusi
 
 
 def _output(
-    primary: tuple[str, ...] = ("value",), *, context: tuple[str, ...] = (), derived: tuple[str, ...] = _COMMON_DERIVED,
-    prefix: tuple[str, ...] | None = None, numeric: tuple[tuple[str, str], ...] = (),
+    primary: tuple[str, ...] = ("value",),
+    *,
+    context: tuple[str, ...] = (),
+    derived: tuple[str, ...] = _COMMON_DERIVED,
+    prefix: tuple[str, ...] | None = None,
+    numeric: tuple[tuple[str, str], ...] = (),
     categorical: tuple[tuple[str, str], ...] = (),
 ) -> OutputPolicy:
     actual_prefix = prefix or tuple(col for col in _COMMON_PREFIX if col != "value" or "value" in primary)
     return OutputPolicy(
-        primary_measurement_columns=primary, retained_provenance_columns=_COMMON_PROVENANCE,
-        retained_context_columns=context, derived_columns=derived,
+        primary_measurement_columns=primary,
+        retained_provenance_columns=_COMMON_PROVENANCE,
+        retained_context_columns=context,
+        derived_columns=derived,
         sparse_columns=tuple(col for col in _COMMON_SPARSE if col in derived),
-        column_order_prefix=actual_prefix, numeric_dtypes=numeric, categorical_dtypes=categorical,
+        column_order_prefix=actual_prefix,
+        numeric_dtypes=numeric,
+        categorical_dtypes=categorical,
     )
 
 
 def _resampling(
-    support: ResamplingSupport, strategy: str, *, aggregation: str = "none", point_assignment: str = "none",
-    state_handling: str = "not_applicable", allocation: str = "none", broadcasting: str = "prohibited",
-    supports: tuple[str, ...] = (), invariant: str | None = None,
+    support: ResamplingSupport,
+    strategy: str,
+    *,
+    aggregation: str = "none",
+    point_assignment: str = "none",
+    state_handling: str = "not_applicable",
+    allocation: str = "none",
+    broadcasting: str = "prohibited",
+    supports: tuple[str, ...] = (),
+    invariant: str | None = None,
 ) -> ResamplingPolicy:
     return ResamplingPolicy(
-        support=support, default_enabled=False, strategy=strategy, aggregation=aggregation,
-        point_assignment=point_assignment, state_handling=state_handling, interval_allocation=allocation,
-        broadcasting=broadcasting, required_support_outputs=supports, conservation_invariant=invariant,
+        support=support,
+        default_enabled=False,
+        strategy=strategy,
+        aggregation=aggregation,
+        point_assignment=point_assignment,
+        state_handling=state_handling,
+        interval_allocation=allocation,
+        broadcasting=broadcasting,
+        required_support_outputs=supports,
+        conservation_invariant=invariant,
     )
 
 
@@ -298,27 +381,43 @@ def _tests(name: str, *invariants: str) -> PolicyTestContract:
     return PolicyTestContract(
         fixture_ids=(f"fixture_{name}",),
         invariants=(
-            "native_row_count_is_preserved", "native_measurement_values_are_not_mutated",
+            "native_row_count_is_preserved",
+            "native_measurement_values_are_not_mutated",
             "all_nonpass_rows_have_explanatory_flags",
         ) + invariants,
     )
 
 
 def _calibration(
-    grade: EvidenceGrade, mode: PolicyExecutionMode, rationale: str, *, audits: tuple[str, ...] = (),
+    grade: EvidenceGrade,
+    mode: PolicyExecutionMode,
+    rationale: str,
+    *,
+    audits: tuple[str, ...] = (),
     fallback: str = "Preserve native values and annotate uncertainty without canonical conversion.",
     scope: str = "all_registered_sources",
 ) -> PolicyCalibration:
     return PolicyCalibration(
-        evidence_grade=grade, execution_mode=mode, rationale=rationale, required_audits=audits,
-        safe_fallback=fallback, source_scope=scope, decision_version="calibration-1.1",
+        evidence_grade=grade,
+        execution_mode=mode,
+        rationale=rationale,
+        required_audits=audits,
+        safe_fallback=fallback,
+        source_scope=scope,
+        decision_version="calibration-1.1",
     )
 
 
 def _interval_total_policy(
-    name: str, *, raw_unit: str | None, canonical_unit: str | None, evidence: tuple[str, ...],
-    maturity: PolicyMaturity = PolicyMaturity.REVIEWED, unit_policy: UnitPolicy | None = None,
-    provenance_strategy: str = "device_or_application_estimate", notes: tuple[str, ...] = (),
+    name: str,
+    *,
+    raw_unit: str | None,
+    canonical_unit: str | None,
+    evidence: tuple[str, ...],
+    maturity: PolicyMaturity = PolicyMaturity.REVIEWED,
+    unit_policy: UnitPolicy | None = None,
+    provenance_strategy: str = "device_or_application_estimate",
+    notes: tuple[str, ...] = (),
 ) -> FeaturePolicy:
     units = unit_policy or _fixed_unit(raw_unit or "unknown", canonical_unit or raw_unit or "unknown", evidence=evidence)
     return FeaturePolicy(
@@ -333,7 +432,7 @@ def _interval_total_policy(
         provenance=_provenance(provenance_strategy),
         reconciliation=_reconcile(
             revision="inherit_native_interval_revision",
-            note="Native processing boundary-revision resolution is inherited; unresolved candidates remain explicit.",
+            note="Milestone 1 boundary-revision resolution is inherited; unresolved candidates remain explicit.",
         ),
         curation=_curation("interval_duration_positive", "nonnegative_measurement", "unresolved_same_interval_conflict", "unit_resolved_for_canonical_value", "source_epoch_transition"),
         cross_feature=CrossFeaturePolicy(),
@@ -353,10 +452,17 @@ def _interval_total_policy(
 
 
 def _point_policy(
-    name: str, *, units: UnitPolicy, evidence: tuple[str, ...], maturity: PolicyMaturity = PolicyMaturity.REVIEWED,
-    rules: tuple[str, ...] = (), provenance_strategy: str = "user_entered_or_imported",
-    provenance_context: tuple[str, ...] = (), source_rules: tuple[SourceRule, ...] = (),
-    cross_rules: tuple[str, ...] = (), measurement_kind: MeasurementKind = MeasurementKind.INTENSIVE_VALUE,
+    name: str,
+    *,
+    units: UnitPolicy,
+    evidence: tuple[str, ...],
+    maturity: PolicyMaturity = PolicyMaturity.REVIEWED,
+    rules: tuple[str, ...] = (),
+    provenance_strategy: str = "user_entered_or_imported",
+    provenance_context: tuple[str, ...] = (),
+    source_rules: tuple[SourceRule, ...] = (),
+    cross_rules: tuple[str, ...] = (),
+    measurement_kind: MeasurementKind = MeasurementKind.INTENSIVE_VALUE,
     notes: tuple[str, ...] = (),
 ) -> FeaturePolicy:
     return FeaturePolicy(
@@ -370,7 +476,9 @@ def _point_policy(
         ),
         units=units,
         provenance=_provenance(
-            provenance_strategy, context=provenance_context, source_rules=source_rules,
+            provenance_strategy,
+            context=provenance_context,
+            source_rules=source_rules,
         ),
         reconciliation=_reconcile(),
         curation=_curation("point_duration_zero", "unit_resolved_for_canonical_value", "manual_entry_context", "source_epoch_transition", *rules),
@@ -403,17 +511,21 @@ _register(
     _interval_total_policy("StepCount", raw_unit="count", canonical_unit="count", evidence=("apple_healthkit_quantity_types",)),
     _interval_total_policy("DistanceWalkingRunning", raw_unit="m", canonical_unit="m", evidence=("apple_distance_walking_running", "project_unit_fingerprints")),
     _interval_total_policy(
-        "DailyDistanceCycling", raw_unit=None, canonical_unit="m",
-        evidence=("apple_healthkit_quantity_types",), maturity=PolicyMaturity.PROVISIONAL,
+        "DailyDistanceCycling", raw_unit="m", canonical_unit="m",
+        evidence=("apple_healthkit_quantity_types", "project_unit_fingerprints"),
+        maturity=PolicyMaturity.REVIEWED,
         unit_policy=_unit(
-            status=RawUnitStatus.PARTICIPANT_SOURCE_INFERENCE, raw_unit=None,
-            candidates=("m", "km", "mi"), canonical="m",
-            resolution="participant_source_epoch_distance", conversion="resolved_distance_to_metres",
-            confidence=ConversionConfidence.PROVISIONAL,
-            unresolved=UnresolvedUnitAction.RETAIN_RAW_AND_CANDIDATES,
-            evidence=("apple_healthkit_quantity_types",),
+            status=RawUnitStatus.INFERRED_HIGH_CONFIDENCE, raw_unit="m",
+            canonical="m",
+            resolution="cohort_exporter_metres", conversion="identity",
+            confidence=ConversionConfidence.HIGH,
+            unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
+            evidence=("apple_healthkit_quantity_types", "project_unit_fingerprints"),
         ),
-        notes=("Inner records are interval totals despite the Daily name in this exporter.",),
+        notes=(
+            "Inner records are interval totals despite the Daily name in this exporter.",
+            "The full-cohort audit supports metres, including exact upstream mile-to-metre conversion fingerprints.",
+        ),
     ),
     _interval_total_policy(
         "DailyDistanceSwimming", raw_unit="m", canonical_unit="m",
@@ -521,17 +633,17 @@ for _name, _event, _maturity, _revision, _extra_rules, _evidence, _notes in (
     ))
 
 _register(FeaturePolicy(
-    identity=_identity("HeartRateVariability", maturity=PolicyMaturity.PROVISIONAL),
+    identity=_identity("HeartRateVariability", maturity=PolicyMaturity.REVIEWED),
     schema=_scalar_schema("intensive_interval", context=("metadata_sync_version",)),
     semantics=_semantics(EventKind.POINT_OR_INTERVAL, MeasurementKind.INTENSIVE_VALUE, DurationModel.ZERO_OR_EXPLICIT_INTERVAL, IntervalClosure.HALF_OPEN, native_resolution="discrete SDNN observation with zero or short interval support"),
     units=_unit(
         status=RawUnitStatus.INFERRED_HIGH_CONFIDENCE,
         raw_unit="s",
         canonical="ms",
-        resolution="cohort_hrv_seconds",
+        resolution="cohort_exporter_seconds",
         conversion="seconds_to_milliseconds",
         confidence=ConversionConfidence.HIGH,
-        unresolved=UnresolvedUnitAction.RETAIN_RAW_AND_CANDIDATES,
+        unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
         evidence=("apple_hrv_sdnn", "hrv_task_force_1996", "project_unit_fingerprints"),
         precision=3,
     ),
@@ -543,7 +655,7 @@ _register(FeaturePolicy(
     resampling=_resampling(ResamplingSupport.SUPPORTED, "intensive_window_distribution", aggregation="robust_statistic_configurable", supports=("n_observations", "observed_seconds", "source_count")),
     evidence_refs=("apple_hrv_sdnn", "hrv_task_force_1996", "project_unit_fingerprints"),
     tests=_tests("HeartRateVariability", "seconds_to_milliseconds_conversion_is_explicit"),
-    notes=("Unit policy is provisional until source/exporter conventions are validated across all epochs.",),
+    notes=("The full-cohort audit found seconds-like encoding across every observed source/version/algorithm context; canonical SDNN is milliseconds.",),
 ))
 
 # Blood pressure remains one multivariate point event.
@@ -644,17 +756,18 @@ _register(
     ),
     _point_policy(
         "WaistCircumference",
-        maturity=PolicyMaturity.PROVISIONAL,
+        maturity=PolicyMaturity.REVIEWED,
         units=_unit(
-            status=RawUnitStatus.PARTICIPANT_SOURCE_INFERENCE, raw_unit=None,
-            candidates=("in", "cm", "m"), canonical="m",
-            resolution="participant_source_epoch_length", conversion="resolved_length_to_metres",
-            confidence=ConversionConfidence.PROVISIONAL,
-            unresolved=UnresolvedUnitAction.EXCLUDE_FROM_DEFAULT_CANONICAL_ANALYSIS,
+            status=RawUnitStatus.INFERRED_HIGH_CONFIDENCE, raw_unit="in",
+            canonical="m",
+            resolution="cohort_exporter_inches", conversion="inches_to_metres",
+            confidence=ConversionConfidence.HIGH,
+            unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
             evidence=("apple_waist_circumference", "project_unit_fingerprints"), precision=4,
         ),
         evidence=("apple_waist_circumference", "who_waist", "project_unit_fingerprints"),
-        rules=("positive_measurement", "waist_protocol_context", "unit_epoch_discontinuity"),
+        rules=("positive_measurement", "waist_protocol_context"),
+        notes=("Unit conversion is reviewed; anatomical landmark and measurement protocol remain unknown.",),
     ),
 )
 
@@ -685,17 +798,17 @@ _register(
     ),
     _point_policy(
         "BodyTemperature",
-        maturity=PolicyMaturity.PROVISIONAL,
+        maturity=PolicyMaturity.REVIEWED,
         units=_unit(
-            status=RawUnitStatus.PARTICIPANT_SOURCE_INFERENCE, raw_unit=None,
-            candidates=("Cel", "degF"), canonical="Cel",
-            resolution="participant_source_epoch_temperature", conversion="resolved_temperature_to_celsius",
-            confidence=ConversionConfidence.PROVISIONAL,
-            unresolved=UnresolvedUnitAction.RETAIN_RAW_AND_CANDIDATES,
+            status=RawUnitStatus.INFERRED_HIGH_CONFIDENCE, raw_unit="Cel",
+            canonical="Cel",
+            resolution="cohort_exporter_celsius", conversion="identity",
+            confidence=ConversionConfidence.HIGH,
+            unresolved=UnresolvedUnitAction.RETAIN_RAW_ONLY,
             evidence=("apple_body_temperature", "project_unit_fingerprints"), precision=3,
         ),
         evidence=("apple_body_temperature", "project_unit_fingerprints"),
-        rules=("temperature_sensor_location", "unit_epoch_discontinuity"),
+        rules=("temperature_sensor_location",),
         source_rules=(SourceRule(
             "fevertracker_import",
             source_id="com.links.fevertracker",
@@ -746,7 +859,7 @@ _register(FeaturePolicy(
 # BAC requires source-specific acquisition-method handling.
 _register(_point_policy(
     "BloodAlcoholContent",
-    maturity=PolicyMaturity.PROVISIONAL,
+    maturity=PolicyMaturity.REVIEWED,
     measurement_kind=MeasurementKind.RATIO,
     units=_percent_fraction(evidence=("apple_healthkit_units", "project_bac_sources"), precision=4),
     evidence=("apple_healthkit_units", "project_bac_sources"),
@@ -902,95 +1015,41 @@ _register(FeaturePolicy(
     tests=_tests("Mindful", "native_session_duration_is_preserved"),
 ))
 
-# Policy-calibration gates. Reviewed policies default to convergent evidence and reviewed execution. Provisional
-# policies receive explicit source/audit gates.
-_PROVISIONAL_CALIBRATIONS: dict[str, PolicyCalibration] = {
-    "ActivitySummary": _calibration(
-        EvidenceGrade.D_UNRESOLVED, PolicyExecutionMode.BLOCK_DERIVATION,
-        "The exporter removed HealthKit date components and the observed sliding-pair payload cannot yet be assigned to a unique calendar day.",
-        audits=("activity_summary_sliding_pair_alignment", "exporter_date_component_review"),
-        fallback="Preserve every payload item, retain ambiguity flags, and do not derive one daily summary.",
-    ),
-    "BloodAlcoholContent": _calibration(
-        EvidenceGrade.B_CONVERGENT, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "HealthKit percent semantics support fraction-to-percent conversion, while acquisition meaning differs between calculator and manual/import sources.",
-        audits=("bac_source_regime_inventory", "bac_fraction_encoding_confirmation"),
-        fallback="Convert only reviewed source regimes; otherwise retain raw fraction and annotate acquisition uncertainty.",
-        scope="source_id_and_user_entry_specific",
-    ),
-    "BloodGlucose": _calibration(
-        EvidenceGrade.B_CONVERGENT, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "HealthKit permits mg/dL and mmol/L, so canonical conversion requires participant/source-epoch unit resolution.",
-        audits=("glucose_source_epoch_unit_audit", "glucose_scale_transition_audit"),
-        fallback="Retain raw glucose and omit canonical value for unresolved source epochs.",
-        scope="participant_feature_source_epoch",
-    ),
-    "BodyTemperature": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "The cohort contains Celsius-like values and conversion fingerprints, but source-specific Celsius/Fahrenheit export behavior is not fully established.",
-        audits=("temperature_source_epoch_unit_audit", "temperature_sensor_location_coverage"),
-        fallback="Retain raw temperature; convert only resolved source epochs and preserve sensor-location uncertainty.",
-        scope="participant_feature_source_epoch",
-    ),
-    "DailyDistanceCycling": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "Observed intervals are distance totals, but metre/kilometre/mile source conventions require exporter or source-epoch confirmation.",
-        audits=("cycling_distance_unit_audit", "cycling_implied_speed_audit"),
-        fallback="Retain raw distance and omit canonical metres for unresolved source epochs.",
-        scope="participant_feature_source_epoch",
-    ),
-    "EnergyConsumed": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "Dietary energy may be emitted in kcal or kJ depending on exporter/source convention.",
-        audits=("dietary_energy_unit_audit", "nutrition_source_regime_audit"),
-        fallback="Retain raw energy and omit canonical kcal for unresolved source epochs.",
-        scope="participant_feature_source_epoch",
-    ),
-    "HeartRateVariability": _calibration(
-        EvidenceGrade.B_CONVERGENT, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "HealthKit HRV SDNN uses time units and observed values are seconds-like, but all exporter/source versions must be checked before global seconds-to-milliseconds conversion.",
-        audits=("hrv_source_version_unit_audit", "hrv_algorithm_epoch_audit"),
-        fallback="Retain raw HRV and convert only source/version epochs confirmed as seconds.",
-        scope="source_version_algorithm_epoch",
-    ),
-    "Height": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "Length units vary by participant/source epoch and require continuity plus BMI consistency evidence.",
-        audits=("anthropometric_unit_epoch_audit", "bmi_height_weight_consistency"),
-        fallback="Retain raw height and omit canonical metres when the source epoch is ambiguous.",
-        scope="participant_feature_source_epoch",
-    ),
-    "LeanBodyMass": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "Mass units vary by source epoch; synchronized body-composition equations provide strong but not universal evidence.",
-        audits=("anthropometric_unit_epoch_audit", "lean_mass_weight_body_fat_consistency"),
-        fallback="Retain raw lean mass and omit canonical kilograms when unresolved.",
-        scope="participant_feature_source_epoch",
-    ),
-    "PeakFlow": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.CONSERVATIVE_ANNOTATION,
-        "Values are compatible with L/min, but the feature is sparse and lacks explicit unit, maneuver, device, and quality context.",
-        audits=("peak_flow_unit_inventory", "peak_flow_source_context_audit"),
-        fallback="Preserve all points without automatic unit conversion or session/best-attempt derivation.",
-    ),
-    "WaistCircumference": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "Strong inch conversion fingerprints exist, but unit and measurement protocol can vary by source epoch.",
-        audits=("waist_unit_epoch_audit", "waist_protocol_context_audit"),
-        fallback="Retain raw waist values; convert only resolved source epochs and retain protocol-context warnings.",
-        scope="participant_feature_source_epoch",
-    ),
-    "Weight": _calibration(
-        EvidenceGrade.C_SUGGESTIVE, PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
-        "Mass units vary by participant/source epoch and require continuity, BMI, and body-composition evidence.",
-        audits=("anthropometric_unit_epoch_audit", "bmi_height_weight_consistency", "lean_mass_weight_body_fat_consistency"),
-        fallback="Retain raw weight and omit canonical kilograms when the source epoch is ambiguous.",
-        scope="participant_feature_source_epoch",
-    ),
+# Policy-calibration gates. Reviewed policies default to convergent evidence and
+# reviewed execution. Provisional policies receive explicit source/audit gates.
+_CALIBRATION_AUDITS: dict[str, tuple[str, ...]] = {
+    "ActivitySummary": ("activity_summary_sliding_pair_alignment", "exporter_date_component_review"),
+    "BloodAlcoholContent": ("bac_source_regime_inventory", "bac_fraction_encoding_confirmation"),
+    "BloodGlucose": ("glucose_source_epoch_unit_audit", "glucose_scale_transition_audit"),
+    "BodyTemperature": ("temperature_source_epoch_unit_audit", "temperature_sensor_location_coverage"),
+    "DailyDistanceCycling": ("cycling_distance_unit_audit", "cycling_implied_speed_audit"),
+    "EnergyConsumed": ("dietary_energy_unit_audit", "nutrition_source_regime_audit", "nutrition_energy_macronutrient_consistency"),
+    "HeartRateVariability": ("hrv_source_version_unit_audit", "hrv_algorithm_epoch_audit"),
+    "Height": ("anthropometric_unit_epoch_audit", "bmi_height_weight_consistency"),
+    "LeanBodyMass": ("anthropometric_unit_epoch_audit", "lean_mass_weight_body_fat_consistency"),
+    "PeakFlow": ("peak_flow_unit_inventory", "peak_flow_source_context_audit"),
+    "WaistCircumference": ("waist_unit_epoch_audit", "waist_protocol_context_audit"),
+    "Weight": ("anthropometric_unit_epoch_audit", "bmi_height_weight_consistency", "lean_mass_weight_body_fat_consistency"),
+}
+
+_DECISION_CALIBRATIONS: dict[str, PolicyCalibration] = {
+    name: PolicyCalibration(
+        evidence_grade=decision.evidence_grade,
+        execution_mode=decision.execution_mode,
+        rationale=decision.decision,
+        required_audits=_CALIBRATION_AUDITS.get(name, ()),
+        safe_fallback=decision.safe_fallback,
+        source_scope=decision.source_scope,
+        decision_version="full-cohort-audit-1",
+    )
+    for name, decision in POLICY_CALIBRATION_DECISIONS.items()
 }
 
 for _feature_name, _policy in tuple(_POLICIES.items()):
-    _calibration_value = _PROVISIONAL_CALIBRATIONS.get(_feature_name)
+    _decision_value = POLICY_CALIBRATION_DECISIONS.get(_feature_name)
+    if _decision_value is not None and _policy.identity.maturity is not _decision_value.maturity:
+        _policy = replace(_policy, identity=replace(_policy.identity, maturity=_decision_value.maturity))
+    _calibration_value = _DECISION_CALIBRATIONS.get(_feature_name)
     if _calibration_value is None:
         _calibration_value = _calibration(
             EvidenceGrade.B_CONVERGENT,
@@ -1030,7 +1089,8 @@ UNKNOWN_POLICY = FeaturePolicy(
     evidence_refs=(),
     tests=_tests("unknown", "unknown_feature_is_copied_without_canonical_conversion", "unknown_feature_is_excluded_by_default"),
     calibration=_calibration(
-        EvidenceGrade.D_UNRESOLVED, PolicyExecutionMode.BLOCK_DERIVATION,
+        EvidenceGrade.D_UNRESOLVED,
+        PolicyExecutionMode.BLOCK_DERIVATION,
         "No reviewed policy exists for this feature.",
         audits=("unknown_feature_schema_and_semantics_review",),
         fallback="Copy native rows unchanged, mark review, exclude from default curated analyses, and prohibit automatic resampling.",
@@ -1069,7 +1129,7 @@ def _all_evidence_refs(policy: FeaturePolicy) -> set[str]:
 
 
 def validate_registry() -> RegistryValidationResult:
-    errors: list[str] = []
+    errors: list[str] = list(validate_decisions())
     warnings: list[str] = []
 
     observed = set(COHORT_OBSERVED_FEATURES)
@@ -1097,7 +1157,7 @@ def validate_registry() -> RegistryValidationResult:
         if not policy.semantics.native_resolution:
             errors.append(prefix + "native_resolution is empty")
         if policy.resampling.default_enabled:
-            errors.append(prefix + "resampling must not be enabled in curation processing")
+            errors.append(prefix + "resampling must not be enabled in milestone 2")
         if policy.resampling.strategy not in ALL_STRATEGY_CATALOGS["resampling"]:
             errors.append(prefix + f"unknown resampling strategy {policy.resampling.strategy!r}")
         if policy.provenance.acquisition_method_strategy not in ALL_STRATEGY_CATALOGS["acquisition"]:
@@ -1166,6 +1226,18 @@ def validate_registry() -> RegistryValidationResult:
             errors.append(prefix + f"policy fingerprint collides with {fingerprints[fingerprint]!r}")
         fingerprints[fingerprint] = name
 
+    for feature, decision in POLICY_CALIBRATION_DECISIONS.items():
+        policy = CURATION_POLICIES.get(feature)
+        if policy is None:
+            errors.append(f"{feature}: calibration decision has no policy")
+            continue
+        if policy.identity.maturity is not decision.maturity:
+            errors.append(f"{feature}: policy maturity does not match calibration decision")
+        if policy.calibration.evidence_grade is not decision.evidence_grade:
+            errors.append(f"{feature}: evidence grade does not match calibration decision")
+        if policy.calibration.execution_mode is not decision.execution_mode:
+            errors.append(f"{feature}: execution mode does not match calibration decision")
+
     if UNKNOWN_POLICY.identity.cohort_observed:
         errors.append("Unknown fallback must not be cohort_observed")
     if UNKNOWN_POLICY.identity.maturity is not PolicyMaturity.UNKNOWN:
@@ -1195,7 +1267,10 @@ def registry_fingerprint() -> str:
 
 
 def registry_payload(
-    *, features: Iterable[str] | None = None, include_evidence: bool = False, include_rules: bool = False,
+    *,
+    features: Iterable[str] | None = None,
+    include_evidence: bool = False,
+    include_rules: bool = False,
     include_unknown: bool = True,
 ) -> dict[str, object]:
     selected_names = tuple(features) if features is not None else known_curation_features()
