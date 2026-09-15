@@ -62,9 +62,8 @@ from wearable_project.curation.strategies import ALL_STRATEGY_CATALOGS
 CURATION_REGISTRY_VERSION = "0.2.0a1.2-policy-3"
 POLICY_CONTRACT_VERSION = "1.2.0-alpha1"
 
-# Exactly the 33 Apple HealthKit feature names observed in the accepted full
-# cohort run. New names are handled through UNKNOWN_POLICY and must not be
-# silently converted.
+# Exactly the 33 Apple HealthKit feature names observed in the accepted full cohort run. New names are handled
+# through UNKNOWN_POLICY and must not be silently converted.
 COHORT_OBSERVED_FEATURES: tuple[str, ...] = (
     "ActiveEnergyBurned",
     "ActivitySummary",
@@ -161,7 +160,9 @@ _COMMON_SPARSE = (
 )
 
 
-def _identity(name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, aliases: tuple[str, ...] = ()) -> IdentityPolicy:
+def _identity(
+name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, aliases: tuple[str, ...] = ()
+) -> IdentityPolicy:
     return IdentityPolicy(
         canonical_name=name,
         aliases=aliases,
@@ -171,15 +172,14 @@ def _identity(name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, 
     )
 
 
-def _measurement(column: str = "value", role: str = "value", *, value_kind: str = "numeric", required: bool = True) -> MeasurementField:
+def _measurement(
+column: str = "value", role: str = "value", *, value_kind: str = "numeric", required: bool = True
+) -> MeasurementField:
     return MeasurementField(column=column, role=role, value_kind=value_kind, required=required)
 
 
 def _scalar_schema(
-    family: str,
-    *,
-    context: tuple[str, ...] = (),
-    optional: tuple[str, ...] = (),
+    family: str, *, context: tuple[str, ...] = (), optional: tuple[str, ...] = (),
     accepted: tuple[str, ...] = ("list[dict]", "dict"),
 ) -> SchemaPolicy:
     return SchemaPolicy(
@@ -194,18 +194,9 @@ def _scalar_schema(
 
 
 def _unit(
-    *,
-    measurement: str = "value",
-    status: RawUnitStatus,
-    raw_unit: str | None,
-    candidates: tuple[str, ...] = (),
-    canonical: str | None,
-    resolution: str,
-    conversion: str,
-    confidence: ConversionConfidence,
-    unresolved: UnresolvedUnitAction,
-    evidence: tuple[str, ...],
-    precision: int | None = None,
+    *, measurement: str = "value", status: RawUnitStatus, raw_unit: str | None, candidates: tuple[str, ...] = (),
+    canonical: str | None, resolution: str, conversion: str, confidence: ConversionConfidence,
+    unresolved: UnresolvedUnitAction, evidence: tuple[str, ...], precision: int | None = None,
 ) -> UnitPolicy:
     return UnitPolicy((MeasurementUnitPolicy(
         measurement=measurement,
@@ -236,7 +227,9 @@ def _no_unit(measurement: str = "value") -> UnitPolicy:
     )
 
 
-def _fixed_unit(raw: str, canonical: str, *, evidence: tuple[str, ...], conversion: str = "identity", precision: int | None = None) -> UnitPolicy:
+def _fixed_unit(
+    raw: str, canonical: str, *, evidence: tuple[str, ...], conversion: str = "identity", precision: int | None = None
+) -> UnitPolicy:
     return _unit(
         status=RawUnitStatus.SOURCE_CONVENTION,
         raw_unit=raw,
@@ -265,15 +258,9 @@ def _percent_fraction(*, evidence: tuple[str, ...], precision: int | None = 3) -
 
 
 def _semantics(
-    event: EventKind,
-    measurement: MeasurementKind,
-    duration: DurationModel,
-    closure: IntervalClosure,
-    *,
-    native_resolution: str,
-    date_anchor: DateAnchor = DateAnchor.EVENT_START_UTC,
-    start_meaning: str = "native event start",
-    end_meaning: str = "native event end",
+    event: EventKind, measurement: MeasurementKind, duration: DurationModel, closure: IntervalClosure,
+    *, native_resolution: str, date_anchor: DateAnchor = DateAnchor.EVENT_START_UTC,
+    start_meaning: str = "native event start", end_meaning: str = "native event end",
 ) -> SemanticPolicy:
     return SemanticPolicy(
         event_kind=event,
@@ -288,13 +275,10 @@ def _semantics(
 
 
 def _provenance(
-    acquisition: str = "preserve_source_context",
-    *,
+    acquisition: str = "preserve_source_context", *,
     user_entered: UserEnteredHandling = UserEnteredHandling.ACCEPT_AND_FLAG,
-    source_epoch: str = "source_id_device_version_time_zone",
-    source_priority: str = "preserve_all_mark_conflicts",
-    context: tuple[str, ...] = (),
-    source_rules: tuple[SourceRule, ...] = (),
+    source_epoch: str = "source_id_device_version_time_zone", source_priority: str = "preserve_all_mark_conflicts",
+    context: tuple[str, ...] = (), source_rules: tuple[SourceRule, ...] = (),
 ) -> ProvenancePolicy:
     return ProvenancePolicy(
         acquisition_method_strategy=acquisition,
@@ -307,11 +291,8 @@ def _provenance(
 
 
 def _reconcile(
-    *,
-    duplicate: str = "inherit_native_record_id_then_content",
-    revision: str = "inherit_native_record_revision",
-    conflict: ConflictBehavior = ConflictBehavior.PRESERVE_ALL_REVIEW,
-    identity: str = "inherit_native_event_identity",
+    *, duplicate: str = "inherit_native_record_id_then_content", revision: str = "inherit_native_record_revision",
+    conflict: ConflictBehavior = ConflictBehavior.PRESERVE_ALL_REVIEW, identity: str = "inherit_native_event_identity",
     note: str | None = None,
 ) -> ReconciliationPolicy:
     return ReconciliationPolicy(
@@ -324,19 +305,16 @@ def _reconcile(
     )
 
 
-def _curation(*rules: str, status: CurationStatus = CurationStatus.PASS, inclusion: InclusionPolicy = InclusionPolicy.INCLUDE) -> CurationPolicy:
+def _curation(
+    *rules: str, status: CurationStatus = CurationStatus.PASS, inclusion: InclusionPolicy = InclusionPolicy.INCLUDE
+) -> CurationPolicy:
     base = ("required_measurements_present", "finite_numeric", "timestamp_order")
     return CurationPolicy(rule_ids=tuple(dict.fromkeys(base + rules)), default_status=status, default_inclusion=inclusion)
 
 
 def _output(
-    primary: tuple[str, ...] = ("value",),
-    *,
-    context: tuple[str, ...] = (),
-    derived: tuple[str, ...] = _COMMON_DERIVED,
-    prefix: tuple[str, ...] | None = None,
-    numeric: tuple[tuple[str, str], ...] = (),
-    categorical: tuple[tuple[str, str], ...] = (),
+    primary: tuple[str, ...] = ("value",), *, context: tuple[str, ...] = (), derived: tuple[str, ...] = _COMMON_DERIVED,
+    prefix: tuple[str, ...] | None = None, numeric: tuple[tuple[str, str], ...] = (), categorical: tuple[tuple[str, str], ...] = (),
 ) -> OutputPolicy:
     actual_prefix = prefix or tuple(col for col in _COMMON_PREFIX if col != "value" or "value" in primary)
     return OutputPolicy(
@@ -352,16 +330,9 @@ def _output(
 
 
 def _resampling(
-    support: ResamplingSupport,
-    strategy: str,
-    *,
-    aggregation: str = "none",
-    point_assignment: str = "none",
-    state_handling: str = "not_applicable",
-    allocation: str = "none",
-    broadcasting: str = "prohibited",
-    supports: tuple[str, ...] = (),
-    invariant: str | None = None,
+    support: ResamplingSupport, strategy: str, *, aggregation: str = "none", point_assignment: str = "none",
+    state_handling: str = "not_applicable", allocation: str = "none", broadcasting: str = "prohibited",
+    supports: tuple[str, ...] = (), invariant: str | None = None,
 ) -> ResamplingPolicy:
     return ResamplingPolicy(
         support=support,
@@ -389,11 +360,7 @@ def _tests(name: str, *invariants: str) -> PolicyTestContract:
 
 
 def _calibration(
-    grade: EvidenceGrade,
-    mode: PolicyExecutionMode,
-    rationale: str,
-    *,
-    audits: tuple[str, ...] = (),
+    grade: EvidenceGrade, mode: PolicyExecutionMode, rationale: str, *, audits: tuple[str, ...] = (),
     fallback: str = "Preserve native values and annotate uncertainty without canonical conversion.",
     scope: str = "all_registered_sources",
 ) -> PolicyCalibration:
@@ -409,23 +376,16 @@ def _calibration(
 
 
 def _interval_total_policy(
-    name: str,
-    *,
-    raw_unit: str | None,
-    canonical_unit: str | None,
-    evidence: tuple[str, ...],
-    maturity: PolicyMaturity = PolicyMaturity.REVIEWED,
-    unit_policy: UnitPolicy | None = None,
-    provenance_strategy: str = "device_or_application_estimate",
-    notes: tuple[str, ...] = (),
+    name: str, *, raw_unit: str | None, canonical_unit: str | None, evidence: tuple[str, ...],
+    maturity: PolicyMaturity = PolicyMaturity.REVIEWED, unit_policy: UnitPolicy | None = None,
+    provenance_strategy: str = "device_or_application_estimate", notes: tuple[str, ...] = (),
 ) -> FeaturePolicy:
     units = unit_policy or _fixed_unit(raw_unit or "unknown", canonical_unit or raw_unit or "unknown", evidence=evidence)
     return FeaturePolicy(
         identity=_identity(name, maturity=maturity),
         schema=_scalar_schema("interval_total"),
         semantics=_semantics(
-            EventKind.INTERVAL, MeasurementKind.EXTENSIVE_TOTAL,
-            DurationModel.EXPLICIT_INTERVAL, IntervalClosure.HALF_OPEN,
+            EventKind.INTERVAL, MeasurementKind.EXTENSIVE_TOTAL, DurationModel.EXPLICIT_INTERVAL, IntervalClosure.HALF_OPEN,
             native_resolution="source-defined interval total",
         ),
         units=units,
@@ -434,7 +394,10 @@ def _interval_total_policy(
             revision="inherit_native_interval_revision",
             note="Milestone 1 boundary-revision resolution is inherited; unresolved candidates remain explicit.",
         ),
-        curation=_curation("interval_duration_positive", "nonnegative_measurement", "unresolved_same_interval_conflict", "unit_resolved_for_canonical_value", "source_epoch_transition"),
+        curation=_curation(
+            "interval_duration_positive", "nonnegative_measurement", "unresolved_same_interval_conflict",
+            "unit_resolved_for_canonical_value", "source_epoch_transition"
+        ),
         cross_feature=CrossFeaturePolicy(),
         output=_output(),
         resampling=_resampling(
@@ -452,34 +415,21 @@ def _interval_total_policy(
 
 
 def _point_policy(
-    name: str,
-    *,
-    units: UnitPolicy,
-    evidence: tuple[str, ...],
-    maturity: PolicyMaturity = PolicyMaturity.REVIEWED,
-    rules: tuple[str, ...] = (),
-    provenance_strategy: str = "user_entered_or_imported",
-    provenance_context: tuple[str, ...] = (),
-    source_rules: tuple[SourceRule, ...] = (),
-    cross_rules: tuple[str, ...] = (),
-    measurement_kind: MeasurementKind = MeasurementKind.INTENSIVE_VALUE,
+    name: str, *, units: UnitPolicy, evidence: tuple[str, ...], maturity: PolicyMaturity = PolicyMaturity.REVIEWED,
+    rules: tuple[str, ...] = (), provenance_strategy: str = "user_entered_or_imported",
+    provenance_context: tuple[str, ...] = (), source_rules: tuple[SourceRule, ...] = (),
+    cross_rules: tuple[str, ...] = (), measurement_kind: MeasurementKind = MeasurementKind.INTENSIVE_VALUE,
     notes: tuple[str, ...] = (),
 ) -> FeaturePolicy:
     return FeaturePolicy(
         identity=_identity(name, maturity=maturity),
         schema=_scalar_schema("point_scalar", context=provenance_context),
         semantics=_semantics(
-            EventKind.POINT, measurement_kind,
-            DurationModel.ZERO_DURATION_POINT, IntervalClosure.POINT,
-            native_resolution="instantaneous point observation",
-            end_meaning="same instant as native start",
+            EventKind.POINT, measurement_kind, DurationModel.ZERO_DURATION_POINT, IntervalClosure.POINT,
+            native_resolution="instantaneous point observation", end_meaning="same instant as native start",
         ),
         units=units,
-        provenance=_provenance(
-            provenance_strategy,
-            context=provenance_context,
-            source_rules=source_rules,
-        ),
+        provenance=_provenance(provenance_strategy, context=provenance_context, source_rules=source_rules,),
         reconciliation=_reconcile(),
         curation=_curation("point_duration_zero", "unit_resolved_for_canonical_value", "manual_entry_context", "source_epoch_transition", *rules),
         cross_feature=CrossFeaturePolicy(cross_rules),
@@ -1015,8 +965,8 @@ _register(FeaturePolicy(
     tests=_tests("Mindful", "native_session_duration_is_preserved"),
 ))
 
-# Policy-calibration gates. Reviewed policies default to convergent evidence and
-# reviewed execution. Provisional policies receive explicit source/audit gates.
+# Policy-calibration gates. Reviewed policies default to convergent evidence and reviewed execution. Provisional
+# policies receive explicit source/audit gates.
 _CALIBRATION_AUDITS: dict[str, tuple[str, ...]] = {
     "ActivitySummary": ("activity_summary_sliding_pair_alignment", "exporter_date_component_review"),
     "BloodAlcoholContent": ("bac_source_regime_inventory", "bac_fraction_encoding_confirmation"),
@@ -1267,10 +1217,7 @@ def registry_fingerprint() -> str:
 
 
 def registry_payload(
-    *,
-    features: Iterable[str] | None = None,
-    include_evidence: bool = False,
-    include_rules: bool = False,
+    *, features: Iterable[str] | None = None, include_evidence: bool = False, include_rules: bool = False,
     include_unknown: bool = True,
 ) -> dict[str, object]:
     selected_names = tuple(features) if features is not None else known_curation_features()

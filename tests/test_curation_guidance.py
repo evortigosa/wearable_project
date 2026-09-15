@@ -9,9 +9,7 @@ from wearable_project.curation.evidence import EVIDENCE
 from wearable_project.curation.explain import (
     evidence_for_feature, feature_explanation, render_all_guides_markdown, render_feature_text,
 )
-from wearable_project.curation.guidance import (
-    FEATURE_GUIDES, get_feature_guide, guidance_fingerprint,
-)
+from wearable_project.curation.guidance import FEATURE_GUIDES, get_feature_guide, guidance_fingerprint
 from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES
 
 

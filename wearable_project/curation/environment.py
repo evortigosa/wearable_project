@@ -137,10 +137,9 @@ def environment_manifest() -> EnvironmentManifest:
     if local_checkout:
         source_kind = "local_checkout"
     elif dist_package is not None and package_path == dist_package:
-        # The imported package is exactly the package registered by the
-        # installed distribution. This is true for a normal wheel install and
-        # for isolated --target validation directories, even when the target
-        # is not one of Python's conventional site-packages roots.
+        # The imported package is exactly the package registered by the installed distribution. This is true for
+        # a normal wheel install and for isolated --target validation directories, even when the target is not
+        # one of Python's conventional site-packages roots.
         source_kind = "installed_distribution"
     elif in_site_packages:
         source_kind = "installed_distribution"
@@ -150,9 +149,7 @@ def environment_manifest() -> EnvironmentManifest:
         source_kind = "local_source_shadowing_installed_distribution"
 
     actual = {
-        name: _hash(curation_root / name)
-        for name in _TRACKED_MODULES
-        if (curation_root / name).is_file()
+        name: _hash(curation_root / name) for name in _TRACKED_MODULES if (curation_root / name).is_file()
     }
     try:
         from wearable_project.curation.release_manifest import (
@@ -168,8 +165,7 @@ def environment_manifest() -> EnvironmentManifest:
         EXPECTED_GUIDANCE_FINGERPRINT = None
         EXPECTED_DECISIONS_FINGERPRINT = None
     integrity = {
-        name: actual.get(name) == expected_hash
-        for name, expected_hash in expected.items()
+        name: actual.get(name) == expected_hash for name, expected_hash in expected.items()
     }
     warnings: list[str] = []
     if source_kind in {"local_checkout", "local_source_shadowing_installed_distribution"}:

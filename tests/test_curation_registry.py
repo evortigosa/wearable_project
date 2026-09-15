@@ -10,9 +10,7 @@ import io
 import json
 from pathlib import Path
 import pytest
-from wearable_project.curation.models import (
-    CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport,
-)
+from wearable_project.curation.models import CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport
 from wearable_project.curation.registry import (
     COHORT_OBSERVED_FEATURES, CURATION_POLICIES, CURATION_REGISTRY_VERSION, UNKNOWN_POLICY,
     get_policy, known_curation_features, matrix_csv, registry_fingerprint, registry_payload, validate_registry,

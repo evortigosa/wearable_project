@@ -5,14 +5,12 @@ CLI for native participant-feature processing.
 
 
 from __future__ import annotations
-
 import argparse
 import csv
 import io
 import json
 import sys
 from pathlib import Path
-
 from wearable_project import __version__
 from wearable_project.processing.pipeline import process_dataset
 from wearable_project.processing.registry import REGISTRY_VERSION, known_features
@@ -30,8 +28,7 @@ def participant_selection(path: Path | None) -> set[str] | None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="wearable-project",
-        description="Clean cumulative Apple HealthKit exports into participant/feature CSV folders.",
+        prog="wearable-project", description="Clean cumulative Apple HealthKit exports into participant/feature CSV folders.",
     )
     parser.add_argument("--version", action="version", version=f"wearable-project {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -43,8 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--max-in-flight", type=int, help="Maximum submitted unfinished participant tasks")
     process.add_argument("--mode", choices=("auto", "rebuild"), default="auto")
     process.add_argument(
-        "--snapshot-policy", choices=("strict-cumulative", "authoritative", "append-only"),
-        default="strict-cumulative",
+        "--snapshot-policy", choices=("strict-cumulative", "authoritative", "append-only"), default="strict-cumulative",
     )
     process.add_argument(
         "--row-error-policy", choices=("fail-participant", "skip-row"), default="fail-participant",
@@ -62,40 +58,33 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--run-id", help="Specific run ID; defaults to the latest tracked run")
     report.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     report.add_argument(
-        "--include-details", action="store_true",
-        help="Include participant, feature, and diagnostic rows in JSON output",
+        "--include-details", action="store_true", help="Include participant, feature, and diagnostic rows in JSON output",
     )
 
     registry = commands.add_parser("registry", help="List Milestone 1 native feature policies")
     registry.add_argument("--json", action="store_true")
 
     curation_registry = commands.add_parser(
-        "curation-registry",
-        help="Inspect and validate the Milestone 2 feature-policy matrix",
+        "curation-registry", help="Inspect and validate the Milestone 2 feature-policy matrix",
     )
     curation_registry.add_argument(
-        "--format", choices=("table", "json", "csv"), default="table",
-        help="Output representation",
+        "--format", choices=("table", "json", "csv"), default="table", help="Output representation",
     )
     curation_registry.add_argument(
-        "--feature", action="append", dest="features",
-        help="Restrict output to one feature; repeat for several features",
+        "--feature", action="append", dest="features", help="Restrict output to one feature; repeat for several features",
     )
     curation_registry.add_argument(
-        "--include-evidence", action="store_true",
-        help="Include the evidence catalog in JSON output",
+        "--include-evidence", action="store_true", help="Include the evidence catalog in JSON output",
     )
     curation_registry.add_argument(
-        "--include-rules", action="store_true",
-        help="Include rule declarations in JSON output",
+        "--include-rules", action="store_true", help="Include rule declarations in JSON output",
     )
     curation_registry.add_argument(
         "--output", type=Path, help="Write output to this file instead of stdout",
     )
 
     describe = commands.add_parser(
-        "describe-feature",
-        help="Explain one or all HealthKit features, their native semantics, caveats, and evidence",
+        "describe-feature", help="Explain one or all HealthKit features, their native semantics, caveats, and evidence",
     )
     describe.add_argument("feature", nargs="?", help="Feature name; omit only with --all")
     describe.add_argument("--all", action="store_true", help="Render the complete feature guide")
@@ -119,8 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     explain_unit.add_argument("--format", choices=("text", "json"), default="text")
 
     audit = commands.add_parser(
-        "curation-audit",
-        help="Run a read-only policy-calibration audit over a Milestone 1 native root",
+        "curation-audit", help="Run a read-only policy-calibration audit over a Milestone 1 native root",
     )
     audit.add_argument("--input-native", type=Path, required=True)
     audit.add_argument("--output", type=Path, required=True)
@@ -133,14 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--json-summary", action="store_true")
 
     environment = commands.add_parser(
-        "curation-environment",
-        help="Report the imported curation source, wheel location, fingerprints, and module integrity",
+        "curation-environment", help="Report the imported curation source, wheel location, fingerprints, and module integrity",
     )
     environment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     decisions = commands.add_parser(
-        "policy-decisions",
-        help="Inspect the versioned human calibration decisions used by Milestone 2",
+        "policy-decisions", help="Inspect the versioned human calibration decisions used by Milestone 2",
     )
     decisions.add_argument("--format", choices=("table", "json", "csv"), default="table")
     decisions.add_argument("--feature", action="append", dest="decision_features")
@@ -403,8 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.format == "json":
             rendered = json.dumps(
                 registry_payload(
-                    features=features, include_evidence=args.include_evidence,
-                    include_rules=args.include_rules,
+                    features=features, include_evidence=args.include_evidence, include_rules=args.include_rules,
                 ),
                 indent=2, sort_keys=True, ensure_ascii=False,
             ) + "\n"

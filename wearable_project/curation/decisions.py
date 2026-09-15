@@ -11,9 +11,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 from typing import Any, Mapping
-from wearable_project.curation.models import (
-    EvidenceGrade, PolicyExecutionMode, PolicyMaturity,
-)
+from wearable_project.curation.models import EvidenceGrade, PolicyExecutionMode, PolicyMaturity
 
 
 DECISION_SET_VERSION = "0.2.0a1.2-decisions-1"
@@ -50,17 +48,8 @@ class CalibrationDecision:
 
 
 def _decision(
-    feature: str,
-    maturity: PolicyMaturity,
-    grade: EvidenceGrade,
-    mode: PolicyExecutionMode,
-    decision: str,
-    unit_decision: str,
-    source_scope: str,
-    fallback: str,
-    *,
-    required: tuple[str, ...] = (),
-    caveats: tuple[str, ...] = (),
+    feature: str, maturity: PolicyMaturity, grade: EvidenceGrade, mode: PolicyExecutionMode, decision: str,
+    unit_decision: str, source_scope: str, fallback: str, *, required: tuple[str, ...] = (), caveats: tuple[str, ...] = (),
 ) -> CalibrationDecision:
     return CalibrationDecision(
         feature=feature,
@@ -237,8 +226,7 @@ def decisions_payload() -> dict[str, Any]:
         "decision_basis": DECISION_BASIS,
         "decision_fingerprint": decisions_fingerprint(),
         "features": {
-            name: decision.as_dict()
-            for name, decision in sorted(POLICY_CALIBRATION_DECISIONS.items())
+            name: decision.as_dict() for name, decision in sorted(POLICY_CALIBRATION_DECISIONS.items())
         },
     }
 
@@ -248,8 +236,7 @@ def decisions_fingerprint() -> str:
         "decision_set_version": DECISION_SET_VERSION,
         "decision_basis": DECISION_BASIS,
         "features": {
-            name: decision.as_dict()
-            for name, decision in sorted(POLICY_CALIBRATION_DECISIONS.items())
+            name: decision.as_dict() for name, decision in sorted(POLICY_CALIBRATION_DECISIONS.items())
         },
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

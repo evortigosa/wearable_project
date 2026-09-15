@@ -442,8 +442,7 @@ def _candidate_rows(context_row: Mapping[str, Any], feature: str) -> list[dict[s
 
 
 def _audit_feature_file(
-    participant: str,
-    path: Path,
+    participant: str, path: Path,
 ) -> tuple[
     list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]],
     list[dict[str, Any]], dict[str, Any], int, list[dict[str, Any]],
@@ -694,11 +693,7 @@ def _nearest_merge(left: pd.DataFrame, right: pd.DataFrame, name: str) -> pd.Dat
 
 
 def _bounded_metrics(
-    frame: pd.DataFrame,
-    *,
-    error_column: str,
-    relative_column: str,
-    delta_columns: Sequence[str],
+    frame: pd.DataFrame, *, error_column: str, relative_column: str, delta_columns: Sequence[str],
 ) -> dict[str, Any]:
     output: dict[str, Any] = {}
     base = frame.dropna(subset=[error_column, relative_column, *delta_columns])
@@ -1041,13 +1036,9 @@ _AUDIT_OUTPUT_MAP: dict[str, tuple[str, str]] = {
 
 
 def _audit_coverage_rows(
-    features: Sequence[str],
-    group_rows: Sequence[Mapping[str, Any]],
-    epoch_rows: Sequence[Mapping[str, Any]],
-    candidate_rows: Sequence[Mapping[str, Any]],
-    temporal_rows: Sequence[Mapping[str, Any]],
-    activity_rows: Sequence[Mapping[str, Any]],
-    cross_rows: Sequence[Mapping[str, Any]],
+    features: Sequence[str], group_rows: Sequence[Mapping[str, Any]], epoch_rows: Sequence[Mapping[str, Any]],
+    candidate_rows: Sequence[Mapping[str, Any]], temporal_rows: Sequence[Mapping[str, Any]],
+    activity_rows: Sequence[Mapping[str, Any]], cross_rows: Sequence[Mapping[str, Any]],
     nutrition_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     group_counts: dict[str, int] = defaultdict(int)
@@ -1121,11 +1112,8 @@ def _audit_coverage_rows(
 
 
 def _policy_decision_rows(
-    features: Sequence[str],
-    group_counts: Mapping[str, int],
-    epoch_counts: Mapping[str, int],
-    candidate_counts: Mapping[str, int],
-    coverage_rows: Sequence[Mapping[str, Any]],
+    features: Sequence[str], group_counts: Mapping[str, int], epoch_counts: Mapping[str, int],
+    candidate_counts: Mapping[str, int], coverage_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     coverage_by_feature: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for coverage in coverage_rows:
@@ -1198,15 +1186,9 @@ def _write_policy_payload_manifest(path: Path, features: Sequence[str], environm
 
 
 def run_curation_audit(
-    input_native: Path,
-    output: Path,
-    *,
-    workers: int = 4,
-    max_in_flight: int | None = None,
-    policy_scope: str = "calibration",
-    features: Iterable[str] | None = None,
-    selected_participants: set[str] | None = None,
-    overwrite: bool = False,
+    input_native: Path, output: Path, *, workers: int = 4, max_in_flight: int | None = None,
+    policy_scope: str = "calibration", features: Iterable[str] | None = None,
+    selected_participants: set[str] | None = None, overwrite: bool = False,
 ) -> AuditSummary:
     """Run a read-only calibration audit over a Milestone 1 native root."""
 
@@ -1359,19 +1341,16 @@ def run_curation_audit(
         for name, rows in table_rows.items():
             _write_csv(staging / name, rows, fieldnames=_CSV_BASE_SCHEMAS[name])
         (staging / "policy_calibration_decisions.json").write_text(
-            json.dumps(decisions_payload(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+            json.dumps(decisions_payload(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
         )
         _write_policy_payload_manifest(staging / "policy_payload_manifest.json", selected_features, environment)
         (staging / "audit_environment.json").write_text(
-            json.dumps(environment, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+            json.dumps(environment, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
         )
 
         invalid_timestamp_rows = sum(
             int(row.get("invalid_timestamp_rows") or 0)
-            for row in quality_rows
-            if row.get("audit_stage") == "source-context-audit"
+            for row in quality_rows if row.get("audit_stage") == "source-context-audit"
         )
         finished_at = _iso_now()
         summary = AuditSummary(
@@ -1410,8 +1389,7 @@ def run_curation_audit(
             failures=failures,
         )
         (staging / "policy_audit_summary.json").write_text(
-            json.dumps(summary.as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+            json.dumps(summary.as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
         )
 
         backup: Path | None = None

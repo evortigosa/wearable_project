@@ -73,8 +73,7 @@ def feature_explanation(feature: str, *, include_rules: bool = False, include_so
 def rule_explanation(rule_id: str) -> dict[str, object]:
     rule = get_rule(rule_id)
     return {
-        "rule": to_primitive(rule),
-        "sources": {ref: to_primitive(EVIDENCE[ref]) for ref in rule.evidence_refs},
+        "rule": to_primitive(rule), "sources": {ref: to_primitive(EVIDENCE[ref]) for ref in rule.evidence_refs},
     }
 
 
@@ -87,9 +86,7 @@ def unit_policy_explanation(feature: str) -> dict[str, object]:
         "measurements": [to_primitive(item) for item in policy.units.measurements],
         "cross_feature_rules": list(policy.cross_feature.rule_ids),
         "safe_fallback": policy.calibration.safe_fallback,
-        "sources": {
-            source.evidence_id: to_primitive(source) for source in evidence_for_feature(feature)
-        },
+        "sources": {source.evidence_id: to_primitive(source) for source in evidence_for_feature(feature)},
     }
 
 
@@ -232,9 +229,7 @@ def render_all_guides_markdown(*, include_rules: bool = False, include_sources: 
         "",
     ]
     for feature in sorted(FEATURE_GUIDES):
-        rendered = render_feature_markdown(
-            feature, include_rules=include_rules, include_sources=include_sources
-        )
+        rendered = render_feature_markdown(feature, include_rules=include_rules, include_sources=include_sources)
         sections.append(rendered.replace(f"# {feature}", f"## {feature}", 1).rstrip())
         sections.append("")
     return "\n".join(sections).rstrip() + "\n"
