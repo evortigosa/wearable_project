@@ -25,15 +25,20 @@ from wearable_project.curation.registry import registry_fingerprint
 
 _TRACKED_MODULES = (
     "audit.py",
+    "curate_cli.py",
     "decisions.py",
+    "engine.py",
     "environment.py",
     "evidence.py",
     "explain.py",
     "guidance.py",
     "models.py",
+    "pipeline.py",
     "registry.py",
     "rules.py",
+    "state.py",
     "strategies.py",
+    "unit_resolution.py",
 )
 
 

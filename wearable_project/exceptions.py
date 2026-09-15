@@ -34,3 +34,11 @@ class OutputValidationError(WearableProjectError):
 
 class ResamplingOutOfScopeError(WearableProjectError):
     """Resampling is intentionally excluded from milestone one."""
+
+
+class CurationError(WearableProjectError):
+    """A native participant cannot be curated safely."""
+
+
+class CurationStateError(CurationError):
+    """The curated-output state is missing or internally inconsistent."""

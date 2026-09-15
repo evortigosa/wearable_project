@@ -15,6 +15,7 @@ from wearable_project import __version__
 from wearable_project.processing.pipeline import process_dataset
 from wearable_project.processing.registry import REGISTRY_VERSION, known_features
 from wearable_project.processing.tracker import format_processing_report, load_processing_report
+from wearable_project.curation.curate_cli import add_curation_commands, handle_curation_command
 
 
 def participant_selection(path: Path | None) -> set[str] | None:
@@ -131,11 +132,17 @@ def build_parser() -> argparse.ArgumentParser:
     decisions.add_argument("--format", choices=("table", "json", "csv"), default="table")
     decisions.add_argument("--feature", action="append", dest="decision_features")
     decisions.add_argument("--output", type=Path)
+
+    add_curation_commands(commands)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    handled = handle_curation_command(args)
+    if handled is not None:
+        return handled
 
     if args.command == "describe-feature":
         from wearable_project.curation.explain import (
