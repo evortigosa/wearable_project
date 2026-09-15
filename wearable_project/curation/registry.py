@@ -14,9 +14,7 @@ import io
 import json
 from typing import Iterable, Mapping
 from wearable_project.curation.evidence import EVIDENCE, EvidenceSource
-from wearable_project.curation.decisions import (
-    POLICY_CALIBRATION_DECISIONS, validate_decisions,
-)
+from wearable_project.curation.decisions import POLICY_CALIBRATION_DECISIONS, validate_decisions
 from wearable_project.curation.models import (
     AcquisitionMethod,
     ConflictBehavior,

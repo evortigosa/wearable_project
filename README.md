@@ -20,22 +20,24 @@ CSV per month.
 wearable_project/
 ├── wearable_project/
 │   ├── processing/
-│   │   ├── parser.py       # Read raw CSVs and decode nested feature payloads
-│   │   ├── registry.py     # Map each feature to its schema and processing policy
 │   │   ├── cleaners.py     # Apply feature-specific cleaning and deduplication
-│   │   ├── resampling.py   # Optional time transformations
-│   │   ├── writer.py       # Write one feature CSV atomically
+│   │   ├── parser.py       # Read raw CSVs and decode nested feature payloads
 │   │   ├── pipeline.py     # Process one participant and orchestrate multiprocessing
-│   │   └── tracker.py      # Track and report processing metrics
+│   │   ├── registry.py     # Map each feature to its schema and processing policy
+│   │   ├── resampling.py   # Optional time transformations
+│   │   ├── tracker.py      # Track and report processing metrics
+│   │   └── writer.py       # Write one feature CSV atomically
 │   ├── curation/
-│   │   ├── models.py       # Typed policy contracts
-│   │   ├── evidence.py     # Literature and project evidence catalog
-│   │   ├── guidance.py     # User-facing feature descriptions
-│   │   ├── explain.py      # Assemble policy, rules, and sources
 │   │   ├── audit.py        # Read-only calibration analyses
-│   │   ├── strategies.py   # Named strategy declarations
-│   │   ├── rules.py        # Standardized rule and flag definitions
+│   │   ├── decisions.py    # 
+│   │   ├── environment.py  # 
+│   │   ├── evidence.py     # Literature and project evidence catalog
+│   │   ├── explain.py      # Assemble policy, rules, and sources
+│   │   ├── guidance.py     # User-facing feature descriptions
+│   │   ├── models.py       # Typed policy contracts
 │   │   ├── registry.py     # All feature policies
+│   │   ├── rules.py        # Standardized rule and flag definitions
+│   │   ├── strategies.py   # Named strategy declarations
 │   │   └── 
 │   ├── utils/
 │   │   ├── 
