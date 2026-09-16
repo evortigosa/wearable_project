@@ -189,15 +189,15 @@ def _add_unit(annotation: RowAnnotation, unit: UnitAnnotation | None) -> None:
 
 def _generic_rules(feature: str, row: Mapping[str, str], annotation: RowAnnotation) -> None:
     policy = get_policy(feature)
-    measurements = [field.column for field in policy.schema.measurements if field.required]
+    measurements = [measure.column for measure in policy.schema.measurements if measure.required]
     numeric_values: list[float] = []
     for column in measurements:
         raw = row.get(column)
         if raw in (None, ""):
             annotation.escalate("exclude_default", exclude=True, flag="missing_required_measurement")
             continue
-        field = next(item for item in policy.schema.measurements if item.column == column)
-        if field.value_kind == "numeric":
+        measure = next(item for item in policy.schema.measurements if item.column == column)
+        if measure.value_kind == "numeric":
             value = _float(raw)
             if value is None:
                 annotation.escalate("exclude_default", exclude=True, flag="nonfinite_measurement")
