@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "wearable-project"
 version = "0.2.0a2.post1"
 description = "Participant-oriented Apple HealthKit native processing and evidence-backed curation policies"
+authors = [
+  {name = "Evandro S. Ortigossa", email = "evortigosa@gmail.com"},
+]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
