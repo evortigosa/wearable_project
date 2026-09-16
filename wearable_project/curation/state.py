@@ -19,8 +19,8 @@ from wearable_project.curation.registry import registry_fingerprint
 from wearable_project.processing.parser import sha256_file
 
 
-CURATION_ENGINE_VERSION = "curation-engine-0.2.0a2"
-CURATION_STATE_SCHEMA_VERSION = 1
+CURATION_ENGINE_VERSION = "curation-engine-0.2.0a2.1"
+CURATION_STATE_SCHEMA_VERSION = 2
 
 
 def now_utc() -> str:
@@ -50,11 +50,18 @@ class CuratedOutputState:
     pass_rows: int
     review_rows: int
     exclude_default_rows: int
+    included_by_default_rows: int
+    excluded_by_default_rows: int
     canonical_value_rows: int
     ambiguous_unit_rows: int
     scale_transition_rows: int
     flag_counts: dict[str, int]
     acquisition_counts: dict[str, int]
+    unit_status_counts: dict[str, int]
+    raw_unit_counts: dict[str, int]
+    canonical_unit_counts: dict[str, int]
+    unit_evidence_counts: dict[str, int]
+    unknown_category_counts: dict[str, int]
 
 
 @dataclass(slots=True)
@@ -152,11 +159,18 @@ class CurationStateDatabase:
               pass_rows INTEGER NOT NULL,
               review_rows INTEGER NOT NULL,
               exclude_default_rows INTEGER NOT NULL,
+              included_by_default_rows INTEGER NOT NULL DEFAULT 0,
+              excluded_by_default_rows INTEGER NOT NULL DEFAULT 0,
               canonical_value_rows INTEGER NOT NULL,
               ambiguous_unit_rows INTEGER NOT NULL,
               scale_transition_rows INTEGER NOT NULL,
               flag_counts_json TEXT NOT NULL,
               acquisition_counts_json TEXT NOT NULL,
+              unit_status_counts_json TEXT NOT NULL DEFAULT '{}',
+              raw_unit_counts_json TEXT NOT NULL DEFAULT '{}',
+              canonical_unit_counts_json TEXT NOT NULL DEFAULT '{}',
+              unit_evidence_counts_json TEXT NOT NULL DEFAULT '{}',
+              unknown_category_counts_json TEXT NOT NULL DEFAULT '{}',
               PRIMARY KEY(participant_id, feature)
             );
             CREATE TABLE IF NOT EXISTS curation_unit_epochs(
@@ -175,6 +189,8 @@ class CurationStateDatabase:
               evidence TEXT NOT NULL,
               scale_transition INTEGER NOT NULL,
               median_value REAL,
+              transition_from_unit TEXT,
+              transition_reason TEXT,
               PRIMARY KEY(participant_id, feature, epoch_id)
             );
             CREATE TABLE IF NOT EXISTS curation_run_participants(
@@ -203,17 +219,48 @@ class CurationStateDatabase:
               pass_rows INTEGER NOT NULL,
               review_rows INTEGER NOT NULL,
               exclude_default_rows INTEGER NOT NULL,
+              included_by_default_rows INTEGER NOT NULL DEFAULT 0,
+              excluded_by_default_rows INTEGER NOT NULL DEFAULT 0,
               canonical_value_rows INTEGER NOT NULL,
               ambiguous_unit_rows INTEGER NOT NULL,
               scale_transition_rows INTEGER NOT NULL,
               flag_counts_json TEXT NOT NULL,
               acquisition_counts_json TEXT NOT NULL,
+              unit_status_counts_json TEXT NOT NULL DEFAULT '{}',
+              raw_unit_counts_json TEXT NOT NULL DEFAULT '{}',
+              canonical_unit_counts_json TEXT NOT NULL DEFAULT '{}',
+              unit_evidence_counts_json TEXT NOT NULL DEFAULT '{}',
+              unknown_category_counts_json TEXT NOT NULL DEFAULT '{}',
               policy_fingerprint TEXT NOT NULL,
               PRIMARY KEY(run_id, participant_id, feature)
             );
             """
         )
+        self._migrate_schema()
+        self.connection.execute(f"PRAGMA user_version={CURATION_STATE_SCHEMA_VERSION}")
         self.connection.commit()
+
+    def _table_columns(self, table: str) -> set[str]:
+        return {str(row[1]) for row in self.connection.execute(f"PRAGMA table_info({table})")}
+
+    def _ensure_column(self, table: str, definition: str) -> None:
+        name = definition.split()[0]
+        if name not in self._table_columns(table):
+            self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+    def _migrate_schema(self) -> None:
+        """Additive migration from the 0.2.0a2 curation state schema."""
+
+        for table in ("curation_outputs", "curation_run_features"):
+            self._ensure_column(table, "included_by_default_rows INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(table, "excluded_by_default_rows INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(table, "unit_status_counts_json TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(table, "raw_unit_counts_json TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(table, "canonical_unit_counts_json TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(table, "unit_evidence_counts_json TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(table, "unknown_category_counts_json TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column("curation_unit_epochs", "transition_from_unit TEXT")
+        self._ensure_column("curation_unit_epochs", "transition_reason TEXT")
 
     def __enter__(self) -> "CurationStateDatabase":
         return self
@@ -276,11 +323,18 @@ class CurationStateDatabase:
                 native_sha256=item["native_sha256"], policy_fingerprint=item["policy_fingerprint"],
                 pass_rows=item["pass_rows"], review_rows=item["review_rows"],
                 exclude_default_rows=item["exclude_default_rows"],
+                included_by_default_rows=item["included_by_default_rows"],
+                excluded_by_default_rows=item["excluded_by_default_rows"],
                 canonical_value_rows=item["canonical_value_rows"],
                 ambiguous_unit_rows=item["ambiguous_unit_rows"],
                 scale_transition_rows=item["scale_transition_rows"],
                 flag_counts=json.loads(item["flag_counts_json"]),
                 acquisition_counts=json.loads(item["acquisition_counts_json"]),
+                unit_status_counts=json.loads(item["unit_status_counts_json"]),
+                raw_unit_counts=json.loads(item["raw_unit_counts_json"]),
+                canonical_unit_counts=json.loads(item["canonical_unit_counts_json"]),
+                unit_evidence_counts=json.loads(item["unit_evidence_counts_json"]),
+                unknown_category_counts=json.loads(item["unknown_category_counts_json"]),
             )
             for item in self.connection.execute(
                 "SELECT * FROM curation_outputs WHERE participant_id=?", (participant_id,),
@@ -363,25 +417,36 @@ class CurationStateDatabase:
                 ],
             )
             self.connection.executemany(
-                """INSERT INTO curation_outputs VALUES(
-                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-                   )""",
+                """INSERT INTO curation_outputs(
+                     participant_id,feature,filename,native_rows,curated_rows,size_bytes,sha256,
+                     native_sha256,policy_fingerprint,pass_rows,review_rows,exclude_default_rows,
+                     included_by_default_rows,excluded_by_default_rows,canonical_value_rows,
+                     ambiguous_unit_rows,scale_transition_rows,flag_counts_json,
+                     acquisition_counts_json,unit_status_counts_json,raw_unit_counts_json,
+                     canonical_unit_counts_json,unit_evidence_counts_json,unknown_category_counts_json
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         participant_id, item.feature, item.filename, item.native_rows,
                         item.curated_rows, item.size_bytes, item.sha256, item.native_sha256,
                         item.policy_fingerprint, item.pass_rows, item.review_rows,
-                        item.exclude_default_rows, item.canonical_value_rows,
+                        item.exclude_default_rows, item.included_by_default_rows,
+                        item.excluded_by_default_rows, item.canonical_value_rows,
                         item.ambiguous_unit_rows, item.scale_transition_rows,
                         _json(item.flag_counts), _json(item.acquisition_counts),
+                        _json(item.unit_status_counts), _json(item.raw_unit_counts),
+                        _json(item.canonical_unit_counts), _json(item.unit_evidence_counts),
+                        _json(item.unknown_category_counts),
                     )
                     for item in outputs
                 ],
             )
             self.connection.executemany(
-                """INSERT INTO curation_unit_epochs VALUES(
-                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-                   )""",
+                """INSERT INTO curation_unit_epochs(
+                     participant_id,feature,epoch_id,context_id,start_index,end_index,first_time,last_time,
+                     row_count,raw_unit,canonical_unit,status,evidence,scale_transition,median_value,
+                     transition_from_unit,transition_reason
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         participant_id, epoch["feature"], epoch["epoch_id"], epoch["context_id"],
@@ -389,28 +454,99 @@ class CurationStateDatabase:
                         epoch.get("last_time"), epoch["row_count"], epoch.get("raw_unit"),
                         epoch.get("canonical_unit"), epoch["status"], epoch["evidence"],
                         int(bool(epoch.get("scale_transition"))), epoch.get("median_value"),
+                        epoch.get("transition_from_unit"), epoch.get("transition_reason"),
                     )
                     for epoch in epochs
                 ],
             )
             self.connection.executemany(
-                """INSERT OR REPLACE INTO curation_run_features VALUES(
-                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-                   )""",
+                """INSERT OR REPLACE INTO curation_run_features(
+                     run_id,participant_id,feature,native_rows,curated_rows,output_size_bytes,
+                     pass_rows,review_rows,exclude_default_rows,included_by_default_rows,
+                     excluded_by_default_rows,canonical_value_rows,ambiguous_unit_rows,
+                     scale_transition_rows,flag_counts_json,acquisition_counts_json,
+                     unit_status_counts_json,raw_unit_counts_json,canonical_unit_counts_json,
+                     unit_evidence_counts_json,unknown_category_counts_json,policy_fingerprint
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         run_id, participant_id, item.feature, item.native_rows,
                         item.curated_rows, item.size_bytes, item.pass_rows,
                         item.review_rows, item.exclude_default_rows,
+                        item.included_by_default_rows, item.excluded_by_default_rows,
                         item.canonical_value_rows, item.ambiguous_unit_rows,
                         item.scale_transition_rows, _json(item.flag_counts),
-                        _json(item.acquisition_counts), item.policy_fingerprint,
+                        _json(item.acquisition_counts), _json(item.unit_status_counts),
+                        _json(item.raw_unit_counts), _json(item.canonical_unit_counts),
+                        _json(item.unit_evidence_counts), _json(item.unknown_category_counts),
+                        item.policy_fingerprint,
                     )
                     for item in outputs
                 ],
             )
 
-    def current_snapshot(self) -> dict[str, Any]:
+    @staticmethod
+    def _counter_from_rows(rows: Iterable[sqlite3.Row], column: str) -> Counter[str]:
+        result: Counter[str] = Counter()
+        for row in rows:
+            raw = row[column]
+            if raw:
+                result.update(json.loads(raw))
+        return result
+
+    def _unit_resolution_summary(self, *, include_details: bool = False) -> dict[str, Any]:
+        grouped_rows = list(self.connection.execute(
+            """SELECT feature, raw_unit, canonical_unit, status, evidence,
+                             COUNT(*) epoch_count, COALESCE(SUM(row_count),0) row_count,
+                             COALESCE(SUM(scale_transition),0) transition_epoch_count
+                      FROM curation_unit_epochs
+                      GROUP BY feature,raw_unit,canonical_unit,status,evidence
+                      ORDER BY feature,status,raw_unit,evidence"""
+        ))
+        status_rows = list(self.connection.execute(
+            """SELECT status, COUNT(*) epoch_count, COALESCE(SUM(row_count),0) row_count
+                      FROM curation_unit_epochs GROUP BY status ORDER BY status"""
+        ))
+        transition_rows = list(self.connection.execute(
+            """SELECT feature, COALESCE(transition_reason,'unspecified') transition_reason,
+                             COUNT(*) epoch_count, COALESCE(SUM(row_count),0) row_count
+                      FROM curation_unit_epochs WHERE scale_transition=1
+                      GROUP BY feature,COALESCE(transition_reason,'unspecified')
+                      ORDER BY feature,transition_reason"""
+        ))
+        mixed_rows = list(self.connection.execute(
+            """SELECT feature, COUNT(*) participant_count FROM (
+                         SELECT participant_id,feature,COUNT(DISTINCT raw_unit) unit_count
+                         FROM curation_unit_epochs
+                         WHERE raw_unit IS NOT NULL AND status!='ambiguous'
+                         GROUP BY participant_id,feature HAVING unit_count>1
+                      ) GROUP BY feature ORDER BY feature"""
+        ))
+        payload: dict[str, Any] = {
+            "epochs": sum(int(row["epoch_count"]) for row in status_rows),
+            "rows_represented": sum(int(row["row_count"]) for row in status_rows),
+            "by_status": {
+                str(row["status"]): {
+                    "epoch_count": int(row["epoch_count"]),
+                    "row_count": int(row["row_count"]),
+                } for row in status_rows
+            },
+            "by_feature_unit": [dict(row) for row in grouped_rows],
+            "transition_boundaries": [dict(row) for row in transition_rows],
+            "mixed_unit_participants": {
+                str(row["feature"]): int(row["participant_count"]) for row in mixed_rows
+            },
+        }
+        if include_details:
+            payload["epoch_details"] = [
+                dict(row) for row in self.connection.execute(
+                    """SELECT * FROM curation_unit_epochs
+                             ORDER BY participant_id,feature,start_index,epoch_id"""
+                )
+            ]
+        return payload
+
+    def current_snapshot(self, *, include_unit_details: bool = False) -> dict[str, Any]:
         participants = self.connection.execute(
             "SELECT COUNT(*) FROM curation_participants WHERE status='complete'"
         ).fetchone()[0]
@@ -420,19 +556,24 @@ class CurationStateDatabase:
                       COALESCE(SUM(size_bytes),0) output_size_bytes,
                       COALESCE(SUM(pass_rows),0) pass_rows,
                       COALESCE(SUM(review_rows),0) review_rows,
-                      COALESCE(SUM(exclude_default_rows),0) exclude_default_rows,
+                      COALESCE(SUM(exclude_default_rows),0) exclude_default_status_rows,
+                      COALESCE(SUM(included_by_default_rows),0) included_by_default_rows,
+                      COALESCE(SUM(excluded_by_default_rows),0) excluded_by_default_rows,
                       COALESCE(SUM(canonical_value_rows),0) canonical_value_rows,
                       COALESCE(SUM(ambiguous_unit_rows),0) ambiguous_unit_rows,
                       COALESCE(SUM(scale_transition_rows),0) scale_transition_rows
                FROM curation_outputs"""
         ).fetchone()
+        output_rows = list(self.connection.execute(
+            "SELECT * FROM curation_outputs"
+        ))
         largest = self.connection.execute(
             """SELECT participant_id, SUM(size_bytes) output_size_bytes,
                       SUM(curated_rows) curated_rows
                FROM curation_outputs GROUP BY participant_id
                ORDER BY output_size_bytes DESC LIMIT 1"""
         ).fetchone()
-        return {
+        payload = {
             "committed_participants": participants,
             "feature_files": row["feature_files"],
             "native_rows": row["native_rows"],
@@ -440,12 +581,23 @@ class CurationStateDatabase:
             "output_size_bytes": row["output_size_bytes"],
             "pass_rows": row["pass_rows"],
             "review_rows": row["review_rows"],
-            "exclude_default_rows": row["exclude_default_rows"],
+            "exclude_default_status_rows": row["exclude_default_status_rows"],
+            "included_by_default_rows": row["included_by_default_rows"],
+            "excluded_by_default_rows": row["excluded_by_default_rows"],
             "canonical_value_rows": row["canonical_value_rows"],
             "ambiguous_unit_rows": row["ambiguous_unit_rows"],
             "scale_transition_rows": row["scale_transition_rows"],
+            "flag_counts": dict(sorted(self._counter_from_rows(output_rows, "flag_counts_json").items())),
+            "acquisition_counts": dict(sorted(self._counter_from_rows(output_rows, "acquisition_counts_json").items())),
+            "unit_status_counts": dict(sorted(self._counter_from_rows(output_rows, "unit_status_counts_json").items())),
+            "raw_unit_counts": dict(sorted(self._counter_from_rows(output_rows, "raw_unit_counts_json").items())),
+            "canonical_unit_counts": dict(sorted(self._counter_from_rows(output_rows, "canonical_unit_counts_json").items())),
+            "unit_evidence_counts": dict(sorted(self._counter_from_rows(output_rows, "unit_evidence_counts_json").items())),
+            "unknown_categorical_values": dict(sorted(self._counter_from_rows(output_rows, "unknown_category_counts_json").items())),
             "largest_participant": dict(largest) if largest else None,
         }
+        payload["unit_resolution"] = self._unit_resolution_summary(include_details=include_unit_details,)
+        return payload
 
     def build_report(self, run_id: str, *, include_details: bool = False) -> dict[str, Any]:
         run = self.connection.execute(
@@ -460,15 +612,20 @@ class CurationStateDatabase:
             "SELECT * FROM curation_run_features WHERE run_id=? ORDER BY participant_id,feature", (run_id,),
         ))
         outcomes = Counter(row["final_status"] for row in participants)
-        flag_counts: Counter[str] = Counter()
-        acquisition_counts: Counter[str] = Counter()
-        for row in features:
-            flag_counts.update(json.loads(row["flag_counts_json"]))
-            acquisition_counts.update(json.loads(row["acquisition_counts_json"]))
+        flag_counts = self._counter_from_rows(features, "flag_counts_json")
+        acquisition_counts = self._counter_from_rows(features, "acquisition_counts_json")
+        unit_status_counts = self._counter_from_rows(features, "unit_status_counts_json")
+        raw_unit_counts = self._counter_from_rows(features, "raw_unit_counts_json")
+        canonical_unit_counts = self._counter_from_rows(features, "canonical_unit_counts_json")
+        unit_evidence_counts = self._counter_from_rows(features, "unit_evidence_counts_json")
+        unknown_category_counts = self._counter_from_rows(features, "unknown_category_counts_json")
         runtime_values = [row["runtime_seconds"] for row in participants if row["runtime_seconds"] is not None]
         peak_values = [row["peak_rss_bytes"] for row in participants if row["peak_rss_bytes"] is not None]
         started = datetime.fromisoformat(run["started_at"].replace("Z", "+00:00"))
         finished = datetime.fromisoformat(run["finished_at"].replace("Z", "+00:00")) if run["finished_at"] else None
+        curated_rows = sum(row["curated_rows"] for row in features)
+        included = sum(row["included_by_default_rows"] for row in features)
+        excluded = sum(row["excluded_by_default_rows"] for row in features)
         payload: dict[str, Any] = {
             "run_id": run_id,
             "status": run["status"],
@@ -488,18 +645,30 @@ class CurationStateDatabase:
                 "output_size_bytes": sum(row["output_size_bytes"] for row in participants if row["final_status"] == "committed"),
                 "pass_rows": sum(row["pass_rows"] for row in features),
                 "review_rows": sum(row["review_rows"] for row in features),
-                "exclude_default_rows": sum(row["exclude_default_rows"] for row in features),
+                "exclude_default_status_rows": sum(row["exclude_default_rows"] for row in features),
+                "included_by_default_rows": included,
+                "excluded_by_default_rows": excluded,
+                "default_inclusion_accounting_complete": included + excluded == curated_rows,
                 "canonical_value_rows": sum(row["canonical_value_rows"] for row in features),
                 "ambiguous_unit_rows": sum(row["ambiguous_unit_rows"] for row in features),
                 "scale_transition_rows": sum(row["scale_transition_rows"] for row in features),
                 "flag_counts": dict(sorted(flag_counts.items())),
                 "acquisition_counts": dict(sorted(acquisition_counts.items())),
+                "unit_status_counts": dict(sorted(unit_status_counts.items())),
+                "raw_unit_counts": dict(sorted(raw_unit_counts.items())),
+                "canonical_unit_counts": dict(sorted(canonical_unit_counts.items())),
+                "unit_evidence_counts": dict(sorted(unit_evidence_counts.items())),
+                "unknown_categorical_values": dict(sorted(unknown_category_counts.items())),
             },
-            "snapshot": self.current_snapshot(),
+            "snapshot": self.current_snapshot(include_unit_details=include_details),
             "performance": {
                 "wall_clock_seconds": (finished - started).total_seconds() if finished else None,
                 "participant_runtime_max_seconds": max(runtime_values) if runtime_values else None,
-                "peak_worker_rss_bytes": max(peak_values) if peak_values else None,
+                "worker_process_high_water_rss_bytes": max(peak_values) if peak_values else None,
+                "worker_rss_semantics": (
+                    "ProcessPoolExecutor workers are reused; RSS is a worker-process high-water mark "
+                    "and must not be attributed uniquely to the participant whose task reported it."
+                ),
             },
             "failures": {
                 row["participant_id"]: row["error_message"]
@@ -513,13 +682,26 @@ class CurationStateDatabase:
         }
         if include_details:
             payload["participant_details"] = [dict(row) for row in participants]
-            payload["feature_details"] = [
-                dict(row) | {
+            payload["feature_details"] = []
+            for row in features:
+                detail = dict(row)
+                for column in (
+                    "flag_counts_json", "acquisition_counts_json",
+                    "unit_status_counts_json", "raw_unit_counts_json",
+                    "canonical_unit_counts_json", "unit_evidence_counts_json",
+                    "unknown_category_counts_json",
+                ):
+                    detail.pop(column, None)
+                detail.update({
                     "flag_counts": json.loads(row["flag_counts_json"]),
                     "acquisition_counts": json.loads(row["acquisition_counts_json"]),
-                }
-                for row in features
-            ]
+                    "unit_status_counts": json.loads(row["unit_status_counts_json"]),
+                    "raw_unit_counts": json.loads(row["raw_unit_counts_json"]),
+                    "canonical_unit_counts": json.loads(row["canonical_unit_counts_json"]),
+                    "unit_evidence_counts": json.loads(row["unit_evidence_counts_json"]),
+                    "unknown_categorical_values": json.loads(row["unknown_category_counts_json"]),
+                })
+                payload["feature_details"].append(detail)
         return payload
 
     def latest_run_id(self) -> str:
@@ -543,7 +725,16 @@ def format_curation_report(report: Mapping[str, Any]) -> str:
         f"Native files read: {activity['native_files_read']}",
         f"Native rows read: {activity['native_rows_read']}",
         f"Curated rows written: {activity['curated_rows_written']}",
-        f"Status rows: {activity['pass_rows']} pass; {activity['review_rows']} review; {activity['exclude_default_rows']} exclude-default",
+        (
+            "Status rows: "
+            f"{activity['pass_rows']} pass; {activity['review_rows']} review; "
+            f"{activity['exclude_default_status_rows']} exclude-default status"
+        ),
+        (
+            "Default inclusion: "
+            f"{activity['included_by_default_rows']} included; "
+            f"{activity['excluded_by_default_rows']} excluded"
+        ),
         f"Canonical-value rows: {activity['canonical_value_rows']}",
         f"Ambiguous-unit rows: {activity['ambiguous_unit_rows']}",
         f"Scale-transition rows: {activity['scale_transition_rows']}",

@@ -198,7 +198,9 @@ def environment_manifest() -> EnvironmentManifest:
         warnings.append("Calibration-decision fingerprint differs from the release manifest.")
     git_commit, git_dirty = _git_info(source_root)
     if git_dirty:
-        warnings.append("The imported source tree has uncommitted Git changes.")
+        warnings.append(
+            "The enclosing Git working tree has uncommitted changes; imported package module integrity is reported separately."
+        )
 
     return EnvironmentManifest(
         package_version=wearable_project.__version__,

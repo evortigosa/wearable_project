@@ -5,6 +5,7 @@ execute curation rules and is fingerprinted separately from the executable polic
 citation updates do not invalidate curated participant outputs.
 """
 
+
 from __future__ import annotations
 from dataclasses import asdict, dataclass
 from hashlib import sha256
@@ -14,7 +15,7 @@ from wearable_project.curation.evidence import EVIDENCE
 from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES, get_policy
 
 
-GUIDANCE_VERSION = "0.2.0a1.2-guidance-2"
+GUIDANCE_VERSION = "0.2.0a2.1-guidance-3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,20 +142,20 @@ _SPECS: dict[str, _GuideSpec] = {
     "RestingHeartRate": _GuideSpec(
         "Heart and cardiovascular",
         "Device- or application-estimated resting heart-rate summary.",
-        "One summary value over the source-defined support interval.",
+        "One source-defined summary represented either as a point or as an explicit interval.",
         "Usually estimated from periods of low activity and source-specific algorithms.",
-        "Preserve summary intervals and source epochs; distinguish estimates from dense heart-rate observations.",
-        ("The source interval may be long and does not imply continuous measurement at the summary value.",),
+        "Preserve point-or-interval summary semantics and source epochs; distinguish estimates from dense heart-rate observations.",
+        ("A zero-duration summary is valid; an interval summary still does not imply continuous measurement at the summary value.",),
         ("A resting clinical vital-sign measurement taken under a standardized protocol.",),
         ("apple_resting_heart_rate", "apple_heart_rate"),
     ),
     "WalkingHeartRate": _GuideSpec(
         "Heart and cardiovascular",
         "Estimated average heart rate associated with walking.",
-        "One long-summary estimate over the source interval, commonly spanning many hours in this exporter.",
+        "One source-defined walking-heart-rate summary represented either as a point or as an explicit interval.",
         "Produced by HealthKit/device estimation and may be revised as more data become available.",
-        "Preserve one summary event and its interval; never broadcast it into dense windows by default.",
-        ("Long interval coverage does not imply high information density.",),
+        "Preserve one point-or-interval summary event; never broadcast it into dense windows by default.",
+        ("A zero-duration summary is valid; long interval coverage does not imply high information density.",),
         ("Continuous heart-rate observations throughout the interval.",),
         ("apple_walking_heart_rate",),
     ),

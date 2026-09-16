@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Authoritative feature-policy registry. The 0.2.0a1.1 guidance release is declaration-only: policies are fully
-typed, validated, versioned, and exportable, but no participant feature file is curated yet.
-Native processing parser and outputs remain unchanged.
+Authoritative milestone-two feature-policy registry. Policies are fully typed, validated, versioned, and
+exportable. The 0.2.0a2.1 curation engine executes only reviewed or explicitly scoped decisions while
+the native parser and outputs remain unchanged.
 """
 
 
@@ -53,11 +53,11 @@ from wearable_project.curation.models import (
     UserEnteredHandling,
     to_primitive,
 )
-from wearable_project.curation.rules import RULES
+from wearable_project.curation.rules import RULES, rule_execution_kind
 from wearable_project.curation.strategies import ALL_STRATEGY_CATALOGS
 
 
-CURATION_REGISTRY_VERSION = "0.2.0a1.2-policy-3"
+CURATION_REGISTRY_VERSION = "0.2.0a2.1-policy-4"
 POLICY_CONTRACT_VERSION = "1.2.0-alpha1"
 
 # Exactly the 33 Apple HealthKit feature names observed in the accepted full cohort run. New names are handled
@@ -159,7 +159,7 @@ _COMMON_SPARSE = (
 
 
 def _identity(
-name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, aliases: tuple[str, ...] = ()
+    name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, aliases: tuple[str, ...] = ()
 ) -> IdentityPolicy:
     return IdentityPolicy(
         canonical_name=name,
@@ -171,7 +171,7 @@ name: str, *, maturity: PolicyMaturity = PolicyMaturity.REVIEWED, aliases: tuple
 
 
 def _measurement(
-column: str = "value", role: str = "value", *, value_kind: str = "numeric", required: bool = True
+    column: str = "value", role: str = "value", *, value_kind: str = "numeric", required: bool = True
 ) -> MeasurementField:
     return MeasurementField(column=column, role=role, value_kind=value_kind, required=required)
 
@@ -561,17 +561,17 @@ _register(FeaturePolicy(
 ))
 
 for _name, _event, _maturity, _revision, _extra_rules, _evidence, _notes in (
-    ("RestingHeartRate", EventKind.LONG_SUMMARY_INTERVAL, PolicyMaturity.REVIEWED, "inherit_native_record_revision", ("heart_rate_summary_interval",), ("apple_heart_rate",), ("A summary estimate must not be interpreted as dense sampling.",)),
-    ("WalkingHeartRate", EventKind.LONG_SUMMARY_INTERVAL, PolicyMaturity.REVIEWED, "walking_heart_rate_replaceable_estimate", ("heart_rate_summary_interval",), ("apple_walking_heart_rate",), ("Apple may replace estimates; preserve summary semantics and revision lineage.",)),
+    ("RestingHeartRate", EventKind.POINT_OR_INTERVAL, PolicyMaturity.REVIEWED, "inherit_native_record_revision", ("heart_rate_summary_interval",), ("apple_heart_rate",), ("A summary estimate may be represented as a point or interval and must not be interpreted as dense sampling.",)),
+    ("WalkingHeartRate", EventKind.POINT_OR_INTERVAL, PolicyMaturity.REVIEWED, "walking_heart_rate_replaceable_estimate", ("heart_rate_summary_interval",), ("apple_walking_heart_rate",), ("Apple may replace estimates; preserve point-or-interval summary semantics and revision lineage.",)),
 ):
     _register(FeaturePolicy(
         identity=_identity(_name, maturity=_maturity),
         schema=_scalar_schema("long_summary_interval"),
-        semantics=_semantics(_event, MeasurementKind.SUMMARY_STATISTIC, DurationModel.EXPLICIT_INTERVAL, IntervalClosure.HALF_OPEN, native_resolution="long interval summary estimate"),
+        semantics=_semantics(_event, MeasurementKind.SUMMARY_STATISTIC, DurationModel.ZERO_OR_EXPLICIT_INTERVAL, IntervalClosure.HALF_OPEN, native_resolution="source-defined summary estimate represented as a point or explicit interval"),
         units=_fixed_unit("beats/min", "beats/min", evidence=_evidence, precision=2),
         provenance=_provenance("device_or_application_estimate"),
         reconciliation=_reconcile(revision=_revision),
-        curation=_curation("interval_duration_positive", "positive_measurement", "source_epoch_transition", *_extra_rules),
+        curation=_curation("positive_measurement", "source_epoch_transition", *_extra_rules),
         cross_feature=CrossFeaturePolicy(),
         output=_output(),
         resampling=_resampling(ResamplingSupport.OPTIONAL, "long_summary_reference", aggregation="none", broadcasting="prohibited_by_default", supports=("summary_event_reference", "native_support_seconds")),
@@ -888,8 +888,9 @@ _register(FeaturePolicy(
     reconciliation=_reconcile(duplicate="inherit_native_sleep_occurrence"),
     curation=CurationPolicy(
         ("required_measurements_present", "timestamp_order", "interval_duration_positive",
-         "sleep_state_vocabulary", "sleep_same_state_overlap",
-         "sleep_detailed_state_overlap", "sleep_inbed_nesting", "source_epoch_transition"),
+         "sleep_state_vocabulary", "sleep_same_source_same_state_overlap",
+         "sleep_same_source_detailed_stage_conflict", "sleep_cross_source_overlap",
+         "sleep_compatible_inbed_support", "source_epoch_transition"),
         CurationStatus.PASS, InclusionPolicy.INCLUDE,
     ),
     cross_feature=CrossFeaturePolicy(),
@@ -1136,6 +1137,11 @@ def validate_registry() -> RegistryValidationResult:
         for rule_id in policy.curation.rule_ids:
             if rule_id not in RULES:
                 errors.append(prefix + f"unknown curation rule {rule_id!r}")
+                continue
+            try:
+                rule_execution_kind(rule_id)
+            except KeyError:
+                errors.append(prefix + f"curation rule {rule_id!r} has no implementation classification")
         for cross_id in policy.cross_feature.rule_ids:
             if cross_id not in ALL_STRATEGY_CATALOGS["cross_feature"]:
                 errors.append(prefix + f"unknown cross-feature strategy {cross_id!r}")

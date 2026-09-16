@@ -50,7 +50,7 @@ def test_feature_explanation_links_policy_rules_and_sources() -> None:
     payload = feature_explanation("Sleep", include_rules=True, include_sources=True)
     assert payload["feature"] == "Sleep"
     assert payload["calibration"]["execution_mode"] == "reviewed_execution"
-    assert "sleep_detailed_state_overlap" in payload["rules"]
+    assert "sleep_same_source_detailed_stage_conflict" in payload["rules"]
     assert "apple_sleep_analysis" in payload["sources"]
 
 

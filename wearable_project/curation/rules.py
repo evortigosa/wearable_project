@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
 Reviewed rule declarations referenced by feature policies. Rules are declarations in 0.2.0a1. Their strategy
-implementations are added by later sub-releases. Keeping flags and effects here prevents each feature from
-redefining the meaning of a warning.
+implementations are added by later curation sub-releases. Keeping flags and effects here prevents each
+feature from redefining the meaning of a warning.
 """
 
 
@@ -300,6 +300,66 @@ _add(
         description="Unknown features are copied unchanged without canonical conversion.",
     ),
 )
+
+
+_add(
+    RuleDefinition(
+        "sleep_same_source_same_state_overlap", RuleClass.TEMPORAL,
+        "sleep_same_source_same_state_overlap", Severity.INFO,
+        "same_source_same_state_sleep_overlap", StatusEffect.REVIEW,
+        InclusionEffect.KEEP, False, ("apple_sleep_analysis", "project_sleep_intervals"),
+        "Detect overlapping intervals with the same state inside one compatible sleep source/device epoch.",
+    ),
+    RuleDefinition(
+        "sleep_same_source_detailed_stage_conflict", RuleClass.TEMPORAL,
+        "sleep_same_source_detailed_stage_conflict", Severity.WARNING,
+        "same_source_detailed_sleep_stage_conflict", StatusEffect.REVIEW,
+        InclusionEffect.KEEP, False, ("apple_sleep_analysis", "project_sleep_intervals"),
+        "Detailed awake/core/deep/REM states from one compatible source epoch should not overlap.",
+    ),
+    RuleDefinition(
+        "sleep_cross_source_overlap", RuleClass.SOURCE,
+        "sleep_cross_source_overlap", Severity.INFO,
+        "cross_source_sleep_overlap", StatusEffect.REVIEW,
+        InclusionEffect.KEEP, False, ("apple_sleep_analysis", "project_sleep_intervals"),
+        "Preserve and distinguish overlapping sleep intervals emitted by different source/device epochs.",
+    ),
+    RuleDefinition(
+        "sleep_compatible_inbed_support", RuleClass.TEMPORAL,
+        "sleep_compatible_inbed_support", Severity.INFO,
+        "detailed_sleep_state_without_compatible_inbed_support", StatusEffect.REVIEW,
+        InclusionEffect.KEEP, False, ("apple_sleep_analysis", "project_sleep_intervals"),
+        "Assess detailed stages only against INBED intervals from a compatible source/device epoch.",
+    ),
+)
+
+
+# Every declared rule is explicitly classified so registry review can detect a policy that references a rule
+# without a runtime, output-invariant, or documentation-only interpretation.
+DOCUMENTATION_ONLY_RULE_IDS: frozenset[str] = frozenset({
+    "heart_rate_summary_interval",
+    "hrv_sdnn_context",
+    "nutrition_preserve_distinct_uuid",
+    "bmi_screening_context",
+})
+
+OUTPUT_INVARIANT_RULE_IDS: frozenset[str] = frozenset({
+    "manual_entry_context",
+    "source_epoch_transition",
+})
+
+RUNTIME_RULE_IDS: frozenset[str] = frozenset(
+    set(RULES) - DOCUMENTATION_ONLY_RULE_IDS - OUTPUT_INVARIANT_RULE_IDS
+)
+
+def rule_execution_kind(rule_id: str) -> str:
+    if rule_id in RUNTIME_RULE_IDS:
+        return "runtime"
+    if rule_id in OUTPUT_INVARIANT_RULE_IDS:
+        return "output_invariant"
+    if rule_id in DOCUMENTATION_ONLY_RULE_IDS:
+        return "documentation_only"
+    raise KeyError(rule_id)
 
 
 def get_rule(rule_id: str) -> RuleDefinition:

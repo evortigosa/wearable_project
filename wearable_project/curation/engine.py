@@ -21,9 +21,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from wearable_project.curation.models import (
-    CurationStatus, EventKind, InclusionPolicy, PolicyExecutionMode, UnresolvedUnitAction,
+    CurationStatus, EventKind, InclusionEffect, InclusionPolicy, PolicyExecutionMode,
+    StatusEffect, UnresolvedUnitAction,
 )
 from wearable_project.curation.registry import get_policy, known_curation_features
+from wearable_project.curation.rules import RULES, RUNTIME_RULE_IDS
 from wearable_project.curation.unit_resolution import (
     ParticipantUnitContext, UnitAnnotation, fixed_unit_annotation,
 )
@@ -64,6 +66,64 @@ _KNOWN_CGM_TRENDS = {
     "Flat", "FortyFiveUp", "FortyFiveDown", "SingleUp", "SingleDown",
     "DoubleUp", "DoubleDown", "NotComputable", "RateOutOfRange", "",
 }
+_BLANKISH_CATEGORY_VALUES = {"", "none", "null", "nan", "na", "n/a"}
+_KNOWN_HEART_RATE_MOTION_CONTEXTS = {
+    "", "0", "0.0", "1", "1.0", "2", "2.0",
+    "notset", "not_set", "sedentary", "active",
+}
+
+# Explicit registry-to-engine rule coverage. Documentation-only and output invariant declarations are
+# intentionally absent because they do not execute row-level predicates. Tests validate that every runtime
+# rule referenced by a cohort policy appears in this set.
+ENGINE_IMPLEMENTED_RUNTIME_RULE_IDS: frozenset[str] = frozenset({
+    "activity_summary_date_ambiguity",
+    "activity_summary_nonnegative",
+    "bac_calculator_estimate",
+    "blood_pressure_pair_complete",
+    "blood_pressure_pair_order",
+    "cgm_status_vocabulary",
+    "cgm_time_zone_context",
+    "cgm_trend_vocabulary",
+    "ecg_finite_amplitude",
+    "ecg_relative_time_monotonic",
+    "ecg_sample_count_consistency",
+    "ecg_waveform_shape",
+    "finite_numeric",
+    "heart_rate_motion_context",
+    "interval_duration_positive",
+    "mindful_interval_valid",
+    "nonnegative_measurement",
+    "nutrition_nonnegative",
+    "peak_flow_session_context",
+    "point_duration_zero",
+    "positive_measurement",
+    "pulse_ox_source_limitations",
+    "required_measurements_present",
+    "sleep_compatible_inbed_support",
+    "sleep_cross_source_overlap",
+    "sleep_same_source_detailed_stage_conflict",
+    "sleep_same_source_same_state_overlap",
+    "sleep_state_vocabulary",
+    "temperature_sensor_location",
+    "timestamp_order",
+    "unit_epoch_discontinuity",
+    "unit_resolved_for_canonical_value",
+    "unresolved_same_interval_conflict",
+    "vo2max_test_type",
+    "waist_protocol_context",
+})
+
+
+def validate_engine_rule_coverage() -> tuple[str, ...]:
+    """Return runtime policy rule IDs without a curation-engine implementation."""
+
+    referenced = {
+        rule_id
+        for feature in known_curation_features()
+        for rule_id in get_policy(feature).curation.rule_ids
+        if rule_id in RUNTIME_RULE_IDS
+    }
+    return tuple(sorted(referenced - ENGINE_IMPLEMENTED_RUNTIME_RULE_IDS))
 
 
 @dataclass(slots=True)
@@ -72,6 +132,8 @@ class RowAnnotation:
     status: str = "pass"
     include: bool = True
     flags: set[str] = field(default_factory=set)
+    unit: UnitAnnotation | None = None
+    unknown_categories: list[tuple[str, str]] = field(default_factory=list)
 
     def escalate(self, status: str, *, exclude: bool = False, flag: str | None = None) -> None:
         if _STATUS_RANK[status] > _STATUS_RANK[self.status]:
@@ -92,6 +154,34 @@ class RowAnnotation:
         return result
 
 
+def _record_unknown_category(annotation: RowAnnotation, item: str, value: Any) -> None:
+    text = str(value or "").strip()
+    if text.lower() in _BLANKISH_CATEGORY_VALUES:
+        return
+    annotation.unknown_categories.append((item, text[:200]))
+
+
+def _apply_declared_flag(annotation: RowAnnotation, flag: str) -> None:
+    """Apply the status and inclusion effects declared for a curation flag."""
+
+    definition = next((rule for rule in RULES.values() if rule.flag == flag), None)
+    if definition is None:
+        annotation.escalate("review", flag=flag)
+        return
+    if definition.status_effect is StatusEffect.EXCLUDE_DEFAULT:
+        annotation.escalate("exclude_default", exclude=True, flag=flag)
+    elif definition.status_effect is StatusEffect.REVIEW:
+        annotation.escalate(
+            "review",
+            exclude=definition.inclusion_effect is InclusionEffect.EXCLUDE_DEFAULT,
+            flag=flag,
+        )
+    else:
+        if definition.inclusion_effect is InclusionEffect.EXCLUDE_DEFAULT:
+            annotation.include = False
+        annotation.flags.add(flag)
+
+
 @dataclass(frozen=True, slots=True)
 class CuratedFeatureInfo:
     feature: str
@@ -103,11 +193,18 @@ class CuratedFeatureInfo:
     pass_rows: int
     review_rows: int
     exclude_default_rows: int
+    included_by_default_rows: int
+    excluded_by_default_rows: int
     canonical_value_rows: int
     ambiguous_unit_rows: int
     scale_transition_rows: int
     flag_counts: dict[str, int]
     acquisition_counts: dict[str, int]
+    unit_status_counts: dict[str, int]
+    raw_unit_counts: dict[str, int]
+    canonical_unit_counts: dict[str, int]
+    unit_evidence_counts: dict[str, int]
+    unknown_category_counts: dict[str, int]
     native_sha256: str
     policy_fingerprint: str
 
@@ -172,6 +269,7 @@ def _acquisition_method(feature: str, row: Mapping[str, str]) -> str | None:
 def _add_unit(annotation: RowAnnotation, unit: UnitAnnotation | None) -> None:
     if unit is None:
         return
+    annotation.unit = unit
     if unit.canonical_value is not None:
         annotation.values["canonical_value"] = _format_number(unit.canonical_value)
         if unit.canonical_unit:
@@ -183,9 +281,13 @@ def _add_unit(annotation: RowAnnotation, unit: UnitAnnotation | None) -> None:
     if unit.unit_epoch_id:
         annotation.values["unit_epoch_id"] = unit.unit_epoch_id
     if unit.scale_transition:
-        annotation.flags.add("possible_unit_transition")
+        _apply_declared_flag(annotation, "possible_unit_transition")
     if unit.unit_status in {"ambiguous", "invalid_numeric"}:
         annotation.escalate("review", flag="unit_unresolved")
+    if unit.canonical_value is not None and not unit.canonical_unit:
+        annotation.escalate(
+            "exclude_default", exclude=True, flag="canonical_value_without_resolved_unit",
+        )
 
 
 def _generic_rules(feature: str, row: Mapping[str, str], annotation: RowAnnotation) -> None:
@@ -221,14 +323,14 @@ def _generic_rules(feature: str, row: Mapping[str, str], annotation: RowAnnotati
 
     if "nonnegative_measurement" in policy.curation.rule_ids and any(value < 0 for value in numeric_values):
         annotation.escalate("review", flag="negative_measurement")
+    if "nutrition_nonnegative" in policy.curation.rule_ids and any(value < 0 for value in numeric_values):
+        annotation.escalate("review", flag="negative_nutrition_amount")
     if "positive_measurement" in policy.curation.rule_ids and any(value <= 0 for value in numeric_values):
         annotation.escalate("review", flag="nonpositive_measurement")
 
     quality = str(row.get("quality_flags", "") or "")
     if row.get("conflict_group_id") or "same_interval_conflict" in quality:
-        annotation.escalate(
-            "review", exclude=True, flag="unresolved_same_interval_conflict"
-        )
+        annotation.escalate("review", exclude=True, flag="unresolved_same_interval_conflict")
 
 
 def _validate_timezone(row: Mapping[str, str], annotation: RowAnnotation) -> None:
@@ -288,7 +390,12 @@ def _ecg_rules(row: Mapping[str, str], annotation: RowAnnotation) -> None:
 
 
 def _feature_rules(feature: str, row: Mapping[str, str], annotation: RowAnnotation) -> None:
-    if feature == "ActivitySummary":
+    if feature == "Sleep":
+        state = str(row.get("value", "") or "").upper()
+        if state not in _KNOWN_SLEEP_STATES:
+            annotation.escalate("review", flag="unknown_sleep_state")
+            _record_unknown_category(annotation, "sleep_state", state)
+    elif feature == "ActivitySummary":
         annotation.escalate("review", exclude=True, flag="summary_date_assignment_ambiguous")
         for column in (
             "apple_stand_hours", "apple_exercise_time", "active_energy_burned",
@@ -304,13 +411,26 @@ def _feature_rules(feature: str, row: Mapping[str, str], annotation: RowAnnotati
             annotation.escalate("exclude_default", exclude=True, flag="incomplete_blood_pressure_pair")
         elif systolic <= diastolic:
             annotation.escalate("review", flag="blood_pressure_pair_order_warning")
+    elif feature == "HeartRate":
+        context = str(row.get("heart_rate_motion_context", "") or "").strip()
+        if context.lower() in _BLANKISH_CATEGORY_VALUES:
+            context = ""
+        if context.lower() not in _KNOWN_HEART_RATE_MOTION_CONTEXTS:
+            annotation.escalate("review", flag="unknown_heart_rate_motion_context")
+            _record_unknown_category(annotation, "heart_rate_motion_context", context)
     elif feature == "BloodGlucose":
-        status = str(row.get("status", "") or "")
-        trend = str(row.get("trend_arrow", "") or "")
+        status = str(row.get("status", "") or "").strip()
+        trend = str(row.get("trend_arrow", "") or "").strip()
+        if status.lower() in _BLANKISH_CATEGORY_VALUES:
+            status = ""
+        if trend.lower() in _BLANKISH_CATEGORY_VALUES:
+            trend = ""
         if status not in _KNOWN_CGM_STATUS:
             annotation.escalate("review", flag="unknown_cgm_status")
+            _record_unknown_category(annotation, "status", status)
         if trend not in _KNOWN_CGM_TRENDS:
             annotation.escalate("review", flag="unknown_cgm_trend")
+            _record_unknown_category(annotation, "trend_arrow", trend)
         _validate_timezone(row, annotation)
     elif feature == "OxygenSaturation":
         if not row.get("source_id"):
@@ -321,8 +441,15 @@ def _feature_rules(feature: str, row: Mapping[str, str], annotation: RowAnnotati
             annotation.escalate("review", flag="temperature_sensor_location_unknown")
     elif feature == "PeakFlow":
         annotation.escalate("review", flag="peak_flow_session_context_unknown")
-    elif feature == "Vo2Max" and not row.get("vo2_max_test_type"):
-        annotation.escalate("review", flag="vo2max_test_type_unknown")
+    elif feature == "Vo2Max":
+        test_type = str(row.get("vo2_max_test_type", "") or "").strip()
+        if test_type.lower() in _BLANKISH_CATEGORY_VALUES:
+            test_type = ""
+        if not test_type:
+            annotation.escalate("review", flag="vo2max_test_type_unknown")
+        elif test_type not in {"1", "1.0", "2", "2.0", "3", "3.0", "4", "4.0"}:
+            annotation.escalate("review", flag="vo2max_test_type_unknown")
+            _record_unknown_category(annotation, "vo2_max_test_type", test_type)
     elif feature == "BloodAlcoholContent":
         method = _acquisition_method(feature, row)
         if method == "calculator_estimate":
@@ -337,40 +464,63 @@ def _feature_rules(feature: str, row: Mapping[str, str], annotation: RowAnnotati
             annotation.escalate("exclude_default", exclude=True, flag="invalid_mindful_interval")
 
 
+def _sleep_provenance_key(row: Mapping[str, str]) -> tuple[str, ...]:
+    source_id = str(row.get("source_id", "") or "").strip()
+    source_name = str(row.get("source_name", "") or "").strip()
+    return (
+        source_id or source_name,
+        str(row.get("device", "") or "").strip(),
+        str(row.get("metadata_device_name", "") or "").strip(),
+        str(row.get("collecting_method_version", "") or "").strip(),
+    )
+
+
 def _sleep_overlap_flags(rows: list[Mapping[str, str]]) -> dict[int, set[str]]:
+    """
+    Return source-aware sleep overlap annotations. Same-source state conflicts, cross-source overlap,
+    and compatible INBED support are intentionally distinct. No state is selected or discarded.
+    """
+
     flags: dict[int, set[str]] = defaultdict(set)
-    intervals: list[tuple[datetime, datetime, str, int]] = []
+    intervals: list[tuple[datetime, datetime, str, int, tuple[str, ...]]] = []
     for index, row in enumerate(rows):
         start, end = _time(row.get("start_date")), _time(row.get("end_date"))
         state = str(row.get("value", "") or "").upper()
-        if state not in _KNOWN_SLEEP_STATES:
-            flags[index].add("unknown_sleep_state")
         if start is not None and end is not None and end >= start:
-            intervals.append((start, end, state, index))
+            intervals.append((start, end, state, index, _sleep_provenance_key(row)))
     intervals.sort(key=lambda value: (value[0], value[1], value[3]))
 
-    active: list[tuple[datetime, datetime, str, int]] = []
+    active: list[tuple[datetime, datetime, str, int, tuple[str, ...]]] = []
     for current in intervals:
-        start, end, state, index = current
+        start, end, state, index, provenance = current
         active = [item for item in active if item[1] > start]
-        for other_start, other_end, other_state, other_index in active:
+        for other_start, other_end, other_state, other_index, other_provenance in active:
             if min(end, other_end) <= max(start, other_start):
                 continue
-            if state == other_state:
-                flags[index].add("overlapping_same_sleep_state")
-                flags[other_index].add("overlapping_same_sleep_state")
+            if provenance != other_provenance:
+                flags[index].add("cross_source_sleep_overlap")
+                flags[other_index].add("cross_source_sleep_overlap")
+            elif state == other_state:
+                flags[index].add("same_source_same_state_sleep_overlap")
+                flags[other_index].add("same_source_same_state_sleep_overlap")
             elif state in _DETAILED_SLEEP_STATES and other_state in _DETAILED_SLEEP_STATES:
-                flags[index].add("overlapping_detailed_sleep_states")
-                flags[other_index].add("overlapping_detailed_sleep_states")
+                flags[index].add("same_source_detailed_sleep_stage_conflict")
+                flags[other_index].add("same_source_detailed_sleep_stage_conflict")
         active.append(current)
 
-    inbed = [(start, end) for start, end, state, _ in intervals if state == "INBED"]
-    inbed.sort()
-    for start, end, state, index in intervals:
-        if state not in _DETAILED_SLEEP_STATES or not inbed:
+    inbed_by_provenance: dict[tuple[str, ...], list[tuple[datetime, datetime]]] = defaultdict(list)
+    for start, end, state, _, provenance in intervals:
+        if state == "INBED":
+            inbed_by_provenance[provenance].append((start, end))
+    for values in inbed_by_provenance.values():
+        values.sort()
+
+    for start, end, state, index, provenance in intervals:
+        if state not in _DETAILED_SLEEP_STATES:
             continue
-        if not any(min(end, bed_end) > max(start, bed_start) for bed_start, bed_end in inbed):
-            flags[index].add("sleep_state_outside_inbed")
+        compatible = inbed_by_provenance.get(provenance, ())
+        if not any(min(end, bed_end) > max(start, bed_start) for bed_start, bed_end in compatible):
+            flags[index].add("detailed_sleep_state_without_compatible_inbed_support")
     return flags
 
 
@@ -399,14 +549,13 @@ def _annotation_for_row(
     # Fixed scalar conversions apply only when the policy's first unit-bearing measurement is the ordinary
     # ``value`` column. Multivariate summaries, BloodPressure, and ECG must not be treated as missing scalar values.
     unit_measurement = (
-        policy.units.measurements[0].measurement
-        if policy.units.measurements else None
+        policy.units.measurements[0].measurement if policy.units.measurements else None
     )
     if unit is None and unit_measurement == "value" and "value" in row:
         unit = fixed_unit_annotation(feature, _float(row.get("value")))
     _add_unit(annotation, unit)
-    # Milestone 1 may already contain a compact canonical value. Native columns are immutable, so disagreements
-    # are surfaced for review rather than overwritten or duplicated.
+    # Native processing may already contain a compact canonical value. Native columns are immutable,
+    # so disagreements are surfaced for review rather than overwritten or duplicated.
     if unit is not None and unit.canonical_value is not None:
         native_canonical = _float(row.get("canonical_value"))
         if native_canonical is not None and not math.isclose(
@@ -446,7 +595,7 @@ def _annotation_for_row(
     _feature_rules(feature, row, annotation)
     if precomputed_flags:
         for flag in precomputed_flags.get(row_index, ()):
-            annotation.escalate("review", flag=flag)
+            _apply_declared_flag(annotation, flag)
     return annotation
 
 
@@ -477,8 +626,7 @@ def _write_projected(
         # share a curation field name.
         append_columns = [column for column in active_columns if column not in native_fields]
         writer = csv.DictWriter(
-            target, fieldnames=native_fields + append_columns,
-            lineterminator="\n", quoting=csv.QUOTE_MINIMAL,
+            target, fieldnames=native_fields + append_columns, lineterminator="\n", quoting=csv.QUOTE_MINIMAL,
         )
         writer.writeheader()
         next_annotation = annotations.readline()
@@ -522,6 +670,12 @@ def curate_feature_file(
     flag_counts: Counter[str] = Counter()
     acquisition_counts: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
+    inclusion_counts: Counter[str] = Counter()
+    unit_status_counts: Counter[str] = Counter()
+    raw_unit_counts: Counter[str] = Counter()
+    canonical_unit_counts: Counter[str] = Counter()
+    unit_evidence_counts: Counter[str] = Counter()
+    unknown_category_counts: Counter[str] = Counter()
     canonical_rows = 0
     ambiguous_rows = 0
     transition_rows = 0
@@ -540,9 +694,7 @@ def curate_feature_file(
             else:
                 _, iterator = _native_rows(native_path)
             for index, row in enumerate(iterator):
-                annotation = _annotation_for_row(
-                    feature, row, index, unit_context, sleep_flags,
-                )
+                annotation = _annotation_for_row(feature, row, index, unit_context, sleep_flags,)
                 sparse = annotation.as_sparse_dict()
                 if annotation.values.get("canonical_value") not in (None, ""):
                     canonical_rows += 1
@@ -551,15 +703,25 @@ def curate_feature_file(
                 if "possible_unit_transition" in annotation.flags:
                     transition_rows += 1
                 status_counts[annotation.status] += 1
+                inclusion_counts["included" if annotation.include else "excluded"] += 1
                 flag_counts.update(annotation.flags)
+                if annotation.unit is not None:
+                    unit_status_counts[annotation.unit.unit_status or "unknown"] += 1
+                    if annotation.unit.raw_unit:
+                        raw_unit_counts[annotation.unit.raw_unit] += 1
+                    if annotation.unit.canonical_unit:
+                        canonical_unit_counts[annotation.unit.canonical_unit] += 1
+                    if annotation.unit.unit_evidence:
+                        unit_evidence_counts[annotation.unit.unit_evidence] += 1
+                for category_field, category_value in annotation.unknown_categories:
+                    unknown_category_counts[f"{feature}:{category_field}={category_value}"] += 1
                 method = annotation.values.get("acquisition_method")
                 if method:
                     acquisition_counts[method] += 1
                 if sparse:
                     active_columns.update(sparse)
                     annotation_file.write(json.dumps(
-                        {"index": index, "values": sparse},
-                        ensure_ascii=False, separators=(",", ":"),
+                        {"index": index, "values": sparse}, ensure_ascii=False, separators=(",", ":"),
                     ) + "\n")
                 native_rows += 1
 
@@ -582,11 +744,18 @@ def curate_feature_file(
             pass_rows=status_counts["pass"],
             review_rows=status_counts["review"],
             exclude_default_rows=status_counts["exclude_default"],
+            included_by_default_rows=inclusion_counts["included"],
+            excluded_by_default_rows=inclusion_counts["excluded"],
             canonical_value_rows=canonical_rows,
             ambiguous_unit_rows=ambiguous_rows,
             scale_transition_rows=transition_rows,
             flag_counts=dict(sorted(flag_counts.items())),
             acquisition_counts=dict(sorted(acquisition_counts.items())),
+            unit_status_counts=dict(sorted(unit_status_counts.items())),
+            raw_unit_counts=dict(sorted(raw_unit_counts.items())),
+            canonical_unit_counts=dict(sorted(canonical_unit_counts.items())),
+            unit_evidence_counts=dict(sorted(unit_evidence_counts.items())),
+            unknown_category_counts=dict(sorted(unknown_category_counts.items())),
             native_sha256=native_sha,
             policy_fingerprint=policy.fingerprint(),
         )

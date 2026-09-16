@@ -51,7 +51,7 @@ def test_describe_feature_json(capsys) -> None:
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["feature"] == "Sleep"
-    assert "sleep_detailed_state_overlap" in payload["rules"]
+    assert "sleep_same_source_detailed_stage_conflict" in payload["rules"]
 
 
 def test_describe_feature_markdown_file(tmp_path: Path) -> None:
