@@ -1,6 +1,6 @@
 """
 Wearable Data Processing and Modeling project
-Defines and validates the policy framework only. It does not modify or curate participant feature files.
+Defines curation policies, guidance, audit and execution engine.
 """
 
 
