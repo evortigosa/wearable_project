@@ -29,15 +29,20 @@ wearable_project/
 │   │   └── writer.py       # Write one feature CSV atomically
 │   ├── curation/
 │   │   ├── audit.py        # Read-only calibration analyses
-│   │   ├── decisions.py    # 
-│   │   ├── environment.py  # 
+│   │   ├── curate_cli.py
+│   │   ├── decisions.py
+│   │   ├── engine.py
+│   │   ├── environment.py
 │   │   ├── evidence.py     # Literature and project evidence catalog
 │   │   ├── explain.py      # Assemble policy, rules, and sources
 │   │   ├── guidance.py     # User-facing feature descriptions
 │   │   ├── models.py       # Typed policy contracts
+│   │   ├── pipeline.py
 │   │   ├── registry.py     # All feature policies
 │   │   ├── rules.py        # Standardized rule and flag definitions
+│   │   ├── state.py
 │   │   ├── strategies.py   # Named strategy declarations
+│   │   ├── unit_resolution.py
 │   │   └── 
 │   ├── utils/
 │   │   ├── 

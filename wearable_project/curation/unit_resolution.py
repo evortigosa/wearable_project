@@ -297,9 +297,7 @@ def _bmi_preference(
 
 
 def _month_labels(
-    feature: str,
-    observations: list[_Observation],
-    preferred_unit: str | None,
+    feature: str, observations: list[_Observation], preferred_unit: str | None,
 ) -> dict[tuple[str, str], str | None]:
     values: dict[tuple[str, str], list[float]] = defaultdict(list)
     for observation in observations:
@@ -326,8 +324,8 @@ def _stable_epoch_id(participant: str, feature: str, context: str, number: int, 
 def _resolve_feature(
     participant_id: str, feature: str, observations: list[_Observation], *, preferred_unit: str | None = None,
 ) -> tuple[list[UnitAnnotation], list[UnitEpoch]]:
-    policy = get_policy(feature)
-    measurement_policy = policy.units.measurements[0] if policy.units.measurements else None
+    #policy = get_policy(feature)
+    #measurement_policy = policy.units.measurements[0] if policy.units.measurements else None
     canonical = _canonical_unit(feature)
     labels = _month_labels(feature, observations, preferred_unit)
 
@@ -335,10 +333,12 @@ def _resolve_feature(
     for observation in observations:
         grouped[observation.context_id].append(observation)
 
-    annotations: list[UnitAnnotation | None] = [None] * len(observations)
+    annotation_slots: list[UnitAnnotation | None] = [None] * len(observations)
     epochs: list[UnitEpoch] = []
     for context_id, context_rows in grouped.items():
-        ordered = sorted(context_rows, key=lambda item: (item.time or datetime.max.replace(tzinfo=timezone.utc), item.index))
+        ordered = sorted(
+            context_rows, key=lambda obs: (obs.time or datetime.max.replace(tzinfo=timezone.utc), obs.index)
+        )
         epoch_rows: list[_Observation] = []
         epoch_unit: str | None = None
         epoch_number = 0
@@ -356,15 +356,15 @@ def _resolve_feature(
                 else "monthly_scale_regime" if epoch_unit is not None
                 else "insufficient_epoch_evidence"
             )
-            for item in epoch_rows:
+            for erow in epoch_rows:
                 canonical_value = None
-                if item.value is not None and epoch_unit is not None and canonical is not None:
+                if erow.value is not None and epoch_unit is not None and canonical is not None:
                     try:
-                        canonical_value = _convert(item.value, epoch_unit, canonical)
+                        canonical_value = _convert(erow.value, epoch_unit, canonical)
                     except ValueError:
                         canonical_value = None
                         status = "ambiguous"
-                annotations[item.index] = UnitAnnotation(
+                annotation_slots[erow.index] = UnitAnnotation(
                     raw_unit=epoch_unit,
                     canonical_value=canonical_value,
                     canonical_unit=canonical if canonical_value is not None else None,
@@ -378,26 +378,26 @@ def _resolve_feature(
                 feature=feature,
                 epoch_id=epoch_id,
                 context_id=context_id,
-                start_index=min(item.index for item in epoch_rows),
-                end_index=max(item.index for item in epoch_rows),
-                first_time=min((item.raw_time for item in epoch_rows if item.raw_time), default=None),
-                last_time=max((item.raw_time for item in epoch_rows if item.raw_time), default=None),
+                start_index=min(row.index for row in epoch_rows),
+                end_index=max(row.index for row in epoch_rows),
+                first_time=min((row.raw_time for row in epoch_rows if row.raw_time), default=None),
+                last_time=max((row.raw_time for row in epoch_rows if row.raw_time), default=None),
                 row_count=len(epoch_rows),
                 raw_unit=epoch_unit,
                 canonical_unit=canonical if epoch_unit is not None else None,
                 status=status,
                 evidence=evidence,
                 scale_transition=transition,
-                median_value=_median(item.value for item in epoch_rows),
+                median_value=_median(row.value for row in epoch_rows),
             ))
             epoch_rows = []
 
-        last_unit: str | None | object = object()
+        #last_unit: str | None | object = object()
         transition_pending = False
         for item in ordered:
             current_unit = labels.get((context_id, item.month))
             long_gap = bool(previous_time and item.time and (item.time - previous_time).days > 120)
-            changed_scale = epoch_rows and current_unit != epoch_unit and current_unit is not None and epoch_unit is not None
+            changed_scale = bool(epoch_rows) and current_unit != epoch_unit and current_unit is not None and epoch_unit is not None
             if epoch_rows and (long_gap or changed_scale):
                 flush(transition=changed_scale)
                 transition_pending = changed_scale
@@ -410,11 +410,11 @@ def _resolve_feature(
                 transition_pending = True
             epoch_rows.append(item)
             previous_time = item.time or previous_time
-            last_unit = current_unit
+            #last_unit = current_unit
         flush(transition=transition_pending)
 
     default = UnitAnnotation(None, None, None, "ambiguous", "insufficient_epoch_evidence", None)
-    return [item if item is not None else default for item in annotations], epochs
+    return [item if item is not None else default for item in annotation_slots], epochs
 
 
 def build_participant_unit_context(participant_dir: Path) -> ParticipantUnitContext:
@@ -460,10 +460,9 @@ def build_participant_unit_context(participant_dir: Path) -> ParticipantUnitCont
                 for _ in observations
             ]
             continue
-        annotations, epochs = _resolve_feature(
+        context.annotations[feature], epochs = _resolve_feature(
             participant_id, feature, observations, preferred_unit=preferred,
         )
-        context.annotations[feature] = annotations
         context.epochs.extend(epochs)
     return context
 

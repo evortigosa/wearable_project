@@ -100,7 +100,10 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 def environment_manifest() -> EnvironmentManifest:
-    package_path = Path(wearable_project.__file__).resolve()
+    module_file = wearable_project.__file__
+    if module_file is None:
+        raise RuntimeError("wearable_project has no __file__ (namespace package?)")
+    package_path = Path(module_file).resolve()
     package_root = package_path.parent
     curation_root = package_root / "curation"
     source_root = package_root.parent
@@ -110,8 +113,8 @@ def environment_manifest() -> EnvironmentManifest:
         if name != "wearable-project":
             continue
         try:
-            candidate_root = Path(candidate.locate_file("")).resolve()
-            candidate_package = Path(candidate.locate_file("wearable_project/__init__.py")).resolve()
+            candidate_root = Path(str(candidate.locate_file(""))).resolve()
+            candidate_package = Path(str(candidate.locate_file("wearable_project/__init__.py"))).resolve()
         except Exception:
             continue
         candidates.append({
