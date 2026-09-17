@@ -320,16 +320,23 @@ _add(
     RuleDefinition(
         "sleep_cross_source_overlap", RuleClass.SOURCE,
         "sleep_cross_source_overlap", Severity.INFO,
-        "cross_source_sleep_overlap", StatusEffect.REVIEW,
+        "cross_source_sleep_overlap", StatusEffect.NONE,
         InclusionEffect.KEEP, False, ("apple_sleep_analysis", "project_sleep_intervals"),
-        "Preserve and distinguish overlapping sleep intervals emitted by different source/device epochs.",
+        "Preserve overlapping sleep intervals from different source/device epochs as provenance context; cross-source overlap alone is not an internal stage conflict.",
     ),
     RuleDefinition(
-        "sleep_compatible_inbed_support", RuleClass.TEMPORAL,
-        "sleep_compatible_inbed_support", Severity.INFO,
-        "detailed_sleep_state_without_compatible_inbed_support", StatusEffect.REVIEW,
+        "sleep_source_has_no_inbed_state", RuleClass.SOURCE,
+        "sleep_source_has_no_inbed_state", Severity.INFO,
+        "source_has_no_inbed_state", StatusEffect.NONE,
         InclusionEffect.KEEP, False, ("apple_sleep_analysis", "project_sleep_intervals"),
-        "Assess detailed stages only against INBED intervals from a compatible source/device epoch.",
+        "Record that a compatible source/device epoch emits detailed stages but no INBED samples; this is informational and does not invalidate the stages.",
+    ),
+    RuleDefinition(
+        "sleep_detailed_state_outside_available_inbed", RuleClass.TEMPORAL,
+        "sleep_detailed_state_outside_available_inbed", Severity.INFO,
+        "detailed_state_outside_available_inbed", StatusEffect.REVIEW,
+        InclusionEffect.KEEP, False, ("apple_sleep_analysis", "project_sleep_intervals"),
+        "Flag a detailed stage that has no temporal support from INBED even though the same compatible source/device epoch does emit INBED samples.",
     ),
 )
 

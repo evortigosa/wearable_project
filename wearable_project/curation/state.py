@@ -19,8 +19,8 @@ from wearable_project.curation.registry import registry_fingerprint
 from wearable_project.processing.parser import sha256_file
 
 
-CURATION_ENGINE_VERSION = "curation-engine-0.2.0a2.1"
-CURATION_STATE_SCHEMA_VERSION = 2
+CURATION_ENGINE_VERSION = "curation-engine-0.2.0a2.2"
+CURATION_STATE_SCHEMA_VERSION = 3
 
 
 def now_utc() -> str:
@@ -178,6 +178,13 @@ class CurationStateDatabase:
               feature TEXT NOT NULL,
               epoch_id TEXT NOT NULL,
               context_id TEXT NOT NULL,
+              collecting_method_version TEXT,
+              source_id TEXT,
+              source_name TEXT,
+              device TEXT,
+              metadata_device_name TEXT,
+              time_zone TEXT,
+              was_user_entered TEXT,
               start_index INTEGER NOT NULL,
               end_index INTEGER NOT NULL,
               first_time TEXT,
@@ -261,6 +268,13 @@ class CurationStateDatabase:
             self._ensure_column(table, "unknown_category_counts_json TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column("curation_unit_epochs", "transition_from_unit TEXT")
         self._ensure_column("curation_unit_epochs", "transition_reason TEXT")
+        self._ensure_column("curation_unit_epochs", "collecting_method_version TEXT")
+        self._ensure_column("curation_unit_epochs", "source_id TEXT")
+        self._ensure_column("curation_unit_epochs", "source_name TEXT")
+        self._ensure_column("curation_unit_epochs", "device TEXT")
+        self._ensure_column("curation_unit_epochs", "metadata_device_name TEXT")
+        self._ensure_column("curation_unit_epochs", "time_zone TEXT")
+        self._ensure_column("curation_unit_epochs", "was_user_entered TEXT")
 
     def __enter__(self) -> "CurationStateDatabase":
         return self
@@ -443,18 +457,23 @@ class CurationStateDatabase:
             )
             self.connection.executemany(
                 """INSERT INTO curation_unit_epochs(
-                     participant_id,feature,epoch_id,context_id,start_index,end_index,first_time,last_time,
-                     row_count,raw_unit,canonical_unit,status,evidence,scale_transition,median_value,
-                     transition_from_unit,transition_reason
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     participant_id,feature,epoch_id,context_id,collecting_method_version,
+                     source_id,source_name,device,metadata_device_name,time_zone,was_user_entered,
+                     start_index,end_index,first_time,last_time,row_count,raw_unit,canonical_unit,
+                     status,evidence,scale_transition,median_value,transition_from_unit,transition_reason
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         participant_id, epoch["feature"], epoch["epoch_id"], epoch["context_id"],
-                        epoch["start_index"], epoch["end_index"], epoch.get("first_time"),
-                        epoch.get("last_time"), epoch["row_count"], epoch.get("raw_unit"),
-                        epoch.get("canonical_unit"), epoch["status"], epoch["evidence"],
-                        int(bool(epoch.get("scale_transition"))), epoch.get("median_value"),
-                        epoch.get("transition_from_unit"), epoch.get("transition_reason"),
+                        epoch.get("collecting_method_version"), epoch.get("source_id"),
+                        epoch.get("source_name"), epoch.get("device"),
+                        epoch.get("metadata_device_name"), epoch.get("time_zone"),
+                        epoch.get("was_user_entered"), epoch["start_index"], epoch["end_index"],
+                        epoch.get("first_time"), epoch.get("last_time"), epoch["row_count"],
+                        epoch.get("raw_unit"), epoch.get("canonical_unit"), epoch["status"],
+                        epoch["evidence"], int(bool(epoch.get("scale_transition"))),
+                        epoch.get("median_value"), epoch.get("transition_from_unit"),
+                        epoch.get("transition_reason"),
                     )
                     for epoch in epochs
                 ],
@@ -596,6 +615,12 @@ class CurationStateDatabase:
             "unknown_categorical_values": dict(sorted(self._counter_from_rows(output_rows, "unknown_category_counts_json").items())),
             "largest_participant": dict(largest) if largest else None,
         }
+        acquisition_total = sum(payload["acquisition_counts"].values())
+        payload["acquisition_classification"] = {
+            "classified_rows": acquisition_total - payload["acquisition_counts"].get("unclassified", 0),
+            "unclassified_rows": payload["acquisition_counts"].get("unclassified", 0),
+            "accounting_complete": acquisition_total == int(row["curated_rows"]),
+        }
         payload["unit_resolution"] = self._unit_resolution_summary(include_details=include_unit_details,)
         return payload
 
@@ -654,6 +679,11 @@ class CurationStateDatabase:
                 "scale_transition_rows": sum(row["scale_transition_rows"] for row in features),
                 "flag_counts": dict(sorted(flag_counts.items())),
                 "acquisition_counts": dict(sorted(acquisition_counts.items())),
+                "acquisition_classification": {
+                    "classified_rows": sum(acquisition_counts.values()) - acquisition_counts.get("unclassified", 0),
+                    "unclassified_rows": acquisition_counts.get("unclassified", 0),
+                    "accounting_complete": sum(acquisition_counts.values()) == curated_rows,
+                },
                 "unit_status_counts": dict(sorted(unit_status_counts.items())),
                 "raw_unit_counts": dict(sorted(raw_unit_counts.items())),
                 "canonical_unit_counts": dict(sorted(canonical_unit_counts.items())),
@@ -734,6 +764,11 @@ def format_curation_report(report: Mapping[str, Any]) -> str:
             "Default inclusion: "
             f"{activity['included_by_default_rows']} included; "
             f"{activity['excluded_by_default_rows']} excluded"
+        ),
+        (
+            "Acquisition classification: "
+            f"{activity['acquisition_classification']['classified_rows']} classified; "
+            f"{activity['acquisition_classification']['unclassified_rows']} unclassified"
         ),
         f"Canonical-value rows: {activity['canonical_value_rows']}",
         f"Ambiguous-unit rows: {activity['ambiguous_unit_rows']}",

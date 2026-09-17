@@ -54,14 +54,27 @@ _CONTEXT_COLUMNS: tuple[str, ...] = (
 )
 
 _EVIDENCE_PRIORITY = {
-    "bounded_bmi_consistency_exact": 0,
-    "bounded_bmi_consistency_5min": 1,
-    "bounded_bmi_consistency_1day": 2,
-    "bounded_body_composition_consistency": 3,
-    "bounded_cross_feature_epoch_propagation": 4,
-    "monthly_scale_regime": 5,
+    "explicit_raw_unit": 0,
+    "reviewed_source_convention": 0,
+    "bounded_bmi_consistency_exact": 1,
+    "round_metric_to_imperial_conversion_fingerprint": 2,
+    "bounded_bmi_consistency_5min": 3,
+    "bounded_bmi_consistency_1day": 4,
+    "bounded_body_composition_consistency_from_trusted_weight": 5,
+    "bounded_cross_feature_epoch_propagation": 6,
+    "monthly_scale_regime": 7,
     "insufficient_epoch_evidence": 9,
 }
+
+_TRUSTED_ABSOLUTE_MASS_EVIDENCE = frozenset({
+    "explicit_raw_unit",
+    "reviewed_source_convention",
+    "bounded_bmi_consistency_exact",
+    "bounded_bmi_consistency_5min",
+    "bounded_bmi_consistency_1day",
+    "round_metric_to_imperial_conversion_fingerprint",
+    "bounded_cross_feature_epoch_propagation",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +110,13 @@ class UnitEpoch:
     median_value: float | None
     transition_from_unit: str | None = None
     transition_reason: str | None = None
+    collecting_method_version: str | None = None
+    source_id: str | None = None
+    source_name: str | None = None
+    device: str | None = None
+    metadata_device_name: str | None = None
+    time_zone: str | None = None
+    was_user_entered: str | None = None
 
 
 @dataclass(slots=True)
@@ -213,6 +233,71 @@ def _convert(value: float, raw_unit: str, canonical_unit: str) -> float:
     raise ValueError(f"Unsupported unit conversion: {raw_unit} -> {canonical_unit}")
 
 
+def _normalise_unit(value: Any) -> str | None:
+    text = str(value or "").strip().lower().replace(" ", "")
+    aliases = {
+        "kg": "kg", "kilogram": "kg", "kilograms": "kg",
+        "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
+        "m": "m", "meter": "m", "metre": "m", "meters": "m", "metres": "m",
+        "cm": "cm", "centimeter": "cm", "centimetre": "cm",
+        "in": "in", "inch": "in", "inches": "in",
+        "mmol/l": "mmol/L", "mmoll": "mmol/L",
+        "mg/dl": "mg/dL", "mgdl": "mg/dL",
+        "kcal": "kcal", "kilocalorie": "kcal", "kilocalories": "kcal",
+        "kj": "kJ", "kilojoule": "kJ", "kilojoules": "kJ",
+    }
+    return aliases.get(text)
+
+
+def _distance_to_grid(value: float, step: float) -> float:
+    return abs(value - round(value / step) * step)
+
+
+def _strong_imperial_mass_fingerprint(value: float) -> bool:
+    """
+    Return true when a raw pound value encodes a round 0.1-kg source value. HealthKit/export pipelines often
+    serialize a metric measurement after converting it to pounds, producing characteristic long decimals such as
+    110.231131092... for exactly 50.0 kg.  The test is deliberately strict and does not classify ordinary
+    integer/one-decimal pound values.
+    """
+
+    if not math.isfinite(value) or value <= 0:
+        return False
+    kilograms = value * 0.45359237
+    if not 5.0 <= kilograms <= 350.0:
+        return False
+    converted_error = _distance_to_grid(kilograms, 0.1)
+    raw_error = _distance_to_grid(value, 0.1)
+    return converted_error <= 1e-7 and raw_error >= 1e-4
+
+
+def _mass_fingerprint_unit(observations: Iterable[_Observation]) -> str | None:
+    values = [item.value for item in observations if item.value is not None and item.value > 0]
+    if not values:
+        return None
+    strong = sum(_strong_imperial_mass_fingerprint(value) for value in values)
+    if len(values) == 1:
+        return "lb" if strong == 1 else None
+    if strong >= 2 and strong / len(values) >= 0.5:
+        return "lb"
+    return None
+
+
+def _explicit_unit(feature: str, observations: Iterable[_Observation]) -> str | None:
+    supported = {
+        "Height": {"m", "cm", "in"},
+        "Weight": {"kg", "lb"},
+        "LeanBodyMass": {"kg", "lb"},
+        "BloodGlucose": {"mmol/L", "mg/dL"},
+        "EnergyConsumed": {"kcal", "kJ"},
+    }.get(feature, set())
+    units = {
+        unit for item in observations
+        if (unit := _normalise_unit(item.row.get("raw_unit"))) in supported
+    }
+    return next(iter(units)) if len(units) == 1 else None
+
+
 def _candidate_from_scale(feature: str, median: float | None) -> str | None:
     if median is None or median <= 0:
         return None
@@ -224,19 +309,11 @@ def _candidate_from_scale(feature: str, median: float | None) -> str | None:
         if 100 <= median <= 250:
             return "cm"
         return None
-    if feature == "Weight":
-        # Values between 115 and 135 are deliberately unresolved. Values in the overlapping 25--115 range can
-        # be overridden only by bounded BMI evidence, never by a participant-global preference.
-        if 25 <= median <= 115:
-            return "kg"
-        if 135 <= median <= 700:
-            return "lb"
-        return None
-    if feature == "LeanBodyMass":
-        if 20 <= median <= 90:
-            return "kg"
-        if 120 <= median <= 500:
-            return "lb"
+    if feature in {"Weight", "LeanBodyMass"}:
+        # Absolute mass units are not resolved from magnitude alone. The clinically plausible kilogram and pound
+        # ranges overlap heavily, so magnitude-only rules can confidently convert a 100-lb person as 100 kg.
+        # Mass features require explicit/source evidence, bounded BMI evidence, a reviewed conversion fingerprint,
+        # or propagation from one of those trusted anchors.
         return None
     if feature == "BloodGlucose":
         if 1 <= median <= 40:
@@ -407,9 +484,16 @@ def _lean_mass_preferences_by_context_month(
             continue
         if weight.index >= len(weight_annotations):
             continue
-        weight_unit = weight_annotations[weight.index].raw_unit
+        weight_annotation = weight_annotations[weight.index]
+        weight_unit = weight_annotation.raw_unit
         fraction = _body_fat_fraction(fat.value)
-        if weight_unit not in {"kg", "lb"} or weight.value is None or fraction is None:
+        if (
+            weight_unit not in {"kg", "lb"}
+            or weight.value is None
+            or fraction is None
+            or weight_annotation.unit_status == "ambiguous"
+            or weight_annotation.unit_evidence not in _TRUSTED_ABSOLUTE_MASS_EVIDENCE
+        ):
             continue
         expected = weight.value * (1.0 - fraction)
         denominator = max(abs(item.value), 1e-12)
@@ -418,11 +502,7 @@ def _lean_mass_preferences_by_context_month(
         if error > 0.05 or (max_delta > 300 and max_delta <= 86400 and error > 0.02):
             continue
         candidates[(item.context_id, item.month)].append(_UnitPreference(
-            weight_unit,
-            "bounded_body_composition_consistency",
-            error,
-            1,
-            max_delta,
+            weight_unit, "bounded_body_composition_consistency_from_trusted_weight", error, 1, max_delta,
         ))
     return {
         key: selected for key, values in candidates.items()
@@ -509,23 +589,40 @@ def _propagate_bounded_preferences(
 def _month_labels(
     feature: str, observations: list[_Observation], overrides: Mapping[tuple[str, str], _UnitPreference] | None = None,
 ) -> tuple[dict[tuple[str, str], str | None], dict[tuple[str, str], str]]:
-    values: dict[tuple[str, str], list[float]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[_Observation]] = defaultdict(list)
     for observation in observations:
         if observation.value is not None:
-            values[(observation.context_id, observation.month)].append(observation.value)
-    medians = {key: float(statistics.median(month_values)) for key, month_values in values.items()}
+            grouped[(observation.context_id, observation.month)].append(observation)
+    medians = {
+        key: float(statistics.median(item.value for item in month_rows if item.value is not None))
+        for key, month_rows in grouped.items()
+    }
     labels: dict[tuple[str, str], str | None] = {}
     evidence: dict[tuple[str, str], str] = {}
     overrides = overrides or {}
-    for key, median in medians.items():
+    for key, month_rows in grouped.items():
         preference = overrides.get(key)
         if preference is not None:
             labels[key] = preference.unit
             evidence[key] = preference.evidence
             continue
-        labels[key] = _candidate_from_scale(feature, median)
+        explicit = _explicit_unit(feature, month_rows)
+        if explicit is not None:
+            labels[key] = explicit
+            evidence[key] = "explicit_raw_unit"
+            continue
+        if feature in {"Weight", "LeanBodyMass"}:
+            fingerprint = _mass_fingerprint_unit(month_rows)
+            labels[key] = fingerprint
+            evidence[key] = (
+                "round_metric_to_imperial_conversion_fingerprint"
+                if fingerprint is not None else "insufficient_epoch_evidence"
+            )
+            continue
+        labels[key] = _candidate_from_scale(feature, medians[key])
         evidence[key] = (
-            "monthly_scale_regime" if labels[key] is not None else "insufficient_epoch_evidence"
+            "monthly_scale_regime" if labels[key] is not None
+            else "insufficient_epoch_evidence"
         )
     _propagate_bounded_preferences(feature, medians, labels, evidence, overrides)
     return labels, evidence
@@ -614,6 +711,13 @@ def _resolve_feature(
                 median_value=_median(obs.value for obs in epoch_rows),
                 transition_from_unit=transition_from_unit,
                 transition_reason=transition_reason,
+                collecting_method_version=str(epoch_rows[0].row.get("collecting_method_version", "") or "") or None,
+                source_id=str(epoch_rows[0].row.get("source_id", "") or "") or None,
+                source_name=str(epoch_rows[0].row.get("source_name", "") or "") or None,
+                device=str(epoch_rows[0].row.get("device", "") or "") or None,
+                metadata_device_name=str(epoch_rows[0].row.get("metadata_device_name", "") or "") or None,
+                time_zone=str(epoch_rows[0].row.get("time_zone", "") or "") or None,
+                was_user_entered=str(epoch_rows[0].row.get("was_user_entered", "") or "") or None,
             ))
             epoch_rows = []
 

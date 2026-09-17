@@ -81,11 +81,12 @@ def test_report_separates_status_from_default_inclusion(tmp_path: Path) -> None:
 def test_resolved_to_unresolved_scale_creates_ambiguous_epoch_and_review(tmp_path: Path) -> None:
     participant = tmp_path / "native" / "p1"
     _write(participant / "Weight.csv", BASE_FIELDS, [
-        _base_row(when="2024-01-01T12:00:00Z", value="80", record="w1"),
+        # 110.231131... lb is exactly 50.0 kg and carries a reviewed metric-to-imperial conversion fingerprint.
+        _base_row(when="2024-01-01T12:00:00Z", value="110.23113109243879", record="w1"),
         _base_row(when="2024-02-01T12:00:00Z", value="120", record="w2"),
     ])
     rows, result = _curate_one(participant, "Weight", tmp_path)
-    assert rows[0]["canonical_value"] == "80"
+    assert math.isclose(float(rows[0]["canonical_value"]), 50.0, rel_tol=1e-10)
     assert rows[0]["canonical_unit"] == "kg"
     assert rows[1].get("canonical_value", "") == ""
     assert rows[1]["curation_unit_status"] == "ambiguous"
@@ -157,9 +158,12 @@ def test_sleep_overlap_annotations_are_source_aware(tmp_path: Path) -> None:
     assert "same_source_detailed_sleep_stage_conflict" in flags[2]
     assert "cross_source_sleep_overlap" in flags[2]
     assert "cross_source_sleep_overlap" in flags[3]
-    assert "detailed_sleep_state_without_compatible_inbed_support" not in flags[1]
-    assert "detailed_sleep_state_without_compatible_inbed_support" not in flags[2]
-    assert "detailed_sleep_state_without_compatible_inbed_support" in flags[3]
+    assert "source_has_no_inbed_state" not in flags[1]
+    assert "source_has_no_inbed_state" not in flags[2]
+    assert "source_has_no_inbed_state" in flags[3]
+    # Cross-source overlap and a source that omits INBED are informational; only the same-source detailed-stage
+    # conflict escalates status.
+    assert rows[3].get("curation_status", "") == "pass"
 
 
 def test_negative_nutrition_and_unknown_motion_context_are_executable_rules(tmp_path: Path) -> None:
@@ -183,7 +187,6 @@ def test_negative_nutrition_and_unknown_motion_context_are_executable_rules(tmp_
     assert result.info.flag_counts["unknown_heart_rate_motion_context"] == 1
 
 
-
 def test_blankish_cgm_metadata_is_not_reported_as_unknown_category(tmp_path: Path) -> None:
     participant = tmp_path / "native" / "p1"
     fields = BASE_FIELDS + ["status", "trend_arrow", "trend_rate"]
@@ -194,6 +197,7 @@ def test_blankish_cgm_metadata_is_not_reported_as_unknown_category(tmp_path: Pat
     assert result.info.unknown_category_counts == {}
     assert "unknown_cgm_trend" not in result.info.flag_counts
     assert rows[0].get("curation_status", "") == ""
+
 
 def test_every_referenced_runtime_rule_has_engine_implementation() -> None:
     assert validate_engine_rule_coverage() == ()
@@ -229,8 +233,11 @@ def test_state_database_migrates_a2_schema_additively(tmp_path: Path) -> None:
         );
         """)
     with CurationStateDatabase(path) as state:
-        assert state.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert state.connection.execute("PRAGMA user_version").fetchone()[0] == 3
         output_columns = {row[1] for row in state.connection.execute("PRAGMA table_info(curation_outputs)")}
         epoch_columns = {row[1] for row in state.connection.execute("PRAGMA table_info(curation_unit_epochs)")}
     assert {"included_by_default_rows", "excluded_by_default_rows", "unit_status_counts_json"}.issubset(output_columns)
-    assert {"transition_from_unit", "transition_reason"}.issubset(epoch_columns)
+    assert {
+        "transition_from_unit", "transition_reason", "collecting_method_version", "source_id", "source_name",
+        "device", "metadata_device_name", "time_zone", "was_user_entered",
+    }.issubset(epoch_columns)

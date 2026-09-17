@@ -15,7 +15,7 @@ from wearable_project.curation.evidence import EVIDENCE
 from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES, get_policy
 
 
-GUIDANCE_VERSION = "0.2.0a2.1-guidance-3"
+GUIDANCE_VERSION = "0.2.0a2.2-guidance-4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,8 +204,12 @@ _SPECS: dict[str, _GuideSpec] = {
         "Categorical intervals for time in bed and sleep states.",
         "One state interval from one source, such as INBED, AWAKE, CORE, DEEP, REM, or unspecified ASLEEP.",
         "Created by watches, sleep applications, or manual/imported sources; sources may overlap.",
-        "Preserve every interval; allow INBED to overlap detailed stages, flag detailed-stage conflicts and same-state overlap, and never use lexical mode.",
-        ("Detailed samples may not cover the beginning or end of an INBED interval.", "Different sources can provide incompatible state models."),
+        "Preserve every interval; allow INBED to overlap detailed stages, flag same-source stage conflicts, retain cross-source overlap as informational provenance, distinguish sources that never emit INBED from detailed stages outside available INBED, and never use lexical mode.",
+        (
+            "Detailed samples may not cover the beginning or end of an INBED interval.",
+            "A source may emit detailed stages without exporting INBED; this is recorded as context rather than treated as a failed sleep-state measurement.",
+            "Different sources can provide overlapping or incompatible state models, so cross-source overlap is not interpreted as an internal stage conflict.",
+        ),
         ("One exclusive state per time bin without an explicit hierarchy.",),
         ("apple_sleep_analysis", "project_sleep_intervals"),
     ),

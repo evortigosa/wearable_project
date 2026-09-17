@@ -99,8 +99,9 @@ ENGINE_IMPLEMENTED_RUNTIME_RULE_IDS: frozenset[str] = frozenset({
     "positive_measurement",
     "pulse_ox_source_limitations",
     "required_measurements_present",
-    "sleep_compatible_inbed_support",
     "sleep_cross_source_overlap",
+    "sleep_source_has_no_inbed_state",
+    "sleep_detailed_state_outside_available_inbed",
     "sleep_same_source_detailed_stage_conflict",
     "sleep_same_source_same_state_overlap",
     "sleep_state_vocabulary",
@@ -519,8 +520,13 @@ def _sleep_overlap_flags(rows: list[Mapping[str, str]]) -> dict[int, set[str]]:
         if state not in _DETAILED_SLEEP_STATES:
             continue
         compatible = inbed_by_provenance.get(provenance, ())
-        if not any(min(end, bed_end) > max(start, bed_start) for bed_start, bed_end in compatible):
-            flags[index].add("detailed_sleep_state_without_compatible_inbed_support")
+        if not compatible:
+            # Some sources export detailed sleep stages without any INBED samples. This is a source
+            # capability/context distinction, not evidence that the detailed stages are invalid.
+            flags[index].add("source_has_no_inbed_state")
+        elif not any(min(end, bed_end) > max(start, bed_start) for bed_start, bed_end in compatible):
+            # The source does emit INBED, but this particular detailed state is outside every compatible INBED interval.
+            flags[index].add("detailed_state_outside_available_inbed")
     return flags
 
 
@@ -716,8 +722,7 @@ def curate_feature_file(
                 for category_field, category_value in annotation.unknown_categories:
                     unknown_category_counts[f"{feature}:{category_field}={category_value}"] += 1
                 method = annotation.values.get("acquisition_method")
-                if method:
-                    acquisition_counts[method] += 1
+                acquisition_counts[method or "unclassified"] += 1
                 if sparse:
                     active_columns.update(sparse)
                     annotation_file.write(json.dumps(

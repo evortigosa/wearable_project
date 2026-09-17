@@ -1,7 +1,7 @@
 """
 Wearable Data Processing and Modeling project
 Authoritative milestone-two feature-policy registry. Policies are fully typed, validated, versioned, and
-exportable. The 0.2.0a2.1 curation engine executes only reviewed or explicitly scoped decisions while
+exportable. The 0.2.0a2.2 curation engine executes only reviewed or explicitly scoped decisions while
 the native parser and outputs remain unchanged.
 """
 
@@ -57,7 +57,7 @@ from wearable_project.curation.rules import RULES, rule_execution_kind
 from wearable_project.curation.strategies import ALL_STRATEGY_CATALOGS
 
 
-CURATION_REGISTRY_VERSION = "0.2.0a2.1-policy-4"
+CURATION_REGISTRY_VERSION = "0.2.0a2.2-policy-5"
 POLICY_CONTRACT_VERSION = "1.2.0-alpha1"
 
 # Exactly the 33 Apple HealthKit feature names observed in the accepted full cohort run. New names are handled
@@ -423,8 +423,10 @@ def _point_policy(
         identity=_identity(name, maturity=maturity),
         schema=_scalar_schema("point_scalar", context=provenance_context),
         semantics=_semantics(
-            EventKind.POINT, measurement_kind, DurationModel.ZERO_DURATION_POINT, IntervalClosure.POINT,
-            native_resolution="instantaneous point observation", end_meaning="same instant as native start",
+            EventKind.POINT, measurement_kind,
+            DurationModel.ZERO_DURATION_POINT, IntervalClosure.POINT,
+            native_resolution="instantaneous point observation",
+            end_meaning="same instant as native start",
         ),
         units=units,
         provenance=_provenance(provenance_strategy, context=provenance_context, source_rules=source_rules,),
@@ -890,7 +892,8 @@ _register(FeaturePolicy(
         ("required_measurements_present", "timestamp_order", "interval_duration_positive",
          "sleep_state_vocabulary", "sleep_same_source_same_state_overlap",
          "sleep_same_source_detailed_stage_conflict", "sleep_cross_source_overlap",
-         "sleep_compatible_inbed_support", "source_epoch_transition"),
+         "sleep_source_has_no_inbed_state", "sleep_detailed_state_outside_available_inbed",
+         "source_epoch_transition"),
         CurationStatus.PASS, InclusionPolicy.INCLUDE,
     ),
     cross_feature=CrossFeaturePolicy(),
@@ -898,7 +901,10 @@ _register(FeaturePolicy(
     resampling=_resampling(ResamplingSupport.SUPPORTED, "state_interval_union", aggregation="none", state_handling="multi_state_interval_union_and_coverage", supports=("state_seconds", "coverage_fraction", "conflict_seconds")),
     evidence_refs=("apple_sleep_analysis", "project_sleep_intervals"),
     tests=_tests("Sleep", "no_lexical_state_selection", "all_native_state_intervals_are_preserved"),
-    notes=("INBED may overlap detailed stages; detailed stage conflicts are reported rather than resolved lexically.",),
+    notes=(
+        "INBED may overlap detailed stages; detailed stage conflicts are reported rather than resolved lexically.",
+        "Cross-source overlap and source epochs that omit INBED are retained as informational provenance context; a detailed stage is reviewed only when its own source emits INBED but no compatible interval supports that stage.",
+    ),
 ))
 
 # ECG waveform events.

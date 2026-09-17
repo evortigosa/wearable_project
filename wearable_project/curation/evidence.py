@@ -523,6 +523,7 @@ _add(
             "temperature Fahrenheit-to-Celsius fingerprints",
             "distance source conventions",
             "HRV seconds-to-milliseconds fingerprint",
+            "mass metric-to-imperial conversion fingerprints",
         ),
     ),
     EvidenceSource(
@@ -532,7 +533,13 @@ _add(
         2026,
         "project_empirical_evidence",
         "project://analysis/sleep-intervals",
-        ("in-bed nesting", "cross-state overlap", "avoidance of lexical tie-breaking"),
+        (
+            "in-bed nesting",
+            "same-source detailed-stage conflicts",
+            "cross-source overlap as provenance context",
+            "source epochs that omit INBED",
+            "avoidance of lexical tie-breaking",
+        ),
     ),
 )
 

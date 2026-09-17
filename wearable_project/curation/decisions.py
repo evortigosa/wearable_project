@@ -168,10 +168,13 @@ POLICY_CALIBRATION_DECISIONS: Mapping[str, CalibrationDecision] = {
         EvidenceGrade.C_SUGGESTIVE,
         PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
         "Most values are pound-like; body-composition consistency verifies same-unit structure but cannot by itself distinguish kilograms from pounds.",
-        "Resolve kilograms/pounds jointly with Weight within bounded participant/source epochs.",
+        "Resolve kilograms/pounds jointly with a trusted Weight unit within bounded participant/source epochs; magnitude alone is never sufficient in overlapping mass ranges.",
         "participant_feature_source_epoch",
         "Retain raw lean mass and omit canonical kilograms for ambiguous epochs.",
-        required=("Use bounded source epochs and temporally matched Weight/body-fat evidence.",),
+        required=(
+            "Use bounded source epochs and temporally matched Weight/body-fat evidence.",
+            "Inherit Weight units only when Weight was resolved by explicit/source evidence, bounded BMI evidence, or a reviewed conversion fingerprint.",
+        ),
     ),
     "PeakFlow": _decision(
         "PeakFlow",
@@ -201,10 +204,13 @@ POLICY_CALIBRATION_DECISIONS: Mapping[str, CalibrationDecision] = {
         EvidenceGrade.C_SUGGESTIVE,
         PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
         "The dominant regime is pounds, but valid kilogram and malformed regimes exist.",
-        "Resolve kilograms/pounds per bounded participant/source epoch.",
+        "Resolve kilograms/pounds per bounded participant/source epoch; never resolve overlapping mass ranges from magnitude alone.",
         "participant_feature_source_epoch",
         "Retain raw weight and omit canonical kilograms for ambiguous epochs.",
-        required=("Use temporally bounded BMI and body-composition evidence plus continuity/source context.",),
+        required=(
+            "Use temporally bounded BMI evidence, reviewed conversion fingerprints, explicit/source conventions, and stable epoch continuity.",
+            "Do not infer kilograms or pounds solely because a value lies inside a broad plausible mass range.",
+        ),
     ),
 }
 
