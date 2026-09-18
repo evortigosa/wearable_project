@@ -134,7 +134,7 @@ _SPECS: dict[str, _GuideSpec] = {
         "Heart-rate observation expressed as beats per minute.",
         "One native point or short interval observation with its original source and motion context when present.",
         "May come from PPG, another sensor, manual entry, or an imported application; cadence varies by source.",
-        "Preserve all native observations, source identity, motion context, duration, and provenance; do not aggregate in Milestone 2.",
+        "Preserve all native observations, source identity, motion context, duration, and provenance; do not aggregate in curation.",
         ("Sampling density is not uniform and record counts should not be treated as equal-duration support.",),
         ("An ECG rhythm diagnosis.", "A universal five-minute median heart rate."),
         ("apple_heart_rate",),

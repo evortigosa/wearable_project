@@ -170,10 +170,12 @@ def test_matrix_csv_contains_one_row_per_feature() -> None:
 def test_milestone_one_processing_modules_are_byte_frozen() -> None:
     processing = Path(__file__).parents[1] / "wearable_project" / "processing"
     actual = {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(processing.glob("*.py"))
+        name: hashlib.sha256((processing / name).read_bytes()).hexdigest()
+        for name in EXPECTED_PROCESSING_HASHES
     }
     assert actual == EXPECTED_PROCESSING_HASHES
+    # RC2 adds one read-only operational utility
+    assert (processing / "scan.py").is_file()
 
 
 def test_discrete_heart_features_allow_point_or_short_interval_support() -> None:

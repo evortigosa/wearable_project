@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Iterable
 
 
-REGISTRY_VERSION = "2026-09-native-milestone-1"
+REGISTRY_VERSION = "2026-09-native-processing"
 SPECS: dict[str, FeatureSpec] = {}
 
 
@@ -68,7 +68,7 @@ def add(*specs: FeatureSpec) -> None:
         SPECS[spec.name] = spec
 
 
-# Additive interval aggregates. These retain their original intervals; no fixed-window allocation occurs in milestone one.
+# Additive interval aggregates. These retain their original intervals; no fixed-window allocation occurs in native processing.
 add(
     FeatureSpec("StepCount", FeatureFamily.INTERVAL_TOTAL, ("value",), DedupStrategy.INTERVAL_REVISION, U("count", "count"), resolve_boundary_revisions=True),
     FeatureSpec("DistanceWalkingRunning", FeatureFamily.INTERVAL_TOTAL, ("value",), DedupStrategy.INTERVAL_REVISION, U("m", "m", status="validated_source_convention"), resolve_boundary_revisions=True),

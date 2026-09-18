@@ -1,6 +1,6 @@
 """
 Wearable Data Processing and Modeling project
-Authoritative milestone-two feature-policy registry. Policies are fully typed, validated, versioned, and
+Authoritative curation feature-policy registry. Policies are fully typed, validated, versioned, and
 exportable. The 0.2.0a2.2 curation engine executes only reviewed or explicitly scoped decisions while
 the native parser and outputs remain unchanged.
 """
@@ -390,7 +390,7 @@ def _interval_total_policy(
         provenance=_provenance(provenance_strategy),
         reconciliation=_reconcile(
             revision="inherit_native_interval_revision",
-            note="Milestone 1 boundary-revision resolution is inherited; unresolved candidates remain explicit.",
+            note="Native processing boundary-revision resolution is inherited; unresolved candidates remain explicit.",
         ),
         curation=_curation(
             "interval_duration_positive", "nonnegative_measurement", "unresolved_same_interval_conflict",
@@ -1112,7 +1112,7 @@ def validate_registry() -> RegistryValidationResult:
         if not policy.semantics.native_resolution:
             errors.append(prefix + "native_resolution is empty")
         if policy.resampling.default_enabled:
-            errors.append(prefix + "resampling must not be enabled in milestone 2")
+            errors.append(prefix + "resampling must not be enabled in curation")
         if policy.resampling.strategy not in ALL_STRATEGY_CATALOGS["resampling"]:
             errors.append(prefix + f"unknown resampling strategy {policy.resampling.strategy!r}")
         if policy.provenance.acquisition_method_strategy not in ALL_STRATEGY_CATALOGS["acquisition"]:

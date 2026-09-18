@@ -130,7 +130,7 @@ def validate_native_input_root(input_root: Path, *, allow_unmanaged_native_root:
     Validate that ``input_root`` is a native processing dataset. A curated root is rejected before any
     participant discovery or output-state mutation. Managed native roots are identified by
     ``.wearable_state.sqlite``. The explicit override is reserved for deliberately unmanaged copies; it
-    does not permit a root carrying a curation marker or Milestone 2-only columns.
+    does not permit a root carrying a curation marker or curation-only columns.
     """
 
     source = input_root.expanduser().resolve()
@@ -141,8 +141,8 @@ def validate_native_input_root(input_root: Path, *, allow_unmanaged_native_root:
     native_state = source / NATIVE_STATE_FILENAME
     if curated_state.is_file():
         raise InputLayoutError(
-            "The --input-native path appears to be a Milestone 2 curated root "
-            f"because it contains {CURATION_STATE_FILENAME}. Expected a Milestone 1 "
+            "The --input-native path appears to be a curated root "
+            f"because it contains {CURATION_STATE_FILENAME}. Expected a native processing "
             f"native root containing {NATIVE_STATE_FILENAME}: {source}"
         )
 
@@ -154,17 +154,17 @@ def validate_native_input_root(input_root: Path, *, allow_unmanaged_native_root:
         csv_path, columns = curated_header
         relative = csv_path.relative_to(source)
         raise InputLayoutError(
-            "The --input-native path appears to contain Milestone 2 curated CSVs. "
+            "The --input-native path appears to contain curated CSVs. "
             f"Found curation-only column(s) {', '.join(columns)} in {relative}. "
-            f"Expected a Milestone 1 native root containing {NATIVE_STATE_FILENAME}: {source}"
+            f"Expected a native processing root containing {NATIVE_STATE_FILENAME}: {source}"
         )
 
     if not allow_unmanaged_native_root:
         raise InputLayoutError(
-            "The --input-native path is not a recognized managed Milestone 1 native root "
+            "The --input-native path is not a recognized managed native processing root "
             f"because {NATIVE_STATE_FILENAME} is missing: {source}. "
             "Use --allow-unmanaged-native-root only for a deliberately unmanaged copy "
-            "whose feature CSVs are known to be Milestone 1 native outputs."
+            "whose feature CSVs are known to be native processing outputs."
         )
     return source
 

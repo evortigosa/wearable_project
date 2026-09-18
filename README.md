@@ -25,6 +25,7 @@ wearable_project/
 │   │   ├── pipeline.py         # Process one participant and orchestrate multiprocessing
 │   │   ├── registry.py         # Map each feature to its schema and processing policy
 │   │   ├── resampling.py       # Optional time transformations
+│   │   ├── scan.py             # Run and report participant-level planning logic
 │   │   ├── tracker.py          # Track and report processing metrics
 │   │   └── writer.py           # Write one feature CSV atomically
 │   ├── curation/

@@ -91,15 +91,15 @@ SOURCE_PRIORITY_STRATEGIES: dict[str, str] = {
 
 
 OCCURRENCE_IDENTITY_STRATEGIES: dict[str, str] = {
-    "inherit_native_event_identity": "Use the Milestone 1 native occurrence identity.",
+    "inherit_native_event_identity": "Use the native processing occurrence identity.",
     "inherit_native_summary_identity": "Use outer summary occurrence and payload index.",
     "inherit_native_waveform_identity": "Use ECG record identity and native signal event.",
 }
 
 
 DUPLICATE_STRATEGIES: dict[str, str] = {
-    "inherit_native_record_id_then_content": "Trust Milestone 1 record-ID/content reconciliation.",
-    "inherit_native_record_id_only": "Trust Milestone 1 record-ID-only reconciliation.",
+    "inherit_native_record_id_then_content": "Trust native processing record-ID/content reconciliation.",
+    "inherit_native_record_id_only": "Trust native processing record-ID-only reconciliation.",
     "inherit_native_summary_occurrence": "Preserve ActivitySummary occurrences.",
     "inherit_native_sleep_occurrence": "Preserve distinct state intervals after exact duplicate reconciliation.",
     "inherit_native_vector_occurrence": "Preserve coupled multivariate readings.",
@@ -108,8 +108,8 @@ DUPLICATE_STRATEGIES: dict[str, str] = {
 
 
 REVISION_STRATEGIES: dict[str, str] = {
-    "inherit_native_interval_revision": "Use Milestone 1 Apple interval-boundary revision resolution.",
-    "inherit_native_record_revision": "Use Milestone 1 same-record revision handling.",
+    "inherit_native_interval_revision": "Use native processing Apple interval-boundary revision resolution.",
+    "inherit_native_record_revision": "Use native processing same-record revision handling.",
     "walking_heart_rate_replaceable_estimate": "Retain native rows and recognize replaceable Apple estimates.",
     "activity_summary_unresolved_date_assignment": "Do not select one sliding summary item yet.",
     "none": "No additional revision strategy is declared.",
@@ -124,7 +124,7 @@ RULE_STRATEGIES: dict[str, str] = {
     "positive_measurement": "Flag non-positive values where a positive value is expected.",
     "point_duration_zero": "Check that a point measurement has zero native duration.",
     "interval_duration_positive": "Check that an interval expected to carry support has positive duration.",
-    "unresolved_same_interval_conflict": "Detect retained same-interval conflicts from Milestone 1.",
+    "unresolved_same_interval_conflict": "Detect retained same-interval conflicts from native processing.",
     "unit_resolved_for_canonical_value": "Require resolved unit before writing a canonical value.",
     "unit_epoch_discontinuity": "Detect abrupt unit-scale changes within participant/source history.",
     "manual_entry_context": "Retain and expose manual-entry provenance.",

@@ -160,7 +160,7 @@ def environment_manifest() -> EnvironmentManifest:
         name: _hash(curation_root / name) for name in _TRACKED_MODULES if (curation_root / name).is_file()
     }
     try:
-        from wearable_project.curation.release_manifest import (
+        from wearable_project.utils.release_manifest import (
             EXPECTED_CURATION_MODULE_SHA256,
             EXPECTED_DECISIONS_FINGERPRINT,
             EXPECTED_GUIDANCE_FINGERPRINT,

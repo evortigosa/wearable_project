@@ -52,6 +52,35 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--state-file", type=Path, help="Defaults to OUTPUT/.wearable_state.sqlite")
     process.add_argument("--json-summary", action="store_true", help="Print the complete processing report as JSON")
 
+    process_scan = commands.add_parser(
+        "process-scan", help="Read-only scan of what the next native process run would skip, update, rebuild, or block",
+    )
+    process_scan.add_argument("--input", type=Path, required=True, help="Cumulative export directory")
+    process_scan.add_argument("--output", type=Path, required=True, help="Existing or intended native output root")
+    process_scan.add_argument("--workers", type=int, default=4, help="Parallel source-hashing workers")
+    process_scan.add_argument("--mode", choices=("auto", "rebuild"), default="auto")
+    process_scan.add_argument(
+        "--snapshot-policy", choices=("strict-cumulative", "authoritative", "append-only"), default="strict-cumulative",
+    )
+    process_scan.add_argument("--participants-file", type=Path, help="Optional participant folder names, one per line")
+    process_scan.add_argument("--verify-existing-hashes", action="store_true")
+    process_scan.add_argument("--state-file", type=Path, help="Defaults to OUTPUT/.wearable_state.sqlite")
+    process_scan.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    process_scan.add_argument(
+        "--include-details", action="store_true", help="Include one planning record per participant in JSON output",
+    )
+    process_scan.add_argument(
+        "--report-output", type=Path, help="Write the rendered report to a file instead of stdout",
+    )
+    process_scan.add_argument(
+        "--max-listed", type=int, default=50, help="Maximum non-skip participants listed in the human-readable report",
+    )
+    process_scan.add_argument(
+        "--fail-if-work-needed", action="store_true",
+        help="Return exit code 3 when the scan is safe but incremental work or rebuilds are needed",
+    )
+    process_scan.add_argument("--no-progress", action="store_true", help="Disable the hashing progress bar")
+
     report = commands.add_parser("report", help="Read a persisted processing report")
     location = report.add_mutually_exclusive_group(required=True)
     location.add_argument("--output", type=Path, help="Cleaned output root containing .wearable_state.sqlite")
@@ -62,11 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-details", action="store_true", help="Include participant, feature, and diagnostic rows in JSON output",
     )
 
-    registry = commands.add_parser("registry", help="List Milestone 1 native feature policies")
+    registry = commands.add_parser("registry", help="List native processing feature policies")
     registry.add_argument("--json", action="store_true")
 
     curation_registry = commands.add_parser(
-        "curation-registry", help="Inspect and validate the Milestone 2 feature-policy matrix",
+        "curation-registry", help="Inspect and validate the curation feature-policy matrix",
     )
     curation_registry.add_argument(
         "--format", choices=("table", "json", "csv"), default="table", help="Output representation",
@@ -109,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     explain_unit.add_argument("--format", choices=("text", "json"), default="text")
 
     audit = commands.add_parser(
-        "curation-audit", help="Run a read-only policy-calibration audit over a Milestone 1 native root",
+        "curation-audit", help="Run a read-only policy-calibration audit over a native processing root",
     )
     audit.add_argument("--input-native", type=Path, required=True)
     audit.add_argument("--output", type=Path, required=True)
@@ -134,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     environment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     decisions = commands.add_parser(
-        "policy-decisions", help="Inspect the versioned human calibration decisions used by Milestone 2",
+        "policy-decisions", help="Inspect the versioned human calibration decisions used by curation",
     )
     decisions.add_argument("--format", choices=("table", "json", "csv"), default="table")
     decisions.add_argument("--feature", action="append", dest="decision_features")
@@ -438,6 +467,38 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"Registry version: {REGISTRY_VERSION}")
             print("\n".join(payload["features"]))
+        return 0
+
+    if args.command == "process-scan":
+        from wearable_project.processing.scan import format_processing_scan, scan_processing_plan
+        try:
+            scan = scan_processing_plan(
+                args.input, args.output, workers=args.workers, mode=args.mode,
+                snapshot_policy=args.snapshot_policy,
+                selected_participants=participant_selection(args.participants_file),
+                verify_existing_hashes=args.verify_existing_hashes,
+                state_file=args.state_file, show_progress=not args.no_progress,
+            )
+        except Exception as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            rendered = json.dumps(
+                scan.as_dict(include_details=args.include_details),
+                ensure_ascii=False, indent=2, sort_keys=True,
+            ) + "\n"
+        else:
+            rendered = format_processing_scan(scan, max_listed=args.max_listed)
+        if args.report_output:
+            target = args.report_output.expanduser().resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(rendered, encoding="utf-8")
+        else:
+            print(rendered, end="")
+        if not scan.safe_to_process:
+            return 1
+        if args.fail_if_work_needed and scan.processing_needed:
+            return 3
         return 0
 
     if args.command == "report":

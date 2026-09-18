@@ -65,7 +65,7 @@ def add_curation_commands(commands: Any) -> None:
     run.add_argument("--fail-fast", action="store_true")
     run.add_argument("--json-summary", action="store_true")
 
-    report = commands.add_parser("curation-report", help="Read a persisted Milestone 2 curation report",)
+    report = commands.add_parser("curation-report", help="Read a persisted curation report",)
     location = report.add_mutually_exclusive_group(required=True)
     location.add_argument("--output", type=Path)
     location.add_argument("--state-file", type=Path)
@@ -158,9 +158,9 @@ def handle_curation_command(args: argparse.Namespace) -> int | None:
         if args.json_summary:
             print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         else:
-            print("Milestone 1 native processing")
+            print("Phase 1 native processing")
             print(format_processing_report(native_summary.as_dict()))
-            print("Milestone 2 curation")
+            print("Phase 2 curation")
             print(format_summary(curated_summary), end="")
         return 1 if curated_summary.failed else 0
 
