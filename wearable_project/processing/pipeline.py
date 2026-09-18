@@ -17,7 +17,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 from tqdm import tqdm
-from wearable_project import __version__
 from wearable_project.exceptions import InputLayoutError, ParticipantProcessingError
 from wearable_project.processing.parser import (
     ParseResult, SourceFile, canonical_month_from_name, discover_month_files,
@@ -31,7 +30,7 @@ from wearable_project.processing.writer import (
 )
 
 
-PARSER_VERSION = f"native-parser-{__version__}"
+PARSER_VERSION = f"native-parser-0.1.4"
 
 
 class PlanAction(str, Enum):
