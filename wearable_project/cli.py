@@ -118,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--policies", choices=("provisional", "calibration", "all"), default="calibration")
     audit.add_argument("--feature", action="append", dest="audit_features")
     audit.add_argument("--participants-file", type=Path)
+    audit.add_argument(
+        "--allow-unmanaged-native-root", action="store_true",
+        help=(
+            "Allow a native-copy root without .wearable_state.sqlite. Curated roots "
+            "are still rejected by state-marker and CSV-header checks."
+        ),
+    )
     audit.add_argument("--overwrite", action="store_true")
     audit.add_argument("--json-summary", action="store_true")
 
@@ -371,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                 features=args.audit_features,
                 selected_participants=participant_selection(args.participants_file),
                 overwrite=args.overwrite,
+                allow_unmanaged_native_root=args.allow_unmanaged_native_root,
             )
         except AuditError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

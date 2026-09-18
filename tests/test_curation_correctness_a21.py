@@ -69,7 +69,7 @@ def test_report_separates_status_from_default_inclusion(tmp_path: Path) -> None:
         "data_source": "AppleHealthkit", "collecting_method_version": "2.0",
         "payload_index": "0",
     }])
-    summary = curate_dataset(tmp_path / "native", tmp_path / "curated", workers=1, max_in_flight=1)
+    summary = curate_dataset(tmp_path / "native", tmp_path / "curated", workers=1, max_in_flight=1, allow_unmanaged_native_root=True)
     activity = summary.as_dict()["run_activity"]
     assert activity["review_rows"] == 1
     assert activity["exclude_default_status_rows"] == 0
@@ -238,6 +238,7 @@ def test_state_database_migrates_a2_schema_additively(tmp_path: Path) -> None:
         epoch_columns = {row[1] for row in state.connection.execute("PRAGMA table_info(curation_unit_epochs)")}
     assert {"included_by_default_rows", "excluded_by_default_rows", "unit_status_counts_json"}.issubset(output_columns)
     assert {
-        "transition_from_unit", "transition_reason", "collecting_method_version", "source_id", "source_name",
-        "device", "metadata_device_name", "time_zone", "was_user_entered",
+        "transition_from_unit", "transition_reason", "collecting_method_version",
+        "source_id", "source_name", "device", "metadata_device_name",
+        "time_zone", "was_user_entered",
     }.issubset(epoch_columns)

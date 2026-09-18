@@ -6,7 +6,6 @@ Wearable Data Processing and Modeling project
 import csv
 import json
 from pathlib import Path
-
 from wearable_project.curation.engine import curate_feature_file
 from wearable_project.curation.pipeline import curate_dataset
 from wearable_project.curation.unit_resolution import build_participant_unit_context
@@ -120,7 +119,7 @@ def test_final_report_contains_finish_time_and_wall_clock(tmp_path: Path) -> Non
         "source_name": "Watch",
     }])
     output = tmp_path / "curated"
-    summary = curate_dataset(native_root, output, workers=1, max_in_flight=1)
+    summary = curate_dataset(native_root, output, workers=1, max_in_flight=1, allow_unmanaged_native_root=True)
     report = summary.as_dict()
     assert report["finished_at"] is not None
     assert report["performance"]["wall_clock_seconds"] is not None

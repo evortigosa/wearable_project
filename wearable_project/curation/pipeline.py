@@ -90,11 +90,92 @@ class ParticipantPlan:
     policy_signature: str
 
 
-def _ensure_disjoint_roots(input_root: Path, output_root: Path) -> tuple[Path, Path]:
+NATIVE_STATE_FILENAME = ".wearable_state.sqlite"
+CURATION_STATE_FILENAME = ".wearable_curation_state.sqlite"
+CURATION_ONLY_COLUMNS = frozenset({
+    "curation_status",
+    "curation_flags",
+    "include_by_default",
+    "curation_unit_status",
+})
+
+
+def _find_curated_csv_header(input_root: Path) -> tuple[Path, tuple[str, ...]] | None:
+    """
+    Return the first feature CSV that contains curation-only columns. This scan is used only when the normal
+    hidden state markers are absent. A managed native processing root returns before this path, so routine
+    curation does not pay the cost of opening feature files merely to classify the root.
+    """
+
+    for participant_dir in sorted(
+        (path for path in input_root.iterdir() if path.is_dir() and not path.name.startswith(".")),
+        key=lambda path: path.name,
+    ):
+        for csv_path in sorted(participant_dir.glob("*.csv"), key=lambda path: path.name):
+            try:
+                with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    header = next(csv.reader(handle), [])
+            except (OSError, UnicodeError, csv.Error):
+                # Root classification must not replace the feature reader's full diagnostics. Continue until
+                # a decisive curated header is found.
+                continue
+            found = tuple(sorted(CURATION_ONLY_COLUMNS.intersection(header)))
+            if found:
+                return csv_path, found
+    return None
+
+
+def validate_native_input_root(input_root: Path, *, allow_unmanaged_native_root: bool = False,) -> Path:
+    """
+    Validate that ``input_root`` is a native processing dataset. A curated root is rejected before any
+    participant discovery or output-state mutation. Managed native roots are identified by
+    ``.wearable_state.sqlite``. The explicit override is reserved for deliberately unmanaged copies; it
+    does not permit a root carrying a curation marker or Milestone 2-only columns.
+    """
+
     source = input_root.expanduser().resolve()
-    destination = output_root.expanduser().resolve()
     if not source.is_dir():
         raise InputLayoutError(f"Native input root is not a directory: {source}")
+
+    curated_state = source / CURATION_STATE_FILENAME
+    native_state = source / NATIVE_STATE_FILENAME
+    if curated_state.is_file():
+        raise InputLayoutError(
+            "The --input-native path appears to be a Milestone 2 curated root "
+            f"because it contains {CURATION_STATE_FILENAME}. Expected a Milestone 1 "
+            f"native root containing {NATIVE_STATE_FILENAME}: {source}"
+        )
+
+    if native_state.is_file():
+        return source
+
+    curated_header = _find_curated_csv_header(source)
+    if curated_header is not None:
+        csv_path, columns = curated_header
+        relative = csv_path.relative_to(source)
+        raise InputLayoutError(
+            "The --input-native path appears to contain Milestone 2 curated CSVs. "
+            f"Found curation-only column(s) {', '.join(columns)} in {relative}. "
+            f"Expected a Milestone 1 native root containing {NATIVE_STATE_FILENAME}: {source}"
+        )
+
+    if not allow_unmanaged_native_root:
+        raise InputLayoutError(
+            "The --input-native path is not a recognized managed Milestone 1 native root "
+            f"because {NATIVE_STATE_FILENAME} is missing: {source}. "
+            "Use --allow-unmanaged-native-root only for a deliberately unmanaged copy "
+            "whose feature CSVs are known to be Milestone 1 native outputs."
+        )
+    return source
+
+
+def _ensure_disjoint_roots(
+    input_root: Path, output_root: Path, *, allow_unmanaged_native_root: bool = False,
+) -> tuple[Path, Path]:
+    source = validate_native_input_root(
+        input_root, allow_unmanaged_native_root=allow_unmanaged_native_root,
+    )
+    destination = output_root.expanduser().resolve()
     if source == destination or source in destination.parents or destination in source.parents:
         raise InputLayoutError(
             "Native and curated roots must be distinct and non-nested: "
@@ -103,9 +184,7 @@ def _ensure_disjoint_roots(input_root: Path, output_root: Path) -> tuple[Path, P
     return source, destination
 
 
-def discover_native_participants(
-    input_root: Path, selected: set[str] | None = None,
-) -> dict[str, Path]:
+def discover_native_participants(input_root: Path, selected: set[str] | None = None,) -> dict[str, Path]:
     participants: dict[str, Path] = {}
     for child in sorted(input_root.iterdir(), key=lambda item: item.name):
         if not child.is_dir() or child.name.startswith("."):
@@ -315,9 +394,11 @@ def _native_state(item: NativeFeatureInput) -> NativeFileState:
 def curate_dataset(
     input_native: Path, output: Path, *, workers: int = 4, max_in_flight: int | None = None, mode: str = "auto",
     selected_participants: set[str] | None = None, verify_existing_hashes: bool = False, fail_fast: bool = False,
-    state_file: Path | None = None,
+    state_file: Path | None = None, allow_unmanaged_native_root: bool = False,
 ) -> CurationRunSummary:
-    native_root, output_root = _ensure_disjoint_roots(input_native, output)
+    native_root, output_root = _ensure_disjoint_roots(
+        input_native, output, allow_unmanaged_native_root=allow_unmanaged_native_root,
+    )
     output_root.mkdir(parents=True, exist_ok=True)
     state_path = state_file or (output_root / ".wearable_curation_state.sqlite")
     participants = discover_native_participants(native_root, selected_participants)

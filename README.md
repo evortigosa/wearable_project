@@ -20,29 +20,29 @@ CSV per month.
 wearable_project/
 ├── wearable_project/
 │   ├── processing/
-│   │   ├── cleaners.py     # Apply feature-specific cleaning and deduplication
-│   │   ├── parser.py       # Read raw CSVs and decode nested feature payloads
-│   │   ├── pipeline.py     # Process one participant and orchestrate multiprocessing
-│   │   ├── registry.py     # Map each feature to its schema and processing policy
-│   │   ├── resampling.py   # Optional time transformations
-│   │   ├── tracker.py      # Track and report processing metrics
-│   │   └── writer.py       # Write one feature CSV atomically
+│   │   ├── cleaners.py         # Apply feature-specific cleaning and deduplication
+│   │   ├── parser.py           # Read raw CSVs and decode nested feature payloads
+│   │   ├── pipeline.py         # Process one participant and orchestrate multiprocessing
+│   │   ├── registry.py         # Map each feature to its schema and processing policy
+│   │   ├── resampling.py       # Optional time transformations
+│   │   ├── tracker.py          # Track and report processing metrics
+│   │   └── writer.py           # Write one feature CSV atomically
 │   ├── curation/
-│   │   ├── audit.py        # Read-only calibration analyses
-│   │   ├── curate_cli.py
-│   │   ├── decisions.py
-│   │   ├── engine.py
-│   │   ├── environment.py
-│   │   ├── evidence.py     # Literature and project evidence catalog
-│   │   ├── explain.py      # Assemble policy, rules, and sources
-│   │   ├── guidance.py     # User-facing feature descriptions
-│   │   ├── models.py       # Typed policy contracts
-│   │   ├── pipeline.py
-│   │   ├── registry.py     # All feature policies
-│   │   ├── rules.py        # Standardized rule and flag definitions
-│   │   ├── state.py
-│   │   ├── strategies.py   # Named strategy declarations
-│   │   ├── unit_resolution.py
+│   │   ├── audit.py            # Read-only calibration analyses
+│   │   ├── curate_cli.py       # Curate, run, report, and engine-aware commands
+│   │   ├── decisions.py        # Versioned human calibration decisions
+│   │   ├── engine.py           # Applies the resolved feature policy to native rows
+│   │   ├── environment.py      # Package, module, and source integrity verification
+│   │   ├── evidence.py         # Literature and project evidence catalog
+│   │   ├── explain.py          # Assemble policy, rules, and sources
+│   │   ├── guidance.py         # User-facing feature descriptions
+│   │   ├── models.py           # Typed policy contracts
+│   │   ├── pipeline.py         # Staging, incremental planning, and atomic commits
+│   │   ├── registry.py         # All feature policies
+│   │   ├── rules.py            # Standardized rule and flag definitions
+│   │   ├── state.py            # Curation state, hashes, policies, manifests, and reports
+│   │   ├── strategies.py       # Named strategy declarations
+│   │   ├── unit_resolution.py  # Context-, scale-, participant-, and cross-feature unit res.
 │   │   └── 
 │   ├── utils/
 │   │   ├── 

@@ -67,7 +67,7 @@ def test_audit_is_read_only_and_emits_calibration_tables(tmp_path: Path) -> None
     native = _native_fixture(tmp_path / "native")
     before = _tree_hashes(native)
     output = tmp_path / "audit"
-    summary = run_curation_audit(native, output, workers=1, policy_scope="provisional")
+    summary = run_curation_audit(native, output, workers=1, policy_scope="provisional", allow_unmanaged_native_root=True)
     assert summary.status == "complete"
     assert summary.participants_completed == 1
     assert summary.rows_read == 6
@@ -100,7 +100,7 @@ def test_audit_refuses_nested_output(tmp_path: Path) -> None:
     from wearable_project.curation.audit import AuditError
     native = _native_fixture(tmp_path / "native")
     try:
-        run_curation_audit(native, native / "audit", workers=1)
+        run_curation_audit(native, native / "audit", workers=1, allow_unmanaged_native_root=True)
     except AuditError as exc:
         assert "separate and non-nested" in str(exc)
     else:
@@ -110,7 +110,7 @@ def test_audit_refuses_nested_output(tmp_path: Path) -> None:
 def test_audit_emits_hardened_outputs_and_bounded_cross_feature_metrics(tmp_path: Path) -> None:
     native = _native_fixture(tmp_path / "native")
     output = tmp_path / "audit"
-    summary = run_curation_audit(native, output, workers=1, policy_scope="calibration")
+    summary = run_curation_audit(native, output, workers=1, policy_scope="calibration", allow_unmanaged_native_root=True)
     assert summary.source_context_epochs >= summary.source_context_groups
     assert summary.invalid_timestamp_rows == 0
     for name in (
@@ -153,7 +153,7 @@ def test_source_context_groups_and_true_epochs_are_distinct(tmp_path: Path) -> N
     ]
     _write(participant / "Weight.csv", rows)
     output = tmp_path / "audit"
-    run_curation_audit(root, output, workers=1, features=("Weight",))
+    run_curation_audit(root, output, workers=1, features=("Weight",), allow_unmanaged_native_root=True)
     groups = list(csv.DictReader((output / "source_context_groups.csv").open()))
     epochs = list(csv.DictReader((output / "source_context_epochs.csv").open()))
     assert len(groups) == 2
@@ -180,7 +180,7 @@ def test_mixed_iso_timestamps_are_parsed_without_loss(tmp_path: Path) -> None:
         {"start_date": "2024-01-02T00:00:00.123456Z", "end_date": "2024-01-02T00:00:00.123456Z", **common},
     ])
     output = tmp_path / "audit"
-    summary = run_curation_audit(root, output, workers=1, features=("Weight",))
+    summary = run_curation_audit(root, output, workers=1, features=("Weight",), allow_unmanaged_native_root=True)
     assert summary.invalid_timestamp_rows == 0
     quality = list(csv.DictReader((output / "measurement_input_quality.csv").open()))
     native_quality = [row for row in quality if row["audit_stage"] == "source-context-audit"]
@@ -207,7 +207,7 @@ def test_nutrition_energy_audit_emits_kcal_and_kj_candidates(tmp_path: Path) -> 
     _write(participant / "Protein.csv", [{"value": "10", **common}])
     _write(participant / "TotalFat.csv", [{"value": "5.5555555556", **common}])
     output = tmp_path / "audit"
-    run_curation_audit(root, output, workers=1, policy_scope="calibration")
+    run_curation_audit(root, output, workers=1, policy_scope="calibration", allow_unmanaged_native_root=True)
     rows = list(csv.DictReader((output / "nutrition_energy_consistency.csv").open()))
     exact = [row for row in rows if row["match_scope"] == "exact_timestamp_same_source"]
     assert {row["candidate_energy_raw_unit"] for row in exact} == {"kcal", "kJ"}

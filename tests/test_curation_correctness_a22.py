@@ -176,7 +176,7 @@ def test_acquisition_counts_include_unclassified_and_close_to_rows(tmp_path: Pat
             value="100", record="s1", source="com.apple.Health",
         ),
     ])
-    summary = curate_dataset(tmp_path / "native", tmp_path / "curated", workers=1, max_in_flight=1)
+    summary = curate_dataset(tmp_path / "native", tmp_path / "curated", workers=1, max_in_flight=1, allow_unmanaged_native_root=True)
     report = summary.as_dict()
     assert report["run_activity"]["acquisition_counts"] == {"unclassified": 1}
     assert report["run_activity"]["acquisition_classification"] == {
@@ -197,7 +197,7 @@ def test_unit_epoch_report_exposes_source_context(tmp_path: Path) -> None:
         "was_user_entered": "0",
     })
     _write(tmp_path / "native" / "p1" / "Weight.csv", fields, [row])
-    curate_dataset(tmp_path / "native", tmp_path / "curated", workers=1, max_in_flight=1)
+    curate_dataset(tmp_path / "native", tmp_path / "curated", workers=1, max_in_flight=1, allow_unmanaged_native_root=True)
     report = load_curation_report(
         tmp_path / "curated" / ".wearable_curation_state.sqlite", include_details=True,
     )

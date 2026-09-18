@@ -1,6 +1,6 @@
 """
 Wearable Data Processing and Modeling project
-CLI integration for Milestone 2 curation commands.
+CLI integration for curation commands.
 """
 
 
@@ -36,6 +36,13 @@ def add_curation_commands(commands: Any) -> None:
     curate.add_argument("--mode", choices=("auto", "rebuild"), default="auto")
     curate.add_argument("--participants-file", type=Path)
     curate.add_argument("--verify-existing-hashes", action="store_true")
+    curate.add_argument(
+        "--allow-unmanaged-native-root", action="store_true",
+        help=(
+            "Allow a native-copy root without .wearable_state.sqlite. Curated roots "
+            "are still rejected by state-marker and CSV-header checks."
+        ),
+    )
     curate.add_argument("--fail-fast", action="store_true")
     curate.add_argument("--state-file", type=Path)
     curate.add_argument("--json-summary", action="store_true")
@@ -79,6 +86,7 @@ def handle_curation_command(args: argparse.Namespace) -> int | None:
                 verify_existing_hashes=args.verify_existing_hashes,
                 fail_fast=args.fail_fast,
                 state_file=args.state_file,
+                allow_unmanaged_native_root=args.allow_unmanaged_native_root,
             )
         except Exception as exc:
             print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)

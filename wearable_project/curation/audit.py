@@ -31,8 +31,10 @@ from wearable_project.curation.decisions import (
     decisions_fingerprint, decisions_payload, get_decision, known_decisions,
 )
 from wearable_project.curation.environment import environment_manifest
+from wearable_project.curation.pipeline import validate_native_input_root
 from wearable_project.curation.guidance import get_feature_guide, guidance_fingerprint
 from wearable_project.curation.models import PolicyMaturity
+from wearable_project.exceptions import InputLayoutError
 from wearable_project.curation.registry import (
     CURATION_POLICIES, CURATION_REGISTRY_VERSION, get_policy, registry_fingerprint,
 )
@@ -1190,13 +1192,19 @@ def run_curation_audit(
     input_native: Path, output: Path, *, workers: int = 4, max_in_flight: int | None = None,
     policy_scope: str = "calibration", features: Iterable[str] | None = None,
     selected_participants: set[str] | None = None, overwrite: bool = False,
+    allow_unmanaged_native_root: bool = False,
 ) -> AuditSummary:
     """Run a read-only calibration audit over a native processing root."""
 
-    native = input_native.expanduser().resolve()
+    try:
+        native = validate_native_input_root(
+            input_native, allow_unmanaged_native_root=allow_unmanaged_native_root,
+        )
+    except InputLayoutError as exc:
+        # Preserve the audit command's public exception type while reusing the same native-root safety
+        # contract as the curation engine.
+        raise AuditError(str(exc)) from exc
     target = output.expanduser().resolve()
-    if not native.is_dir():
-        raise AuditError(f"Native input directory does not exist: {native}")
     if native == target or _is_relative_to(target, native) or _is_relative_to(native, target):
         raise AuditError("Native and audit roots must be separate and non-nested")
     selected_features = _selected_features(policy_scope, features)
