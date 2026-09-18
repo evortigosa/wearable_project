@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     process_scan.add_argument("--no-progress", action="store_true", help="Disable the hashing progress bar")
 
+    processing_environment = commands.add_parser(
+        "processing-environment", help="Report the imported native processing source, versions, and frozen-module integrity",
+    )
+    processing_environment.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
     report = commands.add_parser("report", help="Read a persisted processing report")
     location = report.add_mutually_exclusive_group(required=True)
     location.add_argument("--output", type=Path, help="Cleaned output root containing .wearable_state.sqlite")
@@ -321,6 +326,30 @@ def main(argv: list[str] | None = None) -> int:
                 )
         return 0
 
+    if args.command == "processing-environment":
+        from wearable_project.processing.environment import processing_environment_manifest
+        payload = processing_environment_manifest().as_dict()
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(f"Package version: {payload['package_version']}")
+            print(f"Release label: {payload['package_release_label']}")
+            print(f"Working directory: {payload['current_working_directory']}")
+            print(f"Imported package: {payload['imported_package_path']}")
+            print(f"Installed distribution: {payload.get('distribution_package_path')}")
+            print(f"Import source: {payload['import_source_kind']}")
+            print(f"Parser version: {payload['parser_version']}")
+            print(f"Registry version: {payload['registry_version']}")
+            invalid = [name for name, valid in payload.get('core_module_integrity', {}).items() if not valid]
+            print(f"Frozen processing modules: {'valid' if not invalid else 'mismatch: ' + ', '.join(invalid)}")
+            if payload.get('git_commit'):
+                print(f"Git commit: {payload['git_commit']}")
+            if payload.get('warnings'):
+                print("Warnings:")
+                for warning in payload['warnings']:
+                    print(f"  - {warning}")
+        return 1 if payload.get("warnings") else 0
+
     if args.command == "curation-environment":
         from wearable_project.curation.environment import environment_manifest
         payload = environment_manifest().as_dict()
@@ -525,6 +554,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if (
             report_payload["participants"]["failed"] or report_payload["participants"]["blocked"]
         ) else 0
+
+    from wearable_project.processing.environment import processing_environment_manifest
+    processing_env = processing_environment_manifest()
+    for warning in processing_env.warnings:
+        print(f"PROCESSING ENVIRONMENT WARNING: {warning}", file=sys.stderr)
 
     summary = process_dataset(
         args.input, args.output, workers=args.workers, max_in_flight=args.max_in_flight,

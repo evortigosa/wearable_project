@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sqlite3
 from pathlib import Path
 from wearable_project.processing.scan import scan_processing_plan
 
@@ -253,3 +254,52 @@ def test_scan_blocks_participant_missing_from_strict_cumulative_snapshot(tmp_pat
     assert missing[0].reason_code == "participant_missing_from_snapshot"
     assert report.participant_counts["block"] == 1
     assert report.safe_to_process is False
+
+
+def test_scan_exposes_stored_versions_and_mismatch_only_warning(tmp_path: Path) -> None:
+    input_root, output_root = tmp_path / "input", tmp_path / "output"
+    write_month(input_root, "P1", "2024-12.csv")
+    run_process(input_root, output_root)
+    state = output_root / ".wearable_state.sqlite"
+    with sqlite3.connect(state) as connection:
+        connection.execute(
+            "UPDATE participants SET parser_version=?, registry_version=?",
+            ("native-parser-local-test", "local-registry-test"),
+        )
+        connection.commit()
+
+    report = scan_processing_plan(input_root, output_root, workers=1, show_progress=False,)
+    detail = report.participant_details[0]
+    assert detail.planned_action == "rebuild"
+    assert detail.reason_code == "parser_or_registry_changed"
+    assert detail.stored_parser_version == "native-parser-local-test"
+    assert detail.stored_registry_version == "local-registry-test"
+    assert detail.current_source_signature == detail.committed_source_signature
+    assert detail.existing_output_usable is True
+    assert report.state_versions["stored_parser_version_counts"] == {"native-parser-local-test": 1}
+    assert report.state_versions["stored_registry_version_counts"] == {"local-registry-test": 1}
+    assert report.state_versions["version_mismatch_only_participants"] == 1
+    assert any("python -m wearable_project process" in item for item in report.warnings)
+    rendered = report.as_dict(include_details=True)
+    assert rendered["participant_details"][0]["stored_parser_version"] == "native-parser-local-test"
+    assert "processing_environment" in rendered
+
+
+def test_processing_environment_cli_json() -> None:
+    command = [
+        sys.executable, "-m", "wearable_project", "processing-environment", "--json",
+    ]
+    result = subprocess.run(
+        command, cwd=Path(__file__).parents[1], text=True, capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1])},
+    )
+    # A source checkout is expected to return 1 because it intentionally emits a warning.
+    assert result.returncode in {0, 1}, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["parser_version"]
+    assert payload["registry_version"]
+    assert set(payload["core_module_integrity"]) == {
+        "__init__.py", "cleaners.py", "parser.py", "pipeline.py",
+        "registry.py", "resampling.py", "tracker.py", "writer.py",
+    }
+    assert all(payload["core_module_integrity"].values())

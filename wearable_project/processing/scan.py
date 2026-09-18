@@ -25,6 +25,7 @@ from tqdm import tqdm
 from wearable_project import __version__
 from wearable_project.exceptions import InputLayoutError
 from wearable_project.processing.parser import SourceFile, canonical_month_from_name, discover_month_files
+from wearable_project.processing.environment import processing_environment_manifest
 from wearable_project.processing.pipeline import (
     PARSER_VERSION, PlanAction, discover_participants, plan_participant, resolve_export_root,
 )
@@ -34,7 +35,7 @@ from wearable_project.processing.writer import (
 )
 
 
-SCAN_VERSION = "native-process-scan-1"
+SCAN_VERSION = "native-process-scan-2"
 NATIVE_STATE_FILENAME = ".wearable_state.sqlite"
 CURATION_STATE_FILENAME = ".wearable_curation_state.sqlite"
 _REQUIRED_STATE_TABLES = {"participants", "source_files", "feature_outputs"}
@@ -83,6 +84,8 @@ class ParticipantScan:
     missing_months: tuple[str, ...] = ()
     unchanged_months: tuple[str, ...] = ()
     existing_output_usable: bool | None = None
+    stored_parser_version: str | None = None
+    stored_registry_version: str | None = None
     parser_version_changed: bool = False
     registry_version_changed: bool = False
     error: str | None = None
@@ -122,6 +125,8 @@ class ProcessingScanReport:
     safe_to_process: bool
     no_op: bool
     plan_fingerprint: str
+    state_versions: dict[str, Any]
+    processing_environment: dict[str, Any]
     warnings: tuple[str, ...] = ()
     participant_details: list[ParticipantScan] = field(default_factory=list)
 
@@ -162,6 +167,8 @@ class ProcessingScanReport:
             "safe_to_process": self.safe_to_process,
             "no_op": self.no_op,
             "plan_fingerprint": self.plan_fingerprint,
+            "state_versions": dict(self.state_versions),
+            "processing_environment": dict(self.processing_environment),
             "warnings": list(self.warnings),
         }
         if include_details:
@@ -187,7 +194,9 @@ class ReadOnlyNativeState:
         except sqlite3.Error as exc:
             raise InputLayoutError(f"Could not open native processing state read-only: {self.path}: {exc}") from exc
         self.connection.row_factory = sqlite3.Row
-        tables = {row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         missing = _REQUIRED_STATE_TABLES.difference(tables)
         if missing:
             self.connection.close()
@@ -205,7 +214,9 @@ class ReadOnlyNativeState:
     def participant_ids(self) -> set[str]:
         if self.connection is None:
             return set()
-        return {str(row[0]) for row in self.connection.execute("SELECT participant_id FROM participants")}
+        return {
+            str(row[0]) for row in self.connection.execute("SELECT participant_id FROM participants")
+        }
 
     def get_participant(self, participant_id: str) -> StoredParticipantState | None:
         if self.connection is None:
@@ -423,6 +434,8 @@ def scan_processing_plan(
                     source_bytes_to_parse=0,
                     committed_source_files=len(old_months),
                     missing_months=old_months,
+                    stored_parser_version=(stored.parser_version if stored is not None else None),
+                    stored_registry_version=(stored.registry_version if stored is not None else None),
                     parser_version_changed=(stored is not None and stored.parser_version != PARSER_VERSION),
                     registry_version_changed=(stored is not None and stored.registry_version != REGISTRY_VERSION),
                 ))
@@ -445,6 +458,8 @@ def scan_processing_plan(
                     source_files_to_parse=0,
                     source_bytes_to_parse=0,
                     committed_source_files=len(stored.sources) if stored is not None else 0,
+                    stored_parser_version=(stored.parser_version if stored is not None else None),
+                    stored_registry_version=(stored.registry_version if stored is not None else None),
                     parser_version_changed=(stored is not None and stored.parser_version != PARSER_VERSION),
                     registry_version_changed=(stored is not None and stored.registry_version != REGISTRY_VERSION),
                     error=discovery.error,
@@ -485,6 +500,8 @@ def scan_processing_plan(
                     changed_months=delta["changed"],
                     missing_months=delta["missing"],
                     unchanged_months=delta["unchanged"],
+                    stored_parser_version=(stored.parser_version if stored is not None else None),
+                    stored_registry_version=(stored.registry_version if stored is not None else None),
                     parser_version_changed=(stored is not None and stored.parser_version != PARSER_VERSION),
                     registry_version_changed=(stored is not None and stored.registry_version != REGISTRY_VERSION),
                     error=str(exc),
@@ -522,11 +539,52 @@ def scan_processing_plan(
                 missing_months=delta["missing"],
                 unchanged_months=delta["unchanged"],
                 existing_output_usable=output_usable,
+                stored_parser_version=(stored.parser_version if stored is not None else None),
+                stored_registry_version=(stored.registry_version if stored is not None else None),
                 parser_version_changed=(stored is not None and stored.parser_version != PARSER_VERSION),
                 registry_version_changed=(stored is not None and stored.registry_version != REGISTRY_VERSION),
             ))
 
     details.sort(key=lambda item: item.participant_id)
+
+    stored_parser_versions = Counter(
+        item.stored_parser_version or "<missing>" for item in details if item.current_state is not None
+    )
+    stored_registry_versions = Counter(
+        item.stored_registry_version or "<missing>" for item in details if item.current_state is not None
+    )
+    mismatch_only = [
+        item for item in details
+        if item.reason_code == "parser_or_registry_changed"
+        and item.current_source_signature is not None
+        and item.current_source_signature == item.committed_source_signature
+        and item.existing_output_usable is True
+        and not item.added_months
+        and not item.changed_months
+        and not item.missing_months
+    ]
+    state_versions = {
+        "current_parser_version": PARSER_VERSION,
+        "current_registry_version": REGISTRY_VERSION,
+        "stored_parser_version_counts": dict(sorted(stored_parser_versions.items())),
+        "stored_registry_version_counts": dict(sorted(stored_registry_versions.items())),
+        "parser_mismatch_participants": sum(item.parser_version_changed for item in details),
+        "registry_mismatch_participants": sum(item.registry_version_changed for item in details),
+        "version_mismatch_only_participants": len(mismatch_only),
+    }
+    environment = processing_environment_manifest().as_dict()
+    warnings.extend(environment.get("warnings", ()))
+    if mismatch_only:
+        warnings.append(
+            f"{len(mismatch_only)} participant(s) require rebuild solely because the parser/registry "
+            "versions stored in native state differ from the currently imported processing code; "
+            "their source signatures are unchanged and committed outputs are usable. This commonly "
+            "occurs when `python -m wearable_project process` imported a local checkout while "
+            "`wearable-project process-scan` imported the installed wheel. Compare "
+            "`python -m wearable_project processing-environment` with "
+            "`wearable-project processing-environment` before rebuilding."
+        )
+
     action_counts = Counter(item.planned_action for item in details)
     reason_counts = Counter(item.reason_code for item in details)
     source_file_counts = {
@@ -571,6 +629,8 @@ def scan_processing_plan(
             "participant_id": item.participant_id,
             "action": item.planned_action,
             "reason_code": item.reason_code,
+            "stored_parser_version": item.stored_parser_version,
+            "stored_registry_version": item.stored_registry_version,
             "current_source_signature": item.current_source_signature,
             "committed_source_signature": item.committed_source_signature,
             "source_files_to_parse": item.source_files_to_parse,
@@ -611,7 +671,9 @@ def scan_processing_plan(
         safe_to_process=safe_to_process,
         no_op=no_op,
         plan_fingerprint=_fingerprint(plan_payload),
-        warnings=tuple(warnings),
+        state_versions=state_versions,
+        processing_environment=environment,
+        warnings=tuple(dict.fromkeys(warnings)),
         participant_details=details,
     )
 
@@ -639,6 +701,15 @@ def format_processing_scan(report: ProcessingScanReport | dict[str, Any], *, max
         f"State file: {payload['paths']['state_file']} "
         f"({'found' if payload['paths']['state_file_exists'] else 'not found'})",
         "",
+        "Processing identity:",
+        f"  imported package:        {payload.get('processing_environment', {}).get('imported_package_path')}",
+        f"  import source:           {payload.get('processing_environment', {}).get('import_source_kind')}",
+        f"  current parser:          {payload.get('state_versions', {}).get('current_parser_version')}",
+        f"  current registry:        {payload.get('state_versions', {}).get('current_registry_version')}",
+        f"  parser mismatches:       {payload.get('state_versions', {}).get('parser_mismatch_participants', 0):,}",
+        f"  registry mismatches:     {payload.get('state_versions', {}).get('registry_mismatch_participants', 0):,}",
+        f"  mismatch-only rebuilds:  {payload.get('state_versions', {}).get('version_mismatch_only_participants', 0):,}",
+        "",
         "Participant plan:",
         f"  discovered in snapshot: {participants['discovered_in_snapshot']:,}",
         f"  skip:                   {participants['skip']:,}",
@@ -661,6 +732,13 @@ def format_processing_scan(report: ProcessingScanReport | dict[str, Any], *, max
         f"Plan fingerprint:  {payload['plan_fingerprint']}",
         f"Scan wall time:    {payload['wall_clock_seconds']:.2f} seconds",
     ]
+    state_versions = payload.get("state_versions", {})
+    if state_versions.get("stored_parser_version_counts") or state_versions.get("stored_registry_version_counts"):
+        lines.extend(["", "Stored state versions:"])
+        for version, count in sorted(state_versions.get("stored_parser_version_counts", {}).items()):
+            lines.append(f"  parser {version}: {count:,}")
+        for version, count in sorted(state_versions.get("stored_registry_version_counts", {}).items()):
+            lines.append(f"  registry {version}: {count:,}")
     if payload.get("warnings"):
         lines.extend(["", "Warnings:"])
         lines.extend(f"  - {warning}" for warning in payload["warnings"])
