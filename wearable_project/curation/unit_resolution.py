@@ -54,6 +54,7 @@ _CONTEXT_COLUMNS: tuple[str, ...] = (
 )
 
 _EVIDENCE_PRIORITY = {
+    "native_payload_explicit_unit": 0,
     "explicit_raw_unit": 0,
     "reviewed_source_convention": 0,
     "bounded_bmi_consistency_exact": 1,
@@ -67,6 +68,7 @@ _EVIDENCE_PRIORITY = {
 }
 
 _TRUSTED_ABSOLUTE_MASS_EVIDENCE = frozenset({
+    "native_payload_explicit_unit",
     "explicit_raw_unit",
     "reviewed_source_convention",
     "bounded_bmi_consistency_exact",
@@ -257,7 +259,7 @@ def _strong_imperial_mass_fingerprint(value: float) -> bool:
     """
     Return true when a raw pound value encodes a round 0.1-kg source value. HealthKit/export pipelines often
     serialize a metric measurement after converting it to pounds, producing characteristic long decimals such as
-    110.231131092... for exactly 50.0 kg.  The test is deliberately strict and does not classify ordinary
+    110.231131092... for exactly 50.0 kg. The test is deliberately strict and does not classify ordinary
     integer/one-decimal pound values.
     """
 
@@ -283,19 +285,51 @@ def _mass_fingerprint_unit(observations: Iterable[_Observation]) -> str | None:
     return None
 
 
-def _explicit_unit(feature: str, observations: Iterable[_Observation]) -> str | None:
-    supported = {
+def _row_has_payload_explicit_unit(row: Mapping[str, str]) -> bool:
+    """
+    Return whether native processing retained source-event unit provenance. The compact native ``raw_unit``
+    column can originate either from an explicit unit in the source payload or from the native processing
+    feature registry. A non-empty unit string therefore cannot, by itself, authorize canonical conversion.
+    The provenance markers below are retained only when the source event supplied the unit or when an unsupported
+    explicit unit had to remain unresolved.
+    """
+
+    status = str(row.get("unit_status", "") or "").strip().lower()
+    evidence = str(row.get("unit_evidence", "") or "").strip().lower()
+    return status in {"explicit", "explicit_unresolved"} or evidence == "payload_unit"
+
+
+def _supported_native_units(feature: str) -> set[str]:
+    return {
         "Height": {"m", "cm", "in"},
         "Weight": {"kg", "lb"},
         "LeanBodyMass": {"kg", "lb"},
         "BloodGlucose": {"mmol/L", "mg/dL"},
         "EnergyConsumed": {"kcal", "kJ"},
     }.get(feature, set())
+
+
+def _explicit_unit(feature: str, observations: Iterable[_Observation]) -> str | None:
+    """Return one supported unit only when payload-explicit provenance exists."""
+
+    supported = _supported_native_units(feature)
     units = {
         unit for item in observations
-        if (unit := _normalise_unit(item.row.get("raw_unit"))) in supported
+        if _row_has_payload_explicit_unit(item.row)
+        and (unit := _normalise_unit(item.row.get("raw_unit"))) in supported
     }
     return next(iter(units)) if len(units) == 1 else None
+
+
+def _has_nonexplicit_native_unit(feature: str, observations: Iterable[_Observation],) -> bool:
+    """Return whether a supported native unit lacks source-event provenance."""
+
+    supported = _supported_native_units(feature)
+    return any(
+        not _row_has_payload_explicit_unit(item.row)
+        and _normalise_unit(item.row.get("raw_unit")) in supported
+        for item in observations
+    )
 
 
 def _candidate_from_scale(feature: str, median: float | None) -> str | None:
@@ -609,7 +643,11 @@ def _month_labels(
         explicit = _explicit_unit(feature, month_rows)
         if explicit is not None:
             labels[key] = explicit
-            evidence[key] = "explicit_raw_unit"
+            evidence[key] = "native_payload_explicit_unit"
+            continue
+        if feature == "EnergyConsumed" and _has_nonexplicit_native_unit(feature, month_rows):
+            labels[key] = None
+            evidence[key] = "native_unit_provenance_not_explicit"
             continue
         if feature in {"Weight", "LeanBodyMass"}:
             fingerprint = _mass_fingerprint_unit(month_rows)
@@ -671,8 +709,6 @@ def _resolve_feature(
             epoch_id = _stable_epoch_id(participant_id, feature, context_id, epoch_number, epoch_unit)
             status = "resolved_source_epoch" if epoch_unit is not None else "ambiguous"
             evidence = _best_evidence(epoch_evidence)
-            if epoch_unit is None:
-                evidence = "insufficient_epoch_evidence"
             for obs in epoch_rows:
                 canonical_value = None
                 row_status = status
@@ -687,7 +723,7 @@ def _resolve_feature(
                     canonical_value=canonical_value,
                     canonical_unit=canonical if canonical_value is not None else None,
                     unit_status=row_status,
-                    unit_evidence=evidence if row_status != "ambiguous" else "insufficient_epoch_evidence",
+                    unit_evidence=evidence,
                     unit_epoch_id=epoch_id,
                     scale_transition=epoch_transition,
                     transition_reason=transition_reason,
@@ -786,7 +822,9 @@ def build_participant_unit_context(participant_dir: Path) -> ParticipantUnitCont
     # Resolve Height and Weight before LeanBodyMass because LeanBodyMass can inherit a bounded,
     # body-composition-consistent Weight scale.
     for feature, overrides in (
-        ("Height", height_overrides), ("Weight", weight_overrides), ("BloodGlucose", {}),
+        ("Height", height_overrides),
+        ("Weight", weight_overrides),
+        ("BloodGlucose", {}),
     ):
         observations = loaded.get(feature)
         if observations is None:

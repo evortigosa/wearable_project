@@ -1,17 +1,17 @@
 """
 Wearable Data Processing and Modeling project
-Generated integrity manifest for the 0.2.0a2.2 correctness release.
+Generated integrity manifest for the 0.2.0a2.3 correctness release.
 """
 
 
 from __future__ import annotations
 
 
-EXPECTED_PACKAGE_VERSION = "0.2.0a2.post2"
-EXPECTED_RELEASE_LABEL = "0.2.0a2.2"
-EXPECTED_REGISTRY_FINGERPRINT = "a1a2177249de2766a638598cc1fe30c3062651225cf4cc4f15201b5b2118dc64"
-EXPECTED_GUIDANCE_FINGERPRINT = "ceeccea3714bfd9d0111a744a783c5f770a1b9e8cd1bc5987b471eccf8df8de9"
-EXPECTED_DECISIONS_FINGERPRINT = "4fb8d41e4cc73488922486006b1eecc183f8352c77e9ea3c37171ca4a889adb5"
+EXPECTED_PACKAGE_VERSION = "0.2.0a2.post3"
+EXPECTED_RELEASE_LABEL = "0.2.0a2.3"
+EXPECTED_REGISTRY_FINGERPRINT = 'a1a2177249de2766a638598cc1fe30c3062651225cf4cc4f15201b5b2118dc64'
+EXPECTED_GUIDANCE_FINGERPRINT = 'ceeccea3714bfd9d0111a744a783c5f770a1b9e8cd1bc5987b471eccf8df8de9'
+EXPECTED_DECISIONS_FINGERPRINT = '4fb8d41e4cc73488922486006b1eecc183f8352c77e9ea3c37171ca4a889adb5'
 EXPECTED_CURATION_MODULE_SHA256 = {
     'audit.py': '06322bc6c6f5e6f68829d44a03480cd7b64ecf680d87c13d928f47a08bc1fd48',
     'curate_cli.py': '02c063bb656864317521962bd89cdc96115925d85447443419cca486d56df61e',
@@ -25,7 +25,7 @@ EXPECTED_CURATION_MODULE_SHA256 = {
     'pipeline.py': '94ba5cff1488df79c61418246c007d3742b6d945ff189e0bb252e49bc64112b2',
     'registry.py': '34a6c6d17e02ce459431e54b3530dd8f30cdd4e110daf1f26aab702a3f0cca74',
     'rules.py': '985440c859417db2a5ae7a9c980a037b0fa584e8d0b8d0cc49fe612024458dcf',
-    'state.py': 'dc317ffef1b68216e96c8ad1ddd53b0e603ce16c50a6b9eff33d6c5cc00b8367',
+    'state.py': 'd62c8dbd1722d8071f3385c8971081c11d72f3f122e957d337f15ed8cd16f00b',
     'strategies.py': 'bf7ee8c94ef82ecc0e06b0e4760991a3bf15f2bf97af12eeca4f20ea493c2806',
-    'unit_resolution.py': 'd02f776744f41267633133550fa717aef384542428572982f03f0fb942c26e12'
+    'unit_resolution.py': 'c71eaee42cdecf8e66e748e5ce496d17c3853f57636e3d3eacb5cc7f9ba5d616',
 }

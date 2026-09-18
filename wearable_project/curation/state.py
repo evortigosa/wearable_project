@@ -19,7 +19,7 @@ from wearable_project.curation.registry import registry_fingerprint
 from wearable_project.processing.parser import sha256_file
 
 
-CURATION_ENGINE_VERSION = "curation-engine-0.2.0a2.2"
+CURATION_ENGINE_VERSION = "curation-engine-0.2.0a2.3"
 CURATION_STATE_SCHEMA_VERSION = 3
 
 
