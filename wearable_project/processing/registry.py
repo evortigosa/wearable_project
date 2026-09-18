@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Iterable
 
 
-REGISTRY_VERSION = "2026-09-native-processing"
+REGISTRY_VERSION = "2026-09-native-milestone-1"
 SPECS: dict[str, FeatureSpec] = {}
 
 

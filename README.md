@@ -21,6 +21,7 @@ wearable_project/
 ├── wearable_project/
 │   ├── processing/
 │   │   ├── cleaners.py         # Apply feature-specific cleaning and deduplication
+│   │   ├── environment.py      # Reproducibility diagnostics for native processing
 │   │   ├── parser.py           # Read raw CSVs and decode nested feature payloads
 │   │   ├── pipeline.py         # Process one participant and orchestrate multiprocessing
 │   │   ├── registry.py         # Map each feature to its schema and processing policy
