@@ -14,6 +14,7 @@ from wearable_project.DataLoaders.StepCountLoader import StepCountLoader
 from wearable_project.DataLoaders.WeightLoader import WeightLoader
 from wearable_project.exceptions import DataLoaderConfigurationError, DataLoaderPathError, DataLoaderReadError
 from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES
+from wearable_project import DataLoaders
 
 
 CLASS_NAMES = {
@@ -252,3 +253,50 @@ def test_requested_column_missing_from_every_feature_file_is_rejected(tmp_path: 
 
     with pytest.raises(DataLoaderReadError):
         StepCountLoader(root=tmp_path).get_data(columns=["definitely_not_a_column"])
+
+
+def test_dataloaders_info_overview_is_complete_and_read_only():
+    report = DataLoaders.info()
+    payload = report.as_dict()
+    assert report.kind == "overview"
+    assert payload["feature_count"] == 33
+    assert {item["feature"] for item in payload["features"]} == set(COHORT_OBSERVED_FEATURES)
+    assert payload["defaults"]["phase"] == "curated"
+    assert payload["defaults"]["index_names"] == ["RegistrationCode", "Date"]
+    assert "never silently filtered" in str(report)
+    assert "StepCount" in str(report)
+
+
+def test_feature_info_combines_loader_processing_guidance_and_curation(tmp_path: Path):
+    report = DataLoaders.info("stepcount", phase="native", root=tmp_path)
+    payload = report.as_dict()
+    assert report.kind == "feature"
+    assert payload["feature"] == "StepCount"
+    assert payload["loader"]["class"] == "StepCountLoader"
+    assert payload["loader"]["phase"] == "native"
+    assert payload["loader"]["resolved_root"] == str(tmp_path)
+    assert payload["processing"]["family"] == "interval_total"
+    assert payload["guidance"]["short_description"]
+    assert payload["curation"]["policy"]["identity"]["canonical_name"] == "StepCount"
+    assert payload["loader_behavior"]["all_curated_rows_by_default"] is True
+    assert "Future resampling declaration" in str(report)
+
+
+def test_loader_instance_info_reflects_instance_configuration(tmp_path: Path):
+    loader = WeightLoader(phase="curated", root=tmp_path)
+    report = loader.info()
+    assert report.as_dict()["loader"]["resolved_root"] == str(tmp_path)
+    assert report.as_dict()["feature"] == "Weight"
+    assert "Weight" in str(report)
+
+
+def test_feature_info_can_include_evidence_catalog_details():
+    report = DataLoaders.info("Sleep", include_evidence=True)
+    payload = report.as_dict()
+    assert "apple_sleep_analysis" in payload["evidence_refs"]
+    assert payload["evidence"]["apple_sleep_analysis"]["organization"] == "Apple Developer Documentation"
+
+
+def test_feature_info_rejects_unknown_feature():
+    with pytest.raises(DataLoaderConfigurationError):
+        DataLoaders.info("DefinitelyNotAFeature")

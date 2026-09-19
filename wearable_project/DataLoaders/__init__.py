@@ -8,6 +8,7 @@ Loaders consume validated processed feature tables rather than raw HealthKit exp
 from wearable_project.DataLoaders._base import (
     AppleHealthFeatureLoader, DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, LoaderData,
 )
+from wearable_project.DataLoaders.info import InfoReport, available_features, info
 from wearable_project.DataLoaders.ActiveEnergyBurnedLoader import ActiveEnergyBurnedLoader
 from wearable_project.DataLoaders.ActivitySummaryLoader import ActivitySummaryLoader
 from wearable_project.DataLoaders.BMILoader import BMILoader
@@ -48,6 +49,9 @@ __all__ = [
     "LoaderData",
     "DEFAULT_NATIVE_ROOT",
     "DEFAULT_CURATED_ROOT",
+    "InfoReport",
+    "available_features",
+    "info",
     "ActiveEnergyBurnedLoader",
     "ActivitySummaryLoader",
     "BMILoader",

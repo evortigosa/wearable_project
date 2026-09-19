@@ -4,5 +4,5 @@ Package metadata. Participant-oriented Apple HealthKit processing and curation f
 """
 
 
-__release_label__ = "0.2.0rc4"
-__version__ = "0.2.0rc4"
+__release_label__ = "0.2.0rc5"
+__version__ = "0.2.0rc5"
