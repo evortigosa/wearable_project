@@ -19,6 +19,13 @@ CSV per month.
 ```text
 wearable_project/
 ├── wearable_project/
+│   ├── DataLoaders/
+│   │   ├── StepCountLoader.py
+│   │   ├── HeartRateLoader.py
+│   │   ├── SleepLoader.py
+│   │   ├── ...
+│   │   ├── WeightLoader.py
+│   │   └── _base.py
 │   ├── processing/
 │   │   ├── cleaners.py         # Apply feature-specific cleaning and deduplication
 │   │   ├── environment.py      # Reproducibility diagnostics for native processing
@@ -50,13 +57,6 @@ wearable_project/
 │   │   ├── 
 │   │   ├── 
 │   │   └── 
-│   ├── DataLoaders/
-│   │   ├── StepCountLoader.py
-│   │   ├── HeartRateLoader.py
-│   │   ├── SleepLoader.py
-│   │   ├── ...
-│   │   ├── WeightLoader.py
-│   │   └── _base.py
 │   ├── cli.py              # Expose simple commands
 │   ├── exceptions.py
 │   └── __main__.py
