@@ -93,6 +93,19 @@ class AppleHealthFeatureLoader:
     def filename(self) -> str:
         return f"{self.feature_name}.csv"
 
+    def info(self, *, include_evidence: bool = False):
+        """
+        Return usage, processing, and curation information for this loader. The report reflects this instance's
+        phase and resolved root but performs no filesystem access.  ``print(loader.info())`` gives a readable
+        report; ``loader.info().as_dict()`` returns the structured form.
+        """
+
+        # Local import avoids a module cycle: DataLoaders.info imports this base class to construct
+        # feature-specific reports.
+        from wearable_project.DataLoaders.info import _feature_report
+
+        return _feature_report(self, include_evidence=include_evidence)
+
     def get_data(
         self, registration_codes: str | int | Iterable[str | int] | None = None, *,
         start_date: str | pd.Timestamp | None = None, end_date: str | pd.Timestamp | None = None,

@@ -25,6 +25,7 @@ wearable_project/
 │   │   ├── SleepLoader.py
 │   │   ├── ...
 │   │   ├── WeightLoader.py
+│   │   ├── info.py
 │   │   └── _base.py
 │   ├── processing/
 │   │   ├── cleaners.py         # Apply feature-specific cleaning and deduplication
