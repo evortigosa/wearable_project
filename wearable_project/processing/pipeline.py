@@ -30,7 +30,7 @@ from wearable_project.processing.writer import (
 )
 
 
-PARSER_VERSION = f"native-parser-0.1.4"
+PARSER_VERSION = f"native-parser-0.1.3"
 
 
 class PlanAction(str, Enum):

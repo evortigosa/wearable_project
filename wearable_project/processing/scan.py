@@ -576,13 +576,11 @@ def scan_processing_plan(
     warnings.extend(environment.get("warnings", ()))
     if mismatch_only:
         warnings.append(
-            f"{len(mismatch_only)} participant(s) require rebuild solely because the parser/registry "
-            "versions stored in native state differ from the currently imported processing code; "
-            "their source signatures are unchanged and committed outputs are usable. This commonly "
-            "occurs when `python -m wearable_project process` imported a local checkout while "
-            "`wearable-project process-scan` imported the installed wheel. Compare "
-            "`python -m wearable_project processing-environment` with "
-            "`wearable-project processing-environment` before rebuilding."
+            f"{len(mismatch_only)} participant(s) require rebuild solely because the parser/registry identity "
+            f"stored in native state differs from the current implementation. Source signatures are unchanged "
+            f"and committed outputs are usable. Do not rebuild solely from this result until the originating "
+            f"processing version has been verified. Possible causes include a historical local checkout, a "
+            f"semantic-version metadata change, or a genuinely different processing implementation."
         )
 
     action_counts = Counter(item.planned_action for item in details)
