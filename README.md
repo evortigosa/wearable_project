@@ -51,10 +51,9 @@ wearable_project/
 │   │   ├── rules.py            # Standardized rule and flag definitions
 │   │   ├── state.py            # Curation state, hashes, policies, manifests, and reports
 │   │   ├── strategies.py       # Named strategy declarations
-│   │   ├── unit_resolution.py  # Context-, scale-, participant-, and cross-feature unit res.
-│   │   └── 
+│   │   └── unit_resolution.py  # Context-, scale-, participant-, and cross-feature unit res.
 │   ├── utils/
-│   │   ├── 
+│   │   ├── release_manifest.py
 │   │   ├── 
 │   │   └── 
 │   ├── cli.py              # Expose simple commands
