@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wearable-project"
-version = "0.2.0"
-description = "Participant-oriented Apple HealthKit native processing and evidence-backed curation policies"
+version = "0.2.0rc4"
+description = "Participant-oriented Apple HealthKit processing, curation, and HPP-style feature data loaders"
 authors = [
   {name = "Evandro S. Ortigossa", email = "evortigosa@gmail.com"},
 ]

@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Package metadata.
+Package metadata. Participant-oriented Apple HealthKit processing and curation framework.
 """
 
 
-__release_label__ = "0.2.0"
-__version__ = "0.2.0"
+__release_label__ = "0.2.0rc4"
+__version__ = "0.2.0rc4"

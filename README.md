@@ -50,7 +50,13 @@ wearable_project/
 │   │   ├── 
 │   │   ├── 
 │   │   └── 
-│   ├── loaders/
+│   ├── DataLoaders/
+│   │   ├── StepCountLoader.py
+│   │   ├── HeartRateLoader.py
+│   │   ├── SleepLoader.py
+│   │   ├── ...
+│   │   ├── WeightLoader.py
+│   │   └── _base.py
 │   ├── cli.py              # Expose simple commands
 │   ├── exceptions.py
 │   └── __main__.py

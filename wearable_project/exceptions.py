@@ -42,3 +42,19 @@ class CurationError(WearableProjectError):
 
 class CurationStateError(CurationError):
     """The curated-output state is missing or internally inconsistent."""
+
+
+class DataLoaderError(RuntimeError):
+    """Base exception for loader failures."""
+
+
+class DataLoaderConfigurationError(DataLoaderError, ValueError):
+    """Invalid loader phase, filter, or option."""
+
+
+class DataLoaderPathError(DataLoaderError, FileNotFoundError):
+    """Configured native/curated data root is unavailable."""
+
+
+class DataLoaderReadError(DataLoaderError):
+    """A feature CSV cannot satisfy the loader contract."""
