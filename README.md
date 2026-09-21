@@ -26,7 +26,8 @@ wearable_project/
 │   │   ├── ...
 │   │   ├── WeightLoader.py
 │   │   ├── info.py
-│   │   └── _base.py
+│   │   ├── _base.py
+│   │   └── _profile.py
 │   ├── processing/
 │   │   ├── cleaners.py         # Apply feature-specific cleaning and deduplication
 │   │   ├── environment.py      # Reproducibility diagnostics for native processing
@@ -147,12 +148,13 @@ data.load_report          # provenance of this call
 `df_metadata` is indexed by `RegistrationCode` and reports, per participant, the
 returned and stored row counts, the returned date span, and, in the curated
 phase, whether the participant's file was verified against the curation state
-database and curated under the installed policy. `df_columns_metadata` gives each
+database and curated under the installed policy, together with the fraction of
+its returned rows whose acquisition method is classified. `df_columns_metadata` gives each
 returned column's declared role and description, dtype, non-null count, the
 registry unit for measurement columns, and the default used when a curated column
 is reconstructed. `load_report` records the root, phase, files read, filters,
-projection, and verification outcome. `LoaderData.metadata` remains as a
-deprecated alias of `load_report`.
+projection, verification outcome, request size, and acquisition-method coverage.
+`LoaderData.metadata` remains as a deprecated alias of `load_report`.
 
 #### Column projections
 
@@ -229,8 +231,8 @@ has no curation state, so `"required"` is rejected there.
 
 The state database is opened with SQLite's `immutable=1`, so loading never writes
 side files into the data tree and works from read-only directories. If a
-non-empty `-wal` file shows a curation run in progress or an unclean shutdown,
-the loader refuses to verify rather than read stale state.
+non-empty `-wal` or `-journal` file shows a curation run in progress or an
+unclean shutdown, the loader refuses to verify rather than read stale state.
 
 #### Returned dtypes
 
@@ -259,6 +261,70 @@ df = StepCountLoader().get_data(
 Date bounds are inclusive UTC instants. A bare date means midnight UTC, so
 `end_date="2024-12-31"` stops at the first instant of that day.
 
+#### Acquisition-method coverage
+
+Every call reports how the returned rows were obtained, whatever columns were
+requested:
+
+```python
+report = HeartRateLoader().get_data().load_report
+report["acquisition_method_counts"]        # rows per acquisition method
+report["acquisition_classified_fraction"]  # share of rows with a classified method
+```
+
+`df_metadata["acquisition_classified_fraction"]` gives the same figure per
+participant. Curation classifies acquisition conservatively rather than guessing,
+so much of the cohort is `unclassified`. Models conditioning on acquisition method
+are restricted to the classified subset and may face substantial source-selection
+bias.
+
+#### Profiling a feature before loading
+
+`profile()` describes what a root holds for a feature without parsing any feature
+CSV. It reads the phase's state database and one `stat` per file, so it is cheap
+enough to run before deciding what to load:
+
+```python
+print(HeartRateLoader().profile())
+
+profile = WeightLoader().profile(registration_codes=["10K_1235738253"])
+profile.summary        # aggregate figures, as a dictionary
+profile.participants   # one row per participant, indexed by RegistrationCode
+```
+
+Its figures cover the files `get_data()` would read, so `summary["rows"]` equals
+the row count of an unfiltered `get_data()` call. Curated profiles add curation
+status, default inclusion, acquisition-method coverage, unit-resolution coverage,
+and whether each file was curated under the installed policy. Unit resolution is
+reported as not applicable, rather than as zero, for features whose unit the
+registry fixes. Integrity checks compare each file's presence and size with its
+state record. Without a readable state database, or with
+`state_validation="off"`, the profile falls back to the filesystem and reports
+bytes but not rows. `DataLoaders.info()` describes a feature's static contract;
+`profile()` describes what a particular root holds.
+
+#### Request size limit
+
+`get_data()` refuses requests that would return more than `max_rows` rows,
+25,000,000 by default, raising `DataLoaderSizeError`. On the representative
+samples, peak memory while loading was roughly 350 to 1,200 bytes per returned
+row depending on the feature's width, so the default keeps a single call to the
+order of 10 to 30 GB at peak. Adjust it to the machine:
+
+```python
+HeartRateLoader().get_data(max_rows=None)       # no limit for this call
+HeartRateLoader().get_data(max_rows=5_000_000)  # a tighter limit for this call
+
+from wearable_project.DataLoaders import AppleHealthFeatureLoader
+AppleHealthFeatureLoader.default_max_rows = None  # no limit for the session
+```
+
+When the state database gives an exact row count, an oversized request is
+refused before any feature file is parsed. With date bounds, or without a
+readable state database, the limit is enforced as rows are retained instead, so
+a narrow date window over a large cohort still loads. The request's size is
+reported in `load_report["size_estimate"]`.
+
 #### Changes from 0.2.0rc5
 
 The default projection no longer returns every stored column; pass
@@ -269,9 +335,13 @@ curation columns. `LoaderData` gains `df_metadata` and `df_columns_metadata`, an
 counters `default_inclusion_rows_unflagged` and
 `participants_without_inclusion_flag` are replaced by
 `default_inclusion_rows_reconstructed` and `default_inclusion_rows_unverified`.
-Declared dtypes replace plain text and `object` columns. Stored data are
-unchanged, and higher-level HPP properties, chunked or lazy backends, and
-feature-specific helper methods remain additive to this contract.
+Declared dtypes replace plain text and `object` columns. `get_data()` now
+refuses requests above `max_rows`, 25,000,000 rows by default, raising
+`DataLoaderSizeError`; pass `max_rows=None` for the previous unlimited
+behavior. `profile()`, acquisition-method coverage, and the reported request
+size are new. Stored data are unchanged, and higher-level HPP properties, chunked
+or lazy backends, and feature-specific helper methods remain additive to this
+contract.
 
 ## Previous release: 0.2.0rc3
 

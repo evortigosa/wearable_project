@@ -19,7 +19,10 @@ import sqlite3
 import warnings
 import numpy as np
 import pandas as pd
-from wearable_project.exceptions import DataLoaderConfigurationError, DataLoaderPathError, DataLoaderReadError
+from wearable_project.exceptions import (
+    DataLoaderConfigurationError, DataLoaderError, DataLoaderPathError, DataLoaderReadError,
+)
+from wearable_project.DataLoaders._profile import ProfileReport, format_bytes, render_profile_text
 from wearable_project.processing.registry import get_feature_spec
 
 
@@ -60,6 +63,22 @@ class DataLoaderStateError(DataLoaderReadError):
     """
 
 
+class DataLoaderSizeError(DataLoaderError):
+    """
+    A ``get_data`` call would return, or has begun returning, more rows than its ``max_rows`` limit. Raised
+    before any feature file is parsed when the phase's state database gives an exact row count, and otherwise
+    as soon as the rows retained so far exceed the limit.
+    """
+
+
+# Default ceiling on the rows one get_data call may return. Peak memory while loading is roughly 350-1,200
+# bytes per retained row depending on the feature's width (measured on the representative samples), so this
+# keeps a single call to the order of 10-30 GB at peak. It is a class attribute of AppleHealthFeatureLoader so
+# it can be raised, lowered, or disabled for a whole session in one assignment.
+DEFAULT_MAX_ROWS = 50_000_000
+_USE_DEFAULT_MAX_ROWS: Any = object()
+
+
 StateValidation = Literal["auto", "required", "off"]
 _STATE_VALIDATION_MODES: tuple[str, ...] = ("auto", "required", "off")
 
@@ -87,6 +106,10 @@ _CURATION_FLAG_SEPARATOR = ";"
 # when the log holds no frames; a non-empty ``-wal`` file means a writer is active or did not shut down
 # cleanly, and the loader refuses rather than read stale state.
 _STATE_WAL_SUFFIX = "-wal"
+# Rollback-journal databases (the native state database uses this mode) signal an in-progress or interrupted
+# write with a non-empty ``-journal`` file, the counterpart of a non-empty ``-wal``. ``immutable=1`` would read
+# either kind of database inconsistently in that state.
+_STATE_ACTIVE_SUFFIXES = (_STATE_WAL_SUFFIX, "-journal")
 
 # Text forms accepted when normalizing a true/false column. Anything else leaves the column unconverted, so
 # an unexpected token is preserved rather than silently turned into missing data.
@@ -124,6 +147,7 @@ def _empty_participant_metadata() -> pd.DataFrame:
             "stored_rows": pd.Series(dtype="int64"),
             "state_verified": pd.Series(dtype="boolean"),
             "policy_current": pd.Series(dtype="boolean"),
+            "acquisition_classified_fraction": pd.Series(dtype="Float64"),
         }
     )
     frame.index = pd.Index([], dtype="object", name="RegistrationCode")
@@ -184,6 +208,9 @@ class AppleHealthFeatureLoader:
     date_column: ClassVar[str] = "start_date"
     date_semantics: ClassVar[str] = "event_start"
     registration_prefix: ClassVar[str] = "10K_"
+    # Session-wide ceiling for get_data(max_rows=...). Set None to disable, e.g.
+    # ``AppleHealthFeatureLoader.default_max_rows = None``; a per-call max_rows always takes precedence.
+    default_max_rows: ClassVar[int | None] = DEFAULT_MAX_ROWS
 
     def __init__(
         self, phase: ProcessingPhase | str = "curated", *,
@@ -261,6 +288,26 @@ class AppleHealthFeatureLoader:
             return None
         return found[0]
 
+    def _checked_root(self) -> tuple[Path, ProcessingPhase | None]:
+        """
+        Resolve the data root, require it to exist, and check the declared phase against the tree's own
+        state database. ``root`` overrides the phase default, so the declared phase is an assertion about the
+        tree rather than a description of it; a mismatched root fails here instead of producing results whose
+        reported phase is wrong.
+        """
+
+        root = self.data_root
+        if not root.is_dir():
+            raise DataLoaderPathError(f"{self.phase} wearable root does not exist or is not a directory: {root}")
+        detected_phase = self.detect_phase(root)
+        if detected_phase is not None and detected_phase != self.phase:
+            raise DataLoaderConfigurationError(
+                f"phase={self.phase!r} was requested but {root} contains "
+                f"{detected_phase} data (found {_PHASE_STATE_FILES[detected_phase]!r}); "
+                f"pass phase={detected_phase!r} or point root at a {self.phase} tree"
+            )
+        return root, detected_phase
+
     def info(self, *, include_evidence: bool = False):
         """
         Return usage, processing, and curation information for this loader. The report reflects this instance's
@@ -278,7 +325,7 @@ class AppleHealthFeatureLoader:
         self, registration_codes: str | int | Iterable[str | int] | None = None, *,
         start_date: str | pd.Timestamp | None = None, end_date: str | pd.Timestamp | None = None,
         columns: Sequence[str] | None = None, default_inclusion_only: bool = False, sort_index: bool = True,
-        projection: str = "default",
+        projection: str = "default", max_rows: int | None = _USE_DEFAULT_MAX_ROWS,
     ) -> LoaderData:
         """
         Load this feature across the requested participants.
@@ -312,23 +359,15 @@ class AppleHealthFeatureLoader:
             sparse-storage convention.
         sort_index:
             Sort by RegistrationCode and Date before returning.
+        max_rows:
+            Ceiling on the rows this call may return; ``None`` disables it. Defaults to the class attribute
+            ``default_max_rows`` (50,000,000 unless changed for the session). When the phase's state database
+            gives an exact count, an oversized request raises ``DataLoaderSizeError`` before any feature file
+            is parsed; otherwise, for example with date bounds, the limit is enforced as rows are retained.
+            Use ``profile()`` to see a request's size without loading it.
         """
 
-        root = self.data_root
-        if not root.is_dir():
-            raise DataLoaderPathError(f"{self.phase} wearable root does not exist or is not a directory: {root}")
-
-        # ``root`` overrides the phase default, so the declared phase is an assertion about the tree
-        # rather than a description of it. Check the assertion against the tree's own state database
-        # before reading, so a mismatched smoke-test root fails loudly instead of producing a frame
-        # whose reported phase is wrong.
-        detected_phase = self.detect_phase(root)
-        if detected_phase is not None and detected_phase != self.phase:
-            raise DataLoaderConfigurationError(
-                f"phase={self.phase!r} was requested but {root} contains "
-                f"{detected_phase} data (found {_PHASE_STATE_FILES[detected_phase]!r}); "
-                f"pass phase={detected_phase!r} or point root at a {self.phase} tree"
-            )
+        root, detected_phase = self._checked_root()
 
         if default_inclusion_only and self.phase != "curated":
             raise DataLoaderConfigurationError(
@@ -387,6 +426,33 @@ class AppleHealthFeatureLoader:
             raise DataLoaderConfigurationError(
                 f"start_date {lower.isoformat()} is after end_date {upper.isoformat()}"
             )
+
+        limit = self._resolve_max_rows(max_rows)
+        # Row counts come from the phase's state table, so an oversized request is refused before any
+        # CSV is parsed. The native table is advisory; with state_validation='off' no state is read.
+        estimate_state: dict[str, dict[str, Any]] | None = manifest
+        estimate_note: str | None = state_note if manifest is None else None
+        if not dense:
+            estimate_state, estimate_note = self._open_native_outputs(root)
+        size_estimate = self._size_estimate(
+            estimate_state, participant_ids, root, dense=dense,
+            default_inclusion_only=default_inclusion_only,
+            date_filtered=start_date is not None or end_date is not None,
+            presence_known=registration_codes is None,
+        )
+        if size_estimate is not None:
+            size_estimate["source"] = "curation_state" if dense else "native_state"
+            expected = size_estimate["rows_expected"]
+            if limit is not None and expected is not None and expected > limit:
+                raise DataLoaderSizeError(
+                    f"{self.feature_name} get_data() would return {expected:,} rows from "
+                    f"{size_estimate['participants']:,} participant file(s) "
+                    f"({format_bytes(size_estimate['bytes_on_disk'])} on disk), above max_rows={limit:,}. "
+                    + self._size_advice()
+                )
+        acquisition_total: Counter[str] = Counter()
+        acquisition_by_participant: dict[str, Counter[str]] = {}
+        retained_rows = 0
 
         for participant_id in participant_ids:
             path = root / participant_id / self.filename
@@ -464,6 +530,19 @@ class AppleHealthFeatureLoader:
 
             if frame.empty:
                 continue
+
+            # Coverage describes the rows returned, whatever columns were requested, so it is counted after
+            # every row filter and before the column projection.
+            acquisition = self._acquisition_counts(frame)
+            acquisition_total.update(acquisition)
+            acquisition_by_participant[participant_id] = acquisition
+            retained_rows += int(len(frame))
+            if limit is not None and retained_rows > limit:
+                raise DataLoaderSizeError(
+                    f"{self.feature_name} get_data() exceeded max_rows={limit:,}: {retained_rows:,} rows were "
+                    f"retained after reading {files_read:,} of {len(participant_ids):,} participant file(s). "
+                    + self._size_advice()
+                )
 
             # Keep the index anchor independently of the returned column set. This means ``columns=[...]`` does
             # not unexpectedly force the source date column back into the analytical columns.
@@ -561,6 +640,11 @@ class AppleHealthFeatureLoader:
             "policy_fingerprint_installed": installed_fingerprint,
             "participants_with_diverged_policy": sorted(set(diverged_participants)),
             "manifest_files_missing": manifest_files_missing,
+            "max_rows": limit,
+            "size_estimate": size_estimate,
+            "size_estimate_note": estimate_note if size_estimate is None else None,
+            "acquisition_method_counts": dict(sorted(acquisition_total.items())),
+            "acquisition_classified_fraction": self._classified_fraction(acquisition_total),
         }
 
         if undeclared_columns:
@@ -609,12 +693,267 @@ class AppleHealthFeatureLoader:
         df_metadata = self._build_df_metadata(
             combined, stored_rows, verified_participants, set(diverged_participants),
             dense=dense, verified=manifest is not None, fingerprint_checked=installed_fingerprint is not None,
+            acquisition=acquisition_by_participant,
         )
         df_columns_metadata = self._build_df_columns_metadata(combined, schema, dense=dense)
         return LoaderData(
             df=combined, df_metadata=df_metadata,
             df_columns_metadata=df_columns_metadata, load_report=report,
         )
+
+    def profile(
+        self, registration_codes: str | int | Iterable[str | int] | None = None,
+    ) -> ProfileReport:
+        """
+        Describe what this root holds for the feature, without parsing any feature CSV.
+        Figures come from the phase's state database (``curation_outputs`` for curated roots,
+        ``feature_outputs`` for native roots) and one ``stat`` per file. They cover the files ``get_data``
+        would read for the same participants, so ``profile().summary["rows"]`` equals the row count of an
+        unfiltered ``get_data`` call. Curated profiles add curation status, default inclusion,
+        acquisition-method coverage, unit-resolution coverage, and policy currency. Integrity checks compare
+        each file's presence and size with its state record. Without a readable state database the profile
+        falls back to the filesystem and reports bytes but not rows. Nothing is written.
+        """
+
+        root, _ = self._checked_root()
+        dense = self.phase == "curated"
+        requested = registration_codes is not None
+        participant_ids, _ = self._resolve_participants(root, registration_codes)
+
+        state: dict[str, dict[str, Any]] | None = None
+        note: str | None = None
+        installed: str | None = None
+        if dense:
+            if self.state_validation == "off":
+                note = "state reads disabled by state_validation='off'"
+            else:
+                state, note = self._open_manifest(root)
+                if state is not None:
+                    installed = self._installed_policy_fingerprint()
+        else:
+            state, note = self._open_native_outputs(root)
+        source = "filesystem" if state is None else ("curation_state" if dense else "native_state")
+        rows_key = "curated_rows" if dense else "row_count"
+
+        # Without a requested subset, also include every participant the state records, so a file that
+        # has disappeared from disk is reported rather than silently absent from the profile.
+        population = set(participant_ids)
+        if state is not None and not requested:
+            population |= set(state)
+
+        records: list[dict[str, Any]] = []
+        acquisition_total: Counter[str] = Counter()
+        status_total: Counter[str] = Counter()
+        unit_status_total: Counter[str] = Counter()
+        included = excluded = unverifiable = canonical_rows = ambiguous_rows = diverged = 0
+        for participant_id in sorted(population):
+            path = root / participant_id / self.filename
+            on_disk = path.is_file()
+            entry = state.get(participant_id) if state is not None else None
+            if not on_disk and entry is None:
+                continue
+            record: dict[str, Any] = {
+                "RegistrationCode": self._to_registration_code(participant_id),
+                "participant_id": participant_id,
+                "on_disk": on_disk,
+                "bytes_on_disk": int(path.stat().st_size) if on_disk else None,
+            }
+            if state is not None:
+                record["has_state"] = entry is not None
+                record["rows"] = int(entry[rows_key]) if entry is not None else None
+                record["size_matches"] = bool(
+                    entry is not None and on_disk and record["bytes_on_disk"] == int(entry["size_bytes"])
+                )
+            loadable = on_disk and entry is not None
+            if dense and entry is not None:
+                stored = int(entry["curated_rows"])
+                inclusion_valid = (
+                    int(entry["included_by_default_rows"]) + int(entry["excluded_by_default_rows"]) == stored
+                )
+                acquisition = Counter(json.loads(entry["acquisition_counts_json"] or "{}"))
+                record.update({
+                    "pass_rows": int(entry["pass_rows"]),
+                    "review_rows": int(entry["review_rows"]),
+                    "exclude_default_rows": int(entry["exclude_default_rows"]),
+                    "included_by_default_rows": int(entry["included_by_default_rows"]) if inclusion_valid else None,
+                    "excluded_by_default_rows": int(entry["excluded_by_default_rows"]) if inclusion_valid else None,
+                    "acquisition_classified_fraction": self._classified_fraction(acquisition),
+                    "canonical_value_rows": int(entry["canonical_value_rows"]),
+                    "ambiguous_unit_rows": int(entry["ambiguous_unit_rows"]),
+                    "policy_current": (
+                        None if installed is None else str(entry["policy_fingerprint"]) == installed
+                    ),
+                })
+                if loadable:
+                    status_total.update({
+                        "pass": int(entry["pass_rows"]), "review": int(entry["review_rows"]),
+                        "exclude_default": int(entry["exclude_default_rows"]),
+                    })
+                    if inclusion_valid:
+                        included += int(entry["included_by_default_rows"])
+                        excluded += int(entry["excluded_by_default_rows"])
+                    else:
+                        unverifiable += 1
+                    acquisition_total.update(acquisition)
+                    unit_status_total.update(json.loads(entry["unit_status_counts_json"] or "{}"))
+                    canonical_rows += int(entry["canonical_value_rows"])
+                    ambiguous_rows += int(entry["ambiguous_unit_rows"])
+                    if record["policy_current"] is False:
+                        diverged += 1
+            records.append(record)
+
+        participants = self._profile_frame(records, dense=dense, with_state=state is not None)
+        loadable_mask = participants["on_disk"].astype(bool)
+        if state is not None:
+            loadable_mask &= participants["has_state"].astype(bool)
+        rows_total = int(participants.loc[loadable_mask, "rows"].sum()) if state is not None else None
+        files_without_state = (
+            int((participants["on_disk"] & ~participants["has_state"]).sum()) if state is not None else None
+        )
+        limit = self.default_max_rows
+        get_data_rows = rows_total if state is not None and not files_without_state else None
+        summary: dict[str, Any] = {
+            "feature": self.feature_name,
+            "phase": self.phase,
+            "root": str(root),
+            "source": source,
+            "source_note": note if state is None else None,
+            "participants": int(len(participants)),
+            "files_on_disk": int(participants["on_disk"].sum()),
+            "rows": rows_total,
+            "bytes_on_disk": int(participants["bytes_on_disk"].fillna(0).sum()),
+            "status_counts": dict(sorted(status_total.items())) if dense and state is not None else None,
+            "default_inclusion": (
+                {"included": included, "excluded": excluded, "unverifiable_files": unverifiable}
+                if dense and state is not None else None
+            ),
+            "acquisition": (
+                {"counts": dict(sorted(acquisition_total.items())),
+                 "classified_fraction": self._classified_fraction(acquisition_total)}
+                if dense and state is not None else None
+            ),
+            "unit_resolution": (
+                {"status_counts": dict(sorted(unit_status_total.items())),
+                 "canonical_value_rows": canonical_rows, "ambiguous_unit_rows": ambiguous_rows,
+                 "resolved_fraction": (
+                     canonical_rows / (canonical_rows + ambiguous_rows) if canonical_rows + ambiguous_rows else None
+                 )}
+                if dense and state is not None else None
+            ),
+            "policy": (
+                {"installed_fingerprint": installed, "files_diverged": diverged}
+                if dense and state is not None else None
+            ),
+            "integrity": {
+                "files_missing_on_disk": (
+                    int((~participants["on_disk"]).sum()) if state is not None else None
+                ),
+                "files_without_state": files_without_state,
+                "files_size_mismatch": (
+                    int((participants["on_disk"] & participants["has_state"] & ~participants["size_matches"]).sum())
+                    if state is not None else None
+                ),
+            },
+            "load": {
+                "max_rows": limit,
+                "default_get_data_rows": get_data_rows,
+                "exceeds_max_rows": bool(limit is not None and get_data_rows is not None and get_data_rows > limit),
+            },
+        }
+        return ProfileReport(summary=summary, participants=participants, text=render_profile_text(summary))
+
+    @staticmethod
+    def _profile_frame(records: list[dict[str, Any]], *, dense: bool, with_state: bool) -> pd.DataFrame:
+        """Build the per-participant profile table with stable, nullable dtypes."""
+
+        columns: dict[str, str] = {"participant_id": "object", "on_disk": "boolean", "bytes_on_disk": "Int64"}
+        if with_state:
+            columns.update({"has_state": "boolean", "rows": "Int64", "size_matches": "boolean"})
+            if dense:
+                columns.update({
+                    "pass_rows": "Int64", "review_rows": "Int64", "exclude_default_rows": "Int64",
+                    "included_by_default_rows": "Int64", "excluded_by_default_rows": "Int64",
+                    "acquisition_classified_fraction": "Float64",
+                    "canonical_value_rows": "Int64", "ambiguous_unit_rows": "Int64", "policy_current": "boolean",
+                })
+        frame = pd.DataFrame.from_records(records, columns=["RegistrationCode", *columns])
+        for column, dtype in columns.items():
+            frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
+            frame[column] = pd.array(frame[column].tolist(), dtype=dtype) if dtype != "object" else frame[column]
+        return frame.set_index("RegistrationCode").sort_index()
+
+    def _resolve_max_rows(self, max_rows: Any) -> int | None:
+        limit = self.default_max_rows if max_rows is _USE_DEFAULT_MAX_ROWS else max_rows
+        if limit is None:
+            return None
+        if isinstance(limit, bool) or not isinstance(limit, (int, np.integer)) or int(limit) < 1:
+            raise DataLoaderConfigurationError(f"max_rows must be a positive integer or None; received {limit!r}")
+        return int(limit)
+
+    def _size_estimate(
+        self, state: Mapping[str, Mapping[str, Any]] | None, participant_ids: Sequence[str], root: Path, *,
+        dense: bool, default_inclusion_only: bool, date_filtered: bool, presence_known: bool,
+    ) -> dict[str, Any] | None:
+        """
+        Size of a get_data request from the phase's state table. ``rows_expected`` is exact, or None when
+        date bounds, a file the state does not describe, or missing inclusion counts leave it unknown.
+        """
+
+        if state is None:
+            return None
+        rows_key = "curated_rows" if dense else "row_count"
+        exact = not date_filtered
+        participants = rows_stored = rows_retained = bytes_on_disk = 0
+        for participant_id in participant_ids:
+            entry = state.get(participant_id)
+            on_disk = presence_known or (root / participant_id / self.filename).is_file()
+            if entry is None:
+                if on_disk:
+                    exact = False
+                continue
+            if not on_disk:
+                continue
+            stored = int(entry[rows_key])
+            participants += 1
+            rows_stored += stored
+            bytes_on_disk += int(entry["size_bytes"])
+            if dense and default_inclusion_only:
+                included = int(entry["included_by_default_rows"])
+                if included + int(entry["excluded_by_default_rows"]) == stored:
+                    rows_retained += included
+                else:
+                    exact = False
+                    rows_retained += stored
+            else:
+                rows_retained += stored
+        return {
+            "participants": participants, "rows_stored": rows_stored,
+            "rows_expected": rows_retained if exact else None, "bytes_on_disk": bytes_on_disk,
+        }
+
+    def _size_advice(self) -> str:
+        return (
+            "Narrow the request with registration_codes, start_date/end_date, or default_inclusion_only; "
+            f"inspect it first with {type(self).__name__}().profile(); or pass max_rows=None to load it anyway."
+        )
+
+    @staticmethod
+    def _acquisition_counts(frame: pd.DataFrame) -> Counter[str]:
+        """Acquisition methods of the rows in ``frame``; absent or blank values count as unclassified."""
+
+        if "acquisition_method" not in frame.columns:
+            return Counter({"unclassified": int(len(frame))})
+        text = frame["acquisition_method"].astype("string").str.strip()
+        known = (text.notna() & text.ne("")).fillna(False).to_numpy(dtype=bool)
+        labels = text.astype(object).where(known, "unclassified")
+        return Counter({str(name): int(count) for name, count in labels.value_counts().items()})
+
+    @staticmethod
+    def _classified_fraction(counts: Mapping[str, int]) -> float | None:
+        total = sum(counts.values())
+        if not total:
+            return None
+        return (total - counts.get("unclassified", 0)) / total
 
     def _resolve_participants(
         self, root: Path, registration_codes: str | int | Iterable[str | int] | None,
@@ -724,10 +1063,10 @@ class AppleHealthFeatureLoader:
                     f"state_validation='required' but the curation state database is absent: {database}"
                 )
             return None, "curation state database absent"
-        wal = database.with_name(database.name + _STATE_WAL_SUFFIX)
-        if wal.is_file() and wal.stat().st_size > 0:
+        active = self._active_write_file(database)
+        if active is not None:
             raise DataLoaderStateError(
-                f"{wal} holds uncheckpointed writes: a curation run may be in progress or did not shut down "
+                f"{active} holds uncommitted writes: a curation run may be in progress or did not shut down "
                 "cleanly, so the state database cannot be read consistently without writing to the data "
                 "tree. Retry once curation has finished, or pass state_validation='off' to load unverified."
             )
@@ -740,6 +1079,41 @@ class AppleHealthFeatureLoader:
                 ).fetchall()
         except sqlite3.Error as exc:
             raise DataLoaderStateError(f"could not read curation_outputs from {database}: {exc}") from exc
+        return {str(row["participant_id"]): dict(row) for row in rows}, None
+
+    @staticmethod
+    def _active_write_file(database: Path) -> Path | None:
+        """Return a non-empty WAL or rollback journal beside ``database``: evidence of a writer at work."""
+
+        for suffix in _STATE_ACTIVE_SUFFIXES:
+            side = database.with_name(database.name + suffix)
+            if side.is_file() and side.stat().st_size > 0:
+                return side
+        return None
+
+    def _open_native_outputs(self, root: Path) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
+        """
+        Read this feature's ``feature_outputs`` rows from the native processing state database, keyed by
+        participant. Unlike curated verification this is advisory: an absent, busy, or unreadable database
+        yields ``(None, reason)`` and the caller carries on without it. Opened with ``immutable=1``.
+        """
+
+        database = root / _PHASE_STATE_FILES["native"]
+        if not database.is_file():
+            return None, "native state database absent"
+        active = self._active_write_file(database)
+        if active is not None:
+            return None, f"native state database has uncommitted writes ({active.name})"
+        uri = f"{database.resolve().as_uri()}?immutable=1"
+        try:
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = connection.execute(
+                    "SELECT participant_id, row_count, size_bytes FROM feature_outputs WHERE feature = ?",
+                    (self.feature_name,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            return None, f"native state database unreadable: {exc}"
         return {str(row["participant_id"]): dict(row) for row in rows}, None
 
     def _installed_policy_fingerprint(self) -> str | None:
@@ -755,10 +1129,11 @@ class AppleHealthFeatureLoader:
     @classmethod
     def _densify(cls, frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], bool]:
         """
-        Restore the curated logical schema from sparse storage. Absent columns take their documented default for
-        every row; for ``acquisition_method`` and ``curation_flags`` blank cells do too. ``include_by_default``
-        is returned as a plain boolean. Row count and every other column are unchanged. Returns the frame,
-        per-column counts of reconstructed rows, and whether ``include_by_default`` was absent from the stored file.
+        Restore the curated logical schema from sparse storage.
+        Absent columns take their documented default for every row; for ``acquisition_method`` and
+        ``curation_flags`` blank cells do too. ``include_by_default`` is returned as a plain boolean. Row
+        count and every other column are unchanged. Returns the frame, per-column counts of reconstructed
+        rows, and whether ``include_by_default`` was absent from the stored file.
         """
 
         filled: dict[str, int] = {}
@@ -896,6 +1271,7 @@ class AppleHealthFeatureLoader:
     def _build_df_metadata(
         self, frame: pd.DataFrame, stored_rows: Mapping[str, int], verified_participants: set[str],
         diverged: set[str], *, dense: bool, verified: bool, fingerprint_checked: bool,
+        acquisition: Mapping[str, Counter[str]],
     ) -> pd.DataFrame:
         """One row per participant present in ``frame``, indexed by RegistrationCode."""
 
@@ -926,6 +1302,9 @@ class AppleHealthFeatureLoader:
             policy = [pd.NA] * len(participant_ids)
         metadata["state_verified"] = pd.array(state, dtype="boolean")
         metadata["policy_current"] = pd.array(policy, dtype="boolean")
+        metadata["acquisition_classified_fraction"] = pd.array(
+            [self._classified_fraction(acquisition.get(pid, Counter())) for pid in participant_ids], dtype="Float64",
+        )
         return metadata
 
     def _build_df_columns_metadata(self, frame: pd.DataFrame, schema: Any, *, dense: bool) -> pd.DataFrame:

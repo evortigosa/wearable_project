@@ -368,7 +368,7 @@ def test_migrated_database_skips_inclusion_counts_and_flags_unverified_inclusion
 def test_non_empty_write_ahead_log_is_refused(tmp_path: Path):
     root = _curated_copy(tmp_path)
     (root / (STATE_DB + "-wal")).write_bytes(b"\0" * 64)
-    with pytest.raises(DataLoaderStateError, match="uncheckpointed writes"):
+    with pytest.raises(DataLoaderStateError, match="uncommitted writes"):
         StepCountLoader(root=root).get_data()
 
 
@@ -545,6 +545,7 @@ def test_empty_result_carries_empty_metadata_tables():
     assert data.df_metadata.empty and data.df_metadata.index.name == "RegistrationCode"
     assert list(data.df_metadata.columns) == [
         "participant_id", "rows", "first_date", "last_date", "stored_rows", "state_verified", "policy_current",
+        "acquisition_classified_fraction",
     ]
     assert list(data.df_columns_metadata.index) == list(data.df.columns)
 
