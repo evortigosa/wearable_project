@@ -34,12 +34,12 @@ from wearable_project.exceptions import DataLoaderConfigurationError, DataLoader
 # Sample roots are optional: the consistency and unit tests run anywhere, the end-to-end tests need data.
 CURATED_SAMPLE = Path(os.environ.get(
     "WEARABLE_CURATED_SAMPLE",
-    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_curated_apple_healthkit")
-)
+    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_curated_apple_healthkit"
+))
 NATIVE_SAMPLE = Path(os.environ.get(
     "WEARABLE_NATIVE_SAMPLE",
-    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_cleaned_apple_healthkit")
-)
+    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_cleaned_apple_healthkit"
+))
 needs_sample = pytest.mark.skipif(
     not CURATED_SAMPLE.is_dir() or not NATIVE_SAMPLE.is_dir(),
     reason="curated and native sample roots are required for end-to-end projection tests",
@@ -175,13 +175,18 @@ def test_unknown_projection_name_raises_keyerror_in_the_schema():
 
 # --------------------------------------------------------------------- loader behaviour
 @needs_sample
-def test_full_projection_reproduces_the_stored_column_set():
+def test_full_projection_returns_every_stored_column_plus_the_dense_schema():
+    """
+    Since 0.2.0 ``full`` means every column of the curated logical schema, not the stored bytes: sparse
+    curation columns absent from a file are reconstructed, so full is a superset of what is on disk.
+    """
     data = StepCountLoader(root=CURATED_SAMPLE).get_data(projection="full")
     stored = set()
     for path in CURATED_SAMPLE.glob("*/StepCount.csv"):
         stored |= set(pd.read_csv(path, nrows=0).columns)
-    assert set(data.df.columns) == stored
-    assert data.metadata["columns_withheld"] == []
+    dense = {"acquisition_method", "curation_status", "curation_flags", "include_by_default"}
+    assert set(data.df.columns) == stored | dense
+    assert data.load_report["columns_withheld"] == []
 
 
 @needs_sample
@@ -191,7 +196,7 @@ def test_default_projection_withholds_identifiers_and_ingest():
     for column in ("record_id", "source_id", "source_name", "metadata",
                    "created_at", "updated_at", "data_source"):
         assert column not in returned
-    assert {"record_id", "source_id", "source_name"} <= set(data.metadata["columns_withheld"])
+    assert {"record_id", "source_id", "source_name"} <= set(data.load_report["columns_withheld"])
 
 
 @needs_sample
@@ -280,8 +285,8 @@ def test_explicit_columns_override_the_projection():
         columns=["value", "record_id"], projection="default"
     )
     assert list(data.df.columns) == ["value", "record_id"]
-    assert data.metadata["projection"] == "columns"
-    assert data.metadata["columns_withheld"] == []
+    assert data.load_report["projection"] == "columns"
+    assert data.load_report["columns_withheld"] == []
     assert "record_id" not in HeartRateLoader(root=CURATED_SAMPLE).get_data().df.columns
 
 
@@ -352,15 +357,14 @@ def test_absent_column_still_raises_under_a_projection():
 
 @needs_sample
 def test_default_inclusion_only_still_filters_under_the_projection():
-    """The inclusion filter runs before the projection, so the two are independent."""
-    with pytest.warns(UserWarning):
-        projected = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True)
-    with pytest.warns(UserWarning):
-        full = WeightLoader(root=CURATED_SAMPLE).get_data(
-            default_inclusion_only=True, projection="full"
-        )
-    assert projected.metadata["rows"] == full.metadata["rows"] == 82
-    assert projected.metadata["default_inclusion_rows_dropped"] == 375
+    """
+    The inclusion filter runs before the projection, so the two are independent. The sample root carries
+    its state database, so reconstructed inclusion values are verified and no warning is expected.
+    """
+    projected = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True)
+    full = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True, projection="full")
+    assert projected.load_report["rows"] == full.load_report["rows"] == 82
+    assert projected.load_report["default_inclusion_rows_dropped"] == 375
 
 
 @needs_sample
@@ -373,8 +377,8 @@ def test_phase_mismatch_is_still_detected_under_a_projection():
 @needs_sample
 def test_metadata_reports_the_projection_and_what_it_withheld():
     data = HeartRateLoader(root=CURATED_SAMPLE).get_data()
-    assert data.metadata["projection"] == "default"
-    withheld = data.metadata["columns_withheld"]
+    assert data.load_report["projection"] == "default"
+    withheld = data.load_report["columns_withheld"]
     assert withheld == sorted(withheld)
     assert set(withheld).isdisjoint(set(data.df.columns))
 
@@ -383,14 +387,14 @@ def test_metadata_reports_the_projection_and_what_it_withheld():
 def test_withheld_plus_returned_equals_the_stored_column_set():
     data = HeartRateLoader(root=CURATED_SAMPLE).get_data()
     full = HeartRateLoader(root=CURATED_SAMPLE).get_data(projection="full")
-    assert set(data.df.columns) | set(data.metadata["columns_withheld"]) == set(full.df.columns)
+    assert set(data.df.columns) | set(data.load_report["columns_withheld"]) == set(full.df.columns)
 
 
 @needs_sample
 def test_full_projection_withholds_nothing():
     data = StepCountLoader(root=CURATED_SAMPLE).get_data(projection="full")
-    assert data.metadata["projection"] == "full"
-    assert data.metadata["columns_withheld"] == []
+    assert data.load_report["projection"] == "full"
+    assert data.load_report["columns_withheld"] == []
 
 
 # ---------------------------------------------------------------------- import hygiene

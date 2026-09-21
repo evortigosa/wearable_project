@@ -29,7 +29,7 @@ test or a release check can catch the omission.
 from __future__ import annotations
 from enum import Enum
 from typing import Iterable, Mapping
-from wearable_project.processing.registry import SPECS
+from wearable_project.processing.registry import SPECS, FeatureFamily, get_feature_spec
 
 
 SCHEMA_VERSION = "2026-09-dataloader-projection-1"
@@ -199,6 +199,65 @@ PROJECTION_SUMMARIES: Mapping[str, str] = {
 }
 
 DEFAULT_PROJECTION = "default"
+
+
+ROLE_DESCRIPTIONS: Mapping[ColumnRole, str] = {
+    ColumnRole.TEMPORAL: "Event timing in UTC; the date anchor also forms the HPP Date index level.",
+    ColumnRole.MEASUREMENT: "The measured quantity, in the feature's stored unit.",
+    ColumnRole.UNIT: "Stored and canonical units, and the canonical value where resolution succeeded.",
+    ColumnRole.CURATION_VERDICT: "What curation concluded about the row: status, flags, default inclusion, unit verdict.",
+    ColumnRole.CURATION_AUDIT: "Evidence and unit epoch behind a curation unit decision.",
+    ColumnRole.ACQUISITION: "How the observation was obtained, including whether it was entered by hand.",
+    ColumnRole.LOCAL_TIME: "Offset from UTC in minutes, needed to recover local wall-clock time.",
+    ColumnRole.TIME_ZONE: "IANA time-zone name; a dated sequence of zones is quasi-identifying.",
+    ColumnRole.QUALITY: "Row-level quality observations recorded during native processing.",
+    ColumnRole.FEATURE_CONTEXT: "Feature-specific context that changes how a value should be read.",
+    ColumnRole.DEVICE: "Device model and algorithm descriptors.",
+    ColumnRole.RECONCILIATION: "Deduplication and revision bookkeeping from native processing.",
+    ColumnRole.IDENTIFIER: "Persistent identifiers, user-chosen device labels and the raw metadata payload.",
+    ColumnRole.PAYLOAD: "High-volume embedded payload such as the ECG waveform.",
+    ColumnRole.INGEST: "Pipeline ingest bookkeeping with no row-level analytical meaning.",
+}
+
+
+# Returned dtypes are declared here rather than inferred from the data, so a column has the same dtype in
+# every call regardless of which participants or dates it happens to cover.
+#
+# Low-cardinality text columns are returned as pandas categoricals, which store each distinct value once.
+# Row-unique or free-form text (record identifiers, JSON payloads, the waveform) is deliberately excluded:
+# one categorical of mostly unique values costs more memory than plain text.  Numeric codes such as
+# ``heart_rate_motion_context`` stay numeric.
+CATEGORICAL_COLUMNS: frozenset[str] = frozenset({
+    "raw_unit", "canonical_unit", "unit_status",
+    "curation_status", "curation_flags", "curation_unit_status",
+    "unit_evidence", "unit_epoch_id",
+    "acquisition_method",
+    "time_zone",
+    "quality_flags",
+    "status", "trend_arrow", "classification",
+    "device", "algorithm_version",
+    "source_id", "source_name", "metadata_device_name",
+    "data_source",
+})
+
+# True/false columns whose on-disk representation varies between files (``bool`` in one participant file,
+# ``object`` holding Python booleans and NaN in another).  Returned as pandas nullable booleans, where NA
+# means the value was not recorded.  ``include_by_default`` is not listed: in the curated phase it is
+# densely reconstructed, never missing, and returned as a plain boolean.
+NULLABLE_BOOLEAN_COLUMNS: frozenset[str] = frozenset({"was_user_entered"})
+
+
+def categorical_columns(feature: str) -> frozenset[str]:
+    """
+    Return the columns returned as categoricals for one feature.
+    ``value`` is numeric for almost every feature, but for state-interval features such as Sleep it holds a
+    small vocabulary of states, so it is categorical there and only there.  The family comes from the
+    processing registry, so an unregistered feature falls back to the shared set.
+    """
+
+    if get_feature_spec(feature).family is FeatureFamily.STATE_INTERVAL:
+        return CATEGORICAL_COLUMNS | {"value"}
+    return CATEGORICAL_COLUMNS
 
 
 def available_projections() -> tuple[str, ...]:

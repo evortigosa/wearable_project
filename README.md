@@ -50,6 +50,7 @@ wearable_project/
 │   │   ├── pipeline.py         # Staging, incremental planning, and atomic commits
 │   │   ├── registry.py         # All feature policies
 │   │   ├── rules.py            # Standardized rule and flag definitions
+│   │   ├── schema.py           # Column roles, projections, and returned dtypes for DataLoaders
 │   │   ├── state.py            # Curation state, hashes, policies, manifests, and reports
 │   │   ├── strategies.py       # Named strategy declarations
 │   │   └── unit_resolution.py  # Context-, scale-, participant-, and cross-feature unit res.
@@ -70,8 +71,7 @@ wearable_project/
 This release candidate is built directly from the accepted `0.2.0rc4` source.
 It adds introspective DataLoader information derived from the existing processing
 registry, curation registry, and evidence-linked feature guidance while leaving
-Milestone 1 processing, Milestone 2 curation semantics, and DataLoader row-loading
-behavior unchanged.
+Milestone 1 processing, and Milestone 2 curation semantics behavior unchanged.
 
 The installable PEP 440 version is:
 
@@ -131,27 +131,147 @@ features except `ActivitySummary`, where it is the retained outer `datetime`.
 This does not assert a canonical ActivitySummary day; that derivation remains
 blocked by the Milestone 2 policy.
 
+#### What `get_data()` returns
+
+`get_data()` returns a `LoaderData` object shaped like the HPP one:
+
+```python
+data = StepCountLoader().get_data()
+
+data.df                   # rows, indexed by RegistrationCode and Date
+data.df_metadata          # one row per participant present in df
+data.df_columns_metadata  # one row per column of df
+data.load_report          # provenance of this call
+```
+
+`df_metadata` is indexed by `RegistrationCode` and reports, per participant, the
+returned and stored row counts, the returned date span, and, in the curated
+phase, whether the participant's file was verified against the curation state
+database and curated under the installed policy. `df_columns_metadata` gives each
+returned column's declared role and description, dtype, non-null count, the
+registry unit for measurement columns, and the default used when a curated column
+is reconstructed. `load_report` records the root, phase, files read, filters,
+projection, and verification outcome. `LoaderData.metadata` remains as a
+deprecated alias of `load_report`.
+
+#### Column projections
+
+Each call returns a named column set. The default leaves out persistent
+identifiers, free-text device labels, the raw metadata payload, the ECG waveform,
+deduplication bookkeeping, and ingest metadata:
+
+```python
+StepCountLoader().get_data()                       # projection="default"
+StepCountLoader().get_data(projection="analysis")  # adds the unit audit trail, device
+                                                   # descriptors, bookkeeping, IANA time zone
+StepCountLoader().get_data(projection="full")      # every column
+```
+
+An explicit `columns=[...]` list overrides the projection, so every stored column
+remains reachable by name. `load_report["columns_withheld"]` lists what a
+projection left out. Column roles, projections, and returned dtypes are declared in
+`curation/schema.py`. A stored column with no declared role is listed separately
+in `load_report["columns_undeclared"]`, raises a warning, and is returned only by
+`projection="full"` or by name.
+
+`projection="full"` suits authorised provenance work inside the protected
+environment; prefer the default when producing derived exports.
+
+#### The curated logical schema
+
+The curation writer stores four columns sparsely: a column is written only where
+at least one row in that participant-feature file needs a non-default value.
+Curated loaders restore the logical schema, so every curated frame carries all
+four with no missing values:
+
+```text
+acquisition_method   absent or blank  ->  "unclassified"
+curation_status      absent           ->  "pass"
+curation_flags       absent or blank  ->  ""   (no flags)
+include_by_default   absent           ->  True
+```
+
+`include_by_default` is returned as a boolean. Unit fields such as
+`canonical_value` and `canonical_unit` are never filled, because their absence
+means the unit was not resolved. Native loaders are never reconstructed.
+
+Curated loaders do **not** silently discard review or excluded-by-default rows.
+`curation_status="review"` and `include_by_default=False` answer different
+questions. An analyst who wants the policy default subset requests it explicitly:
+
+```python
+df = WeightLoader().get_data(default_inclusion_only=True).df
+```
+
+#### Verification against the curation state
+
+In the curated phase, each file is checked against its row in
+`.wearable_curation_state.sqlite` before any filter is applied: its SHA-256, size,
+and row count; its `pass`, `review`, and `exclude_default` counts; its inclusion
+counts; and its acquisition-method and flag counts. The hash proves the file is
+exactly what curation wrote; the counts prove the loader's reconstruction agrees
+with the logical state the writer recorded. Any disagreement raises
+`DataLoaderStateError`, a subclass of `DataLoaderReadError`.
+
+```python
+StepCountLoader(state_validation="auto")      # default: verify when the database exists
+StepCountLoader(state_validation="required")  # fail when the database is absent
+StepCountLoader(state_validation="off")       # skip verification
+```
+
+Sample trees without a state database load under `"auto"` and report
+`load_report["state_verified"]` as `False`. Files curated under a policy
+fingerprint that differs from the installed registry, and files the database
+records but that are no longer on disk, are reported and raise a warning without
+failing the load. A database migrated from an engine that predates inclusion
+counts is recognized; those two checks are skipped and reported. The native phase
+has no curation state, so `"required"` is rejected there.
+
+The state database is opened with SQLite's `immutable=1`, so loading never writes
+side files into the data tree and works from read-only directories. If a
+non-empty `-wal` file shows a curation run in progress or an unclean shutdown,
+the loader refuses to verify rather than read stale state.
+
+#### Returned dtypes
+
+Low-cardinality text columns are returned as pandas categoricals, as is Sleep's
+`value`, which holds sleep states. `was_user_entered` is a nullable boolean.
+These dtypes are declared rather than inferred, so they do not depend on which
+participants a call covers. Three pandas behaviors follow: assigning a value
+outside a column's categories raises; concatenating the results of separate
+calls falls back to a plain text dtype when their categories differ; and under
+pandas 2.x, `groupby` on a categorical includes unobserved categories unless
+`observed=True` is passed.
+
+#### Filters
+
 Useful first-stage filters are available without changing stored data:
 
 ```python
 df = StepCountLoader().get_data(
     registration_codes=["10K_1235738253", "10K_9870822060"],
     start_date="2024-01-01",
-    end_date="2024-12-31",
-    columns=["value", "canonical_value", "curation_status"],
+    end_date="2024-12-31 23:59:59",
+    columns=["value", "curation_status", "include_by_default"],
 ).df
 ```
 
-Curated loaders do **not** silently discard review or excluded-by-default rows.
-An analyst who explicitly wants the policy default subset can request:
+Date bounds are inclusive UTC instants. A bare date means midnight UTC, so
+`end_date="2024-12-31"` stops at the first instant of that day.
 
-```python
-df = WeightLoader().get_data(default_inclusion_only=True).df
-```
+#### Changes from 0.2.0rc5
 
-This first loader release intentionally preserves all feature-specific columns.
-Higher-level HPP properties, chunked/lazy backends, and feature-specific helper
-methods can be added without changing this core `get_data().df` contract.
+The default projection no longer returns every stored column; pass
+`projection="full"` for the previous column set. `full` now returns the curated
+logical schema rather than the stored bytes, so it includes reconstructed
+curation columns. `LoaderData` gains `df_metadata` and `df_columns_metadata`, and
+`metadata` becomes `load_report`, kept as a deprecated alias. The inclusion
+counters `default_inclusion_rows_unflagged` and
+`participants_without_inclusion_flag` are replaced by
+`default_inclusion_rows_reconstructed` and `default_inclusion_rows_unverified`.
+Declared dtypes replace plain text and `object` columns. Stored data are
+unchanged, and higher-level HPP properties, chunked or lazy backends, and
+feature-specific helper methods remain additive to this contract.
 
 ## Previous release: 0.2.0rc3
 
