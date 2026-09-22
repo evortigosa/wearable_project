@@ -156,6 +156,16 @@ is reconstructed. `load_report` records the root, phase, files read, filters,
 projection, verification outcome, request size, and acquisition-method coverage.
 `LoaderData.metadata` remains as a deprecated alias of `load_report`.
 
+Values come back exactly as stored. Floats are parsed to the nearest double, and
+only empty cells are missing, so text such as the Dexcom trend arrow `"None"` is
+kept rather than read as a missing value.
+
+A call's columns are fixed by the files it reads. Date bounds and
+`default_inclusion_only` never change them, and an empty result carries the same
+columns and dtypes as a populated one. Because each participant's file stores
+only the columns it uses, different participant subsets can return different
+columns; pass `columns=[...]` for a fixed schema.
+
 #### Column projections
 
 Each call returns a named column set. The default leaves out persistent
@@ -259,7 +269,17 @@ df = StepCountLoader().get_data(
 ```
 
 Date bounds are inclusive UTC instants. A bare date means midnight UTC, so
-`end_date="2024-12-31"` stops at the first instant of that day.
+`end_date="2024-12-31"` stops at the first instant of that day. Bounds may be
+dates, datetimes, numpy `datetime64` values, or strings; timezone-aware values
+are converted to UTC. Numbers are rejected, because pandas would read
+`20240101` as nanoseconds since 1970, and so are missing values; pass `None` for
+no bound.
+
+Registration codes may be strings or integers, including numpy integers and
+whole-number floats, so a column of codes can be passed directly. The `10K_`
+prefix is optional and case-insensitive. Missing or fractional codes raise
+rather than being reported as absent participants. Hidden directories in a root
+are never treated as participants.
 
 #### Acquisition-method coverage
 
@@ -339,9 +359,12 @@ Declared dtypes replace plain text and `object` columns. `get_data()` now
 refuses requests above `max_rows`, 25,000,000 rows by default, raising
 `DataLoaderSizeError`; pass `max_rows=None` for the previous unlimited
 behavior. `profile()`, acquisition-method coverage, and the reported request
-size are new. Stored data are unchanged, and higher-level HPP properties, chunked
-or lazy backends, and feature-specific helper methods remain additive to this
-contract.
+size are new. Values now load exactly as stored: about 3% of float values differ
+from earlier releases in the last digit, and Dexcom `"None"` trend arrows are no
+longer read as missing. Malformed participant codes and date bounds now raise
+instead of silently returning nothing or everything. Stored data are unchanged,
+and higher-level HPP properties, chunked or lazy backends, and feature-specific
+helper methods remain additive to this contract.
 
 ## Previous release: 0.2.0rc3
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal
 import hashlib
 import json
+import math
 import sqlite3
 import warnings
 import numpy as np
@@ -370,10 +371,12 @@ class AppleHealthFeatureLoader:
         root, detected_phase = self._checked_root()
 
         if default_inclusion_only and self.phase != "curated":
-            raise DataLoaderConfigurationError(
-                "default_inclusion_only is only defined for phase='curated'"
-            )
+            raise DataLoaderConfigurationError("default_inclusion_only is only defined for phase='curated'")
 
+        # A bare string is one column name, not a sequence of single-character names.
+        if isinstance(columns, str):
+            columns = [columns]
+        projection = str(projection).strip().lower()
         schema = _projection_schema()
         if not schema.is_known_projection(projection):
             raise DataLoaderConfigurationError(
@@ -413,6 +416,10 @@ class AppleHealthFeatureLoader:
         # The same, restricted to what the projection admits; this is the schema an empty projected
         # result must carry so it concatenates with a populated one.
         projected_columns: dict[str, None] = {}
+        # Each column's dtype after timestamp parsing, from the first file that carries it. Used only to type
+        # an empty result like a populated one, so concatenation does not degrade datetimes or numbers to text.
+        column_dtypes: dict[str, list[Any]] = {}
+        files_parsed = 0
         # Columns present on disk with no declared role in curation.schema: evidence that the stored
         # schema has moved ahead of the role table.
         undeclared_columns: dict[str, None] = {}
@@ -511,6 +518,9 @@ class AppleHealthFeatureLoader:
                 )
 
             frame = self._parse_temporal_columns(frame, path)
+            files_parsed += 1
+            for column, dtype in frame.dtypes.items():
+                column_dtypes.setdefault(column, []).append(dtype)
             dates = frame[self.date_column]
             if lower is not None:
                 frame = frame.loc[dates >= lower].copy()
@@ -549,15 +559,11 @@ class AppleHealthFeatureLoader:
             date_values = frame[self.date_column].copy()
 
             if requested_columns is not None:
-                present = [name for name in requested_columns if name in frame.columns]
-                frame = frame.loc[:, present].copy()
                 # Curated output is intentionally sparse: a derived column may be absent from a participant-feature
-                # file when it was never needed there. Cohort loading therefore fills such columns with NA rather
-                # than treating the file as malformed.
-                for name in requested_columns:
-                    if name not in frame.columns:
-                        frame[name] = pd.NA
-                frame = frame.loc[:, requested_columns]
+                # file when it was never needed there. Only the columns this file has are kept; concatenation fills
+                # the rest, exactly as it does for projections. Filling per file with pd.NA instead would create
+                # object columns, and pandas 3 lets those decide the concatenated dtype.
+                frame = frame.loc[:, [name for name in requested_columns if name in frame.columns]].copy()
             elif projecting:
                 frame = frame.loc[:, schema.columns_for_projection(projection, frame.columns)].copy()
 
@@ -577,6 +583,22 @@ class AppleHealthFeatureLoader:
                     + ", ".join(unknown)
                 )
 
+        # The columns this call returns are fixed by the files it read, not by which rows survived the filters:
+        # a date window or the inclusion filter must not change the schema, and an empty result must carry the
+        # same columns as a populated one. Participant subsets can still differ, because each file stores only
+        # the columns it uses; an explicit columns= list fixes the schema across any subset.
+        merged_dtypes = {
+            name: self._merged_dtype(found, missing=len(found) < files_parsed)
+            for name, found in column_dtypes.items()
+        }
+        if requested_columns is not None:
+            schema_columns = list(requested_columns)
+        else:
+            schema_columns = [
+                name for name in (projected_columns if projecting else observed_columns)
+                if name not in self._data_index_names
+            ]
+
         if frames:
             # Pandas currently emits a FutureWarning when one participant has an all-NA placeholder for a sparse
             # curated column while another participant carries real values. That layout is intentional in the
@@ -590,12 +612,15 @@ class AppleHealthFeatureLoader:
                 combined = pd.concat(frames, axis=0, ignore_index=True, sort=False)
             combined = combined.set_index(self._data_index_names, drop=True)
             combined.index = combined.index.set_names(self._data_index_names)
+            for name in schema_columns:
+                if name not in combined.columns:
+                    combined[name] = pd.Series(index=combined.index, dtype=merged_dtypes.get(name, np.dtype(object)))
+            combined = combined.loc[:, schema_columns]
             if sort_index:
                 combined = combined.sort_index()
         else:
             combined = self._empty_frame(
-                requested_columns,
-                observed_columns=list(projected_columns if projecting else observed_columns),
+                schema_columns if files_parsed else requested_columns, dtypes=merged_dtypes,
             )
         # Declared dtypes are applied once, after concatenation: categoricals built per participant would carry
         # different category sets and pandas would fall back to object on concatenation.
@@ -960,12 +985,13 @@ class AppleHealthFeatureLoader:
     ) -> tuple[list[str], list[str]]:
         if registration_codes is None:
             ids = sorted(
-                path.name for path in root.iterdir() if path.is_dir() and (path / self.filename).is_file()
+                path.name for path in root.iterdir()
+                if path.is_dir() and not path.name.startswith(".") and (path / self.filename).is_file()
             )
             return ids, []
 
-        if isinstance(registration_codes, (str, int)):
-            values: Iterable[str | int] = (registration_codes,)
+        if isinstance(registration_codes, (str, bytes)) or not isinstance(registration_codes, Iterable):
+            values: Iterable[Any] = (registration_codes,)
         else:
             values = registration_codes
 
@@ -980,15 +1006,43 @@ class AppleHealthFeatureLoader:
 
     @classmethod
     def _to_registration_code(cls, participant_id: str | int) -> str:
-        value = str(participant_id).strip()
-        if value.startswith(cls.registration_prefix):
-            return value
-        return f"{cls.registration_prefix}{value}"
+        return f"{cls.registration_prefix}{cls._to_participant_id(participant_id)}"
 
     @classmethod
-    def _to_participant_id(cls, registration_code: str | int) -> str:
-        value = str(registration_code).strip()
-        if value.startswith(cls.registration_prefix):
+    def _to_participant_id(cls, registration_code: Any) -> str:
+        """
+        Normalize one registration code or participant folder ID to the folder ID.
+        Accepts strings and integers, including numpy integers and whole-number floats, since codes often
+        arrive from a DataFrame column. A missing, fractional, or non-numeric-scalar code is rejected rather
+        than silently reported as a participant absent from the root.
+        """
+
+        if registration_code is None or registration_code is pd.NA or registration_code is pd.NaT:
+            raise DataLoaderConfigurationError(
+                "registration code is missing (None/NA); drop it, or pass registration_codes=None for everyone"
+            )
+        if isinstance(registration_code, (bool, np.bool_)):
+            raise DataLoaderConfigurationError(f"registration code must be a string or integer; received {registration_code!r}")
+        if isinstance(registration_code, (int, np.integer)):
+            value = str(int(registration_code))
+        elif isinstance(registration_code, (float, np.floating)):
+            if math.isnan(registration_code):
+                raise DataLoaderConfigurationError(
+                    "registration code is missing (NaN); drop it, or pass registration_codes=None for everyone"
+                )
+            if not math.isfinite(registration_code) or not float(registration_code).is_integer():
+                raise DataLoaderConfigurationError(
+                    f"registration code {registration_code!r} is not a whole number; a missing or fractional code "
+                    "usually means the column it came from held missing values"
+                )
+            value = str(int(registration_code))
+        elif isinstance(registration_code, str):
+            value = registration_code.strip()
+        else:
+            raise DataLoaderConfigurationError(
+                f"registration code must be a string or integer; received {type(registration_code).__name__}"
+            )
+        if value[: len(cls.registration_prefix)].upper() == cls.registration_prefix.upper():
             value = value[len(cls.registration_prefix) :]
         if not value:
             raise DataLoaderConfigurationError("empty participant/registration code")
@@ -998,19 +1052,40 @@ class AppleHealthFeatureLoader:
     def _normalize_bound(value: str | pd.Timestamp | None, label: str,) -> pd.Timestamp | None:
         if value is None:
             return None
+        if pd.api.types.is_scalar(value) and pd.isna(value):
+            raise DataLoaderConfigurationError(
+                f"{label}={value!r} is missing; pass None for no bound"
+            )
+        if isinstance(value, (bool, np.bool_, int, float, np.integer, np.floating)):
+            raise DataLoaderConfigurationError(
+                f"{label}={value!r} is a number; pass a date, a datetime, or a string such as '2024-01-01' "
+                "(pandas would read a number as nanoseconds since 1970)"
+            )
         try:
             timestamp = pd.Timestamp(value)
         except Exception as exc:  # pragma: no cover - pandas exception details vary
             raise DataLoaderConfigurationError(
                 f"could not parse {label}={value!r} as a timestamp"
             ) from exc
+        if pd.isna(timestamp):
+            raise DataLoaderConfigurationError(f"{label}={value!r} does not describe a timestamp")
         if timestamp.tzinfo is None:
             return timestamp.tz_localize("UTC")
         return timestamp.tz_convert("UTC")
 
     def _read_feature_file(self, path: Path) -> pd.DataFrame:
+        """
+        Read one stored feature file so that every value comes back exactly as written.
+        ``float_precision="round_trip"`` parses each float to the nearest double, as Python's ``float()`` does;
+        pandas' default parser misses by one unit in the last place on roughly 3% of stored float values.
+        Only empty cells are missing: pandas' default NA tokens would otherwise turn legitimate text such as
+        the Dexcom trend arrow ``"None"`` into missing data.
+        """
+
         try:
-            return pd.read_csv(path, low_memory=False)
+            return pd.read_csv(
+                path, low_memory=False, keep_default_na=False, na_values=[""], float_precision="round_trip",
+            )
         except Exception as exc:
             raise DataLoaderReadError(f"failed reading {path}: {exc}") from exc
 
@@ -1337,14 +1412,39 @@ class AppleHealthFeatureLoader:
             })
         return pd.DataFrame.from_records(records).set_index("column")
 
+    @staticmethod
+    def _merged_dtype(dtypes: Sequence[Any], *, missing: bool) -> Any:
+        """
+        The dtype concatenation gives a column seen with ``dtypes`` across files, where ``missing`` means some
+        file lacked it and so contributes missing values. Integers are promoted to float to hold them, booleans
+        become object, and datetimes and text keep their dtype. Disagreeing non-numeric dtypes become object.
+        """
+
+        if not dtypes:
+            return np.dtype(object)
+        numeric = [d for d in dtypes if pd.api.types.is_numeric_dtype(d) and not pd.api.types.is_bool_dtype(d)]
+        if len(numeric) == len(dtypes):
+            if missing or any(pd.api.types.is_float_dtype(d) for d in numeric):
+                return np.dtype("float64")
+            return np.result_type(*numeric)
+        if len({str(d) for d in dtypes}) == 1:
+            if missing and pd.api.types.is_bool_dtype(dtypes[0]):
+                return np.dtype(object)
+            return dtypes[0]
+        return np.dtype(object)
+
     def _empty_frame(
         self, columns: Sequence[str] | None, *, observed_columns: Sequence[str] | None = None,
+        dtypes: Mapping[str, Any] | None = None,
     ) -> pd.DataFrame:
         """
-        Build the zero-row frame returned when nothing survives the filters. An explicit ``columns`` projection
-        defines the schema exactly. Otherwise, the columns observed while reading are used, so an empty result
-        concatenates cleanly with non-empty results from the same call. Only when no file was read at all is the
-        schema genuinely unknown, and the frame is then returned with no columns.
+        Build the zero-row frame returned when nothing survives the filters.
+        An explicit ``columns`` projection defines the schema exactly. Otherwise, the columns observed
+        while reading are used. Each column takes the dtype it had in the files read, and the index levels
+        take the dtypes a populated result would have, so an empty result concatenates with a populated one
+        without turning datetimes or numbers into text. Declared categoricals still carry no categories, so
+        concatenating them follows pandas' usual rule for differing categories. Only when no file was read
+        at all is the schema genuinely unknown, and the frame is then returned with no columns.
         """
 
         if columns is not None:
@@ -1355,8 +1455,11 @@ class AppleHealthFeatureLoader:
                 for name in dict.fromkeys(observed_columns or ())
                 if name not in self._data_index_names
             ]
-        empty = pd.DataFrame(columns=data_columns)
-        empty.index = pd.MultiIndex.from_arrays(
-            [pd.Index([], dtype="object"), pd.DatetimeIndex([], tz="UTC")], names=self._data_index_names,
-        )
+        known = dtypes or {}
+        empty = pd.DataFrame({name: pd.Series(dtype=known.get(name, "object")) for name in data_columns})
+        anchor = known.get(self.date_column)
+        date_level = pd.Index([], dtype=anchor) if anchor is not None else pd.DatetimeIndex([], tz="UTC")
+        # The default text dtype of the running pandas version, so the code level matches a populated result.
+        code_level = pd.Index([], dtype=pd.Series(["10K_"]).dtype)
+        empty.index = pd.MultiIndex.from_arrays([code_level, date_level], names=self._data_index_names)
         return empty
