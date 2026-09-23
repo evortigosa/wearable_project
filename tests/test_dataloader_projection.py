@@ -1,11 +1,10 @@
 """
 Wearable Data Processing and Modeling project
-Tests for the column-role schema and the DataLoader projection it drives.
-The schema in ``curation/schema.py`` restates column names that stable processing and curation modules
-already declare for other purposes. It was added without editing those modules, so the correspondence is
-asserted here instead of enforced by an import. If ``processing/cleaners.py`` gains a column group entry,
-or the registry gains a measurement column, the consistency tests below fail until the role table is
-updated.
+Tests for the column-role schema and the DataLoader projection it drives. The schema in ``curation/schema.py``
+restates column names that stable processing and curation modules already declare for other purposes. It was
+added without editing those modules, so the correspondence is asserted here instead of enforced by an import.
+If ``processing/cleaners.py`` gains a column group entry, or the registry gains a measurement column, the
+consistency tests below fail until the role table is updated.
 """
 
 

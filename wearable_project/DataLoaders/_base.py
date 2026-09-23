@@ -24,6 +24,7 @@ from wearable_project.exceptions import (
     DataLoaderConfigurationError, DataLoaderError, DataLoaderPathError, DataLoaderReadError,
 )
 from wearable_project.DataLoaders._profile import ProfileReport, format_bytes, render_profile_text
+from wearable_project.DataLoaders._units import stored_unit
 from wearable_project.processing.registry import get_feature_spec
 
 
@@ -186,6 +187,28 @@ class LoaderData:
     df_columns_metadata: pd.DataFrame = field(default_factory=_empty_columns_metadata)
     load_report: dict[str, Any] = field(default_factory=dict)
 
+    def with_local_time(self, columns: Sequence[str] | None = None) -> "LoaderData":
+        """
+        Return a copy with local wall-clock columns, ``start_date_local`` and ``end_date_local`` by default,
+        recovered from each row's ``utc_offset_minutes``. The UTC columns are kept. See
+        ``DataLoaders._derived.with_local_time`` for the full contract.
+        """
+
+        from wearable_project.DataLoaders._derived import with_local_time
+
+        return with_local_time(self, columns)
+
+    def with_harmonized_values(self) -> "LoaderData":
+        """
+        Return a copy with ``harmonized_value``, ``harmonized_unit`` and ``harmonized_unit_source``: each row's
+        value in a unit established by curation, processing, or the registry, or unresolved. ``value`` and
+        ``canonical_value`` are left untouched. See ``DataLoaders._derived.with_harmonized_values``.
+        """
+
+        from wearable_project.DataLoaders._derived import with_harmonized_values
+
+        return with_harmonized_values(self)
+
     @property
     def metadata(self) -> dict[str, Any]:
         """Deprecated alias of :attr:`load_report`, kept so pre-0.2.0 callers continue to work."""
@@ -221,11 +244,11 @@ class AppleHealthFeatureLoader:
         state_validation: StateValidation | str = "auto",
     ) -> None:
         """
-        ``state_validation`` governs how curated files are checked against the curation state database:
-        ``"auto"`` verifies every file when the database exists and reports the load as unverified when it
-        does not; ``"required"`` fails when the database is absent; ``"off"`` skips verification. Dense
-        reconstruction of the curated logical schema happens in every mode. The native phase has no
-        curation state, so ``"required"`` is rejected there. No filesystem access happens here.
+        ``state_validation`` governs how files are checked against the phase's state database, the curation
+        state for curated roots and the processing state for native roots: ``"auto"`` verifies every file when
+        the database exists and reports the load as unverified when it does not; ``"required"`` fails when the
+        database is absent; ``"off"`` skips verification.  Dense reconstruction of the curated logical schema
+        happens in every mode.  No filesystem access happens here.
         """
 
         normalized_phase = str(phase).strip().lower()
@@ -240,11 +263,6 @@ class AppleHealthFeatureLoader:
                 "state_validation must be one of "
                 + ", ".join(repr(mode) for mode in _STATE_VALIDATION_MODES)
                 + f"; received {state_validation!r}"
-            )
-        if normalized_validation == "required" and normalized_phase == "native":
-            raise DataLoaderConfigurationError(
-                "state_validation='required' applies only to phase='curated'; "
-                "the native phase has no curation state to verify against"
             )
         self.phase: ProcessingPhase = normalized_phase  # type: ignore[assignment]
         self.state_validation: StateValidation = normalized_validation  # type: ignore[assignment]
@@ -327,6 +345,7 @@ class AppleHealthFeatureLoader:
         start_date: str | pd.Timestamp | None = None, end_date: str | pd.Timestamp | None = None,
         columns: Sequence[str] | None = None, default_inclusion_only: bool = False, sort_index: bool = True,
         projection: str = "default", max_rows: int | None = _USE_DEFAULT_MAX_ROWS,
+        reg_ids: str | int | Iterable[str | int] | None = None, cols: Sequence[str] | None = None,
     ) -> LoaderData:
         """
         Load this feature across the requested participants.
@@ -366,6 +385,9 @@ class AppleHealthFeatureLoader:
             gives an exact count, an oversized request raises ``DataLoaderSizeError`` before any feature file
             is parsed; otherwise, for example with date bounds, the limit is enforced as rows are retained.
             Use ``profile()`` to see a request's size without loading it.
+        reg_ids, cols:
+            The HPP names for ``registration_codes`` and ``columns``, accepted as exact aliases. Passing both
+            an alias and its long form raises ``DataLoaderConfigurationError``.
         """
 
         root, detected_phase = self._checked_root()
@@ -373,6 +395,8 @@ class AppleHealthFeatureLoader:
         if default_inclusion_only and self.phase != "curated":
             raise DataLoaderConfigurationError("default_inclusion_only is only defined for phase='curated'")
 
+        registration_codes = self._resolve_alias("registration_codes", registration_codes, "reg_ids", reg_ids)
+        columns = self._resolve_alias("columns", columns, "cols", cols)
         # A bare string is one column name, not a sequence of single-character names.
         if isinstance(columns, str):
             columns = [columns]
@@ -392,12 +416,14 @@ class AppleHealthFeatureLoader:
         # it is present. The native phase has no curation, so nothing is reconstructed there.
         dense = self.phase == "curated"
         manifest: dict[str, dict[str, Any]] | None = None
-        state_note: str | None = "not applicable to the native phase"
+        state_note: str | None = None
         installed_fingerprint: str | None = None
         if dense:
             manifest, state_note = self._open_manifest(root)
             if manifest is not None:
                 installed_fingerprint = self._installed_policy_fingerprint()
+        else:
+            manifest, state_note = self._open_native_manifest(root)
 
         frames: list[pd.DataFrame] = []
         files_read = 0
@@ -439,8 +465,6 @@ class AppleHealthFeatureLoader:
         # CSV is parsed. The native table is advisory; with state_validation='off' no state is read.
         estimate_state: dict[str, dict[str, Any]] | None = manifest
         estimate_note: str | None = state_note if manifest is None else None
-        if not dense:
-            estimate_state, estimate_note = self._open_native_outputs(root)
         size_estimate = self._size_estimate(
             estimate_state, participant_ids, root, dense=dense,
             default_inclusion_only=default_inclusion_only,
@@ -502,6 +526,17 @@ class AppleHealthFeatureLoader:
                         and str(entry["policy_fingerprint"]) != installed_fingerprint
                     ):
                         diverged_participants.append(participant_id)
+            elif manifest is not None:
+                entry = manifest.get(participant_id)
+                if entry is None:
+                    raise DataLoaderStateError(
+                        f"{path} is present but the native processing state database has no feature_outputs "
+                        f"row for participant {participant_id!r} and feature {self.feature_name!r}; the file "
+                        "cannot be verified and may be foreign, a stray copy, or partially written. For a "
+                        "deliberately assembled sample tree, pass state_validation='off'."
+                    )
+                self._verify_native(frame, path, entry)
+                verified_participants.add(participant_id)
 
             # Whether a column exists is a property of the file, not of the rows that survive the
             # filters below. Record it here so an empty date window cannot be mistaken for an absent
@@ -513,9 +548,7 @@ class AppleHealthFeatureLoader:
                     dict.fromkeys(schema.columns_for_projection(projection, frame.columns))
                 )
             if requested_columns is not None:
-                requested_columns_seen.update(
-                    name for name in requested_columns if name in frame.columns
-                )
+                requested_columns_seen.update(name for name in requested_columns if name in frame.columns)
 
             frame = self._parse_temporal_columns(frame, path)
             files_parsed += 1
@@ -606,7 +639,7 @@ class AppleHealthFeatureLoader:
             with warnings.catch_warnings():
                 warnings.filterwarnings(
                     "ignore",
-                    message=("The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*"),
+                    message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
                     category=FutureWarning,
                 )
                 combined = pd.concat(frames, axis=0, ignore_index=True, sort=False)
@@ -655,10 +688,13 @@ class AppleHealthFeatureLoader:
             "projection": projection if requested_columns is None else "columns",
             "columns_withheld": declared_withheld,
             "columns_undeclared": sorted(undeclared_columns),
+            # Every column this call could have returned: the logical schema of the files it read. Derived
+            # columns use it to tell an input the feature never stores from one the request left out.
+            "columns_available": [name for name in observed_columns if name not in self._data_index_names],
             "dense_reconstruction": dense,
             "rows_reconstructed": dict(sorted(rows_reconstructed.items())),
             "state_validation": self.state_validation,
-            "state_verified": (manifest is not None) if dense else None,
+            "state_verified": manifest is not None,
             "state_verification_note": state_note,
             "files_verified": len(verified_participants),
             "inclusion_counts_unverifiable": inclusion_counts_unverifiable,
@@ -677,8 +713,7 @@ class AppleHealthFeatureLoader:
                 f"{len(undeclared_columns)} column(s) in {self.feature_name} files have no declared role in "
                 f"curation.schema: {', '.join(sorted(undeclared_columns))}. They are returned only by "
                 "projection='full' or an explicit columns= request. Add them to COLUMN_ROLES.",
-                UserWarning,
-                stacklevel=2,
+                UserWarning, stacklevel=2,
             )
         if diverged_participants:
             warnings.warn(
@@ -686,16 +721,14 @@ class AppleHealthFeatureLoader:
                 "fingerprint that differs from the installed curation registry. Their status and inclusion "
                 "values reflect the policy in force when they were written, until the curated root is rebuilt. "
                 "See load_report['participants_with_diverged_policy'].",
-                UserWarning,
-                stacklevel=2,
+                UserWarning, stacklevel=2,
             )
         if manifest_files_missing:
             warnings.warn(
                 f"The curation state database records {len(manifest_files_missing)} {self.feature_name} "
                 "file(s) that are no longer on disk; the returned rows are verified but incomplete relative "
                 "to the manifest. See load_report['manifest_files_missing'].",
-                UserWarning,
-                stacklevel=2,
+                UserWarning, stacklevel=2,
             )
 
         if default_inclusion_only:
@@ -711,8 +744,7 @@ class AppleHealthFeatureLoader:
                     "row(s) whose include_by_default was reconstructed from the sparse-storage convention "
                     f"without count verification ({reason}). The convention holds for managed curated roots; "
                     "verify against the curation state database before relying on it.",
-                    UserWarning,
-                    stacklevel=2,
+                    UserWarning, stacklevel=2,
                 )
 
         df_metadata = self._build_df_metadata(
@@ -727,7 +759,8 @@ class AppleHealthFeatureLoader:
         )
 
     def profile(
-        self, registration_codes: str | int | Iterable[str | int] | None = None,
+        self, registration_codes: str | int | Iterable[str | int] | None = None, *,
+        reg_ids: str | int | Iterable[str | int] | None = None,
     ) -> ProfileReport:
         """
         Describe what this root holds for the feature, without parsing any feature CSV.
@@ -740,6 +773,7 @@ class AppleHealthFeatureLoader:
         falls back to the filesystem and reports bytes but not rows. Nothing is written.
         """
 
+        registration_codes = self._resolve_alias("registration_codes", registration_codes, "reg_ids", reg_ids)
         root, _ = self._checked_root()
         dense = self.phase == "curated"
         requested = registration_codes is not None
@@ -748,15 +782,14 @@ class AppleHealthFeatureLoader:
         state: dict[str, dict[str, Any]] | None = None
         note: str | None = None
         installed: str | None = None
-        if dense:
-            if self.state_validation == "off":
-                note = "state reads disabled by state_validation='off'"
-            else:
-                state, note = self._open_manifest(root)
-                if state is not None:
-                    installed = self._installed_policy_fingerprint()
+        if self.state_validation == "off":
+            note = "state reads disabled by state_validation='off'"
+        elif dense:
+            state, note = self._open_manifest(root)
+            if state is not None:
+                installed = self._installed_policy_fingerprint()
         else:
-            state, note = self._open_native_outputs(root)
+            state, note = self._open_native_manifest(root)
         source = "filesystem" if state is None else ("curation_state" if dense else "native_state")
         rows_key = "curated_rows" if dense else "row_count"
 
@@ -907,6 +940,16 @@ class AppleHealthFeatureLoader:
             frame[column] = pd.array(frame[column].tolist(), dtype=dtype) if dtype != "object" else frame[column]
         return frame.set_index("RegistrationCode").sort_index()
 
+    @staticmethod
+    def _resolve_alias(name: str, value: Any, alias: str, alias_value: Any) -> Any:
+        """Return whichever of an argument and its HPP alias was given; both at once is ambiguous."""
+
+        if alias_value is None:
+            return value
+        if value is not None:
+            raise DataLoaderConfigurationError(f"pass either {name}= or its alias {alias}=, not both")
+        return alias_value
+
     def _resolve_max_rows(self, max_rows: Any) -> int | None:
         limit = self.default_max_rows if max_rows is _USE_DEFAULT_MAX_ROWS else max_rows
         if limit is None:
@@ -1053,9 +1096,7 @@ class AppleHealthFeatureLoader:
         if value is None:
             return None
         if pd.api.types.is_scalar(value) and pd.isna(value):
-            raise DataLoaderConfigurationError(
-                f"{label}={value!r} is missing; pass None for no bound"
-            )
+            raise DataLoaderConfigurationError(f"{label}={value!r} is missing; pass None for no bound")
         if isinstance(value, (bool, np.bool_, int, float, np.integer, np.floating)):
             raise DataLoaderConfigurationError(
                 f"{label}={value!r} is a number; pass a date, a datetime, or a string such as '2024-01-01' "
@@ -1064,9 +1105,7 @@ class AppleHealthFeatureLoader:
         try:
             timestamp = pd.Timestamp(value)
         except Exception as exc:  # pragma: no cover - pandas exception details vary
-            raise DataLoaderConfigurationError(
-                f"could not parse {label}={value!r} as a timestamp"
-            ) from exc
+            raise DataLoaderConfigurationError(f"could not parse {label}={value!r} as a timestamp") from exc
         if pd.isna(timestamp):
             raise DataLoaderConfigurationError(f"{label}={value!r} does not describe a timestamp")
         if timestamp.tzinfo is None:
@@ -1094,9 +1133,7 @@ class AppleHealthFeatureLoader:
             anchor = pd.read_csv(path, usecols=[self.date_column])[self.date_column]
             return pd.to_datetime(anchor, utc=True, errors="raise", format="mixed")
         except Exception as exc:
-            raise DataLoaderReadError(
-                f"failed reading date anchor {self.date_column!r} from {path}: {exc}"
-            ) from exc
+            raise DataLoaderReadError(f"failed reading date anchor {self.date_column!r} from {path}: {exc}") from exc
 
     @staticmethod
     def _parse_temporal_columns(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
@@ -1107,9 +1144,7 @@ class AppleHealthFeatureLoader:
             try:
                 frame[column] = pd.to_datetime(frame[column], utc=True, errors="raise", format="mixed")
             except Exception as exc:
-                raise DataLoaderReadError(
-                    f"failed parsing timestamp column {column!r} in {path}: {exc}"
-                ) from exc
+                raise DataLoaderReadError(f"failed parsing timestamp column {column!r} in {path}: {exc}") from exc
         return frame
 
     @staticmethod
@@ -1166,29 +1201,40 @@ class AppleHealthFeatureLoader:
                 return side
         return None
 
-    def _open_native_outputs(self, root: Path) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
+    def _open_native_manifest(self, root: Path) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
         """
         Read this feature's ``feature_outputs`` rows from the native processing state database, keyed by
-        participant. Unlike curated verification this is advisory: an absent, busy, or unreadable database
-        yields ``(None, reason)`` and the caller carries on without it. Opened with ``immutable=1``.
+        participant, under the same rules as the curated manifest: ``off`` reads nothing, an absent database
+        fails under ``required`` and is reported under ``auto``, and a database with uncommitted writes is
+        refused rather than read stale. Opened with ``immutable=1`` so the read never writes to the data tree.
         """
 
+        if self.state_validation == "off":
+            return None, "verification disabled by state_validation='off'"
         database = root / _PHASE_STATE_FILES["native"]
         if not database.is_file():
+            if self.state_validation == "required":
+                raise DataLoaderStateError(
+                    f"state_validation='required' but the native processing state database is absent: {database}"
+                )
             return None, "native state database absent"
         active = self._active_write_file(database)
         if active is not None:
-            return None, f"native state database has uncommitted writes ({active.name})"
+            raise DataLoaderStateError(
+                f"{active} holds uncommitted writes: a processing run may be in progress or did not shut down "
+                "cleanly, so the state database cannot be read consistently without writing to the data "
+                "tree. Retry once processing has finished, or pass state_validation='off' to load unverified."
+            )
         uri = f"{database.resolve().as_uri()}?immutable=1"
         try:
             with closing(sqlite3.connect(uri, uri=True)) as connection:
                 connection.row_factory = sqlite3.Row
                 rows = connection.execute(
-                    "SELECT participant_id, row_count, size_bytes FROM feature_outputs WHERE feature = ?",
+                    "SELECT participant_id, row_count, size_bytes, sha256 FROM feature_outputs WHERE feature = ?",
                     (self.feature_name,),
                 ).fetchall()
         except sqlite3.Error as exc:
-            return None, f"native state database unreadable: {exc}"
+            raise DataLoaderStateError(f"could not read feature_outputs from {database}: {exc}") from exc
         return {str(row["participant_id"]): dict(row) for row in rows}, None
 
     def _installed_policy_fingerprint(self) -> str | None:
@@ -1232,6 +1278,37 @@ class AppleHealthFeatureLoader:
         return frame, filled, inclusion_reconstructed
 
     @staticmethod
+    def _integrity_problems(path: Path, entry: Mapping[str, Any]) -> list[str]:
+        """Compare a stored file's size and SHA-256 with its state record; the hash only when sizes agree."""
+
+        size = int(path.stat().st_size)
+        recorded = int(entry["size_bytes"])
+        if size != recorded:
+            return [f"size_bytes: file {size!r} vs state {recorded!r}"]
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != str(entry["sha256"]):
+            return [f"sha256: file {digest.hexdigest()!r} vs state {str(entry['sha256'])!r}"]
+        return []
+
+    @classmethod
+    def _verify_native(cls, frame: pd.DataFrame, path: Path, entry: Mapping[str, Any]) -> None:
+        """Check a native file's integrity and row count against its ``feature_outputs`` row."""
+
+        problems = cls._integrity_problems(path, entry)
+        if int(len(frame)) != int(entry["row_count"]):
+            problems.append(f"rows: file {int(len(frame))!r} vs state {int(entry['row_count'])!r}")
+        if problems:
+            raise DataLoaderStateError(
+                f"{path} disagrees with its feature_outputs row in the native processing state database: "
+                + "; ".join(problems)
+                + ". The file may be damaged or the state database stale; its rows should not be used "
+                "until this is resolved."
+            )
+
+    @staticmethod
     def _reconcile(frame: pd.DataFrame, path: Path, entry: Mapping[str, Any]) -> bool:
         """
         Check a densely reconstructed curated file against its ``curation_outputs`` row and raise
@@ -1251,14 +1328,7 @@ class AppleHealthFeatureLoader:
         # exactly what curation wrote. It is only computed when sizes agree, since a size mismatch already
         # implies a hash mismatch. The count checks below are a separate guarantee: they prove this loader's
         # dense reconstruction agrees with the logical state the writer recorded.
-        size = int(path.stat().st_size)
-        compare("size_bytes", size, int(entry["size_bytes"]))
-        if size == int(entry["size_bytes"]):
-            digest = hashlib.sha256()
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1 << 20), b""):
-                    digest.update(chunk)
-            compare("sha256", digest.hexdigest(), str(entry["sha256"]))
+        problems.extend(AppleHealthFeatureLoader._integrity_problems(path, entry))
         compare("rows", int(len(frame)), recorded_rows)
         status = frame["curation_status"]
         compare("pass rows", int((status == "pass").sum()), int(entry["pass_rows"]))
@@ -1362,19 +1432,13 @@ class AppleHealthFeatureLoader:
         participant_ids = [self._to_participant_id(code) for code in metadata.index]
         metadata.insert(0, "participant_id", participant_ids)
         metadata["rows"] = metadata["rows"].astype("int64")
-        metadata["stored_rows"] = pd.array(
-            [stored_rows.get(pid, 0) for pid in participant_ids], dtype="int64"
+        metadata["stored_rows"] = pd.array([stored_rows.get(pid, 0) for pid in participant_ids], dtype="int64")
+        state = [pid in verified_participants for pid in participant_ids] if verified else [False] * len(participant_ids)
+        # Policy currency is a curation concept; native rows have no curation policy to compare against.
+        policy = (
+            [pid not in diverged for pid in participant_ids] if dense and verified and fingerprint_checked
+            else [pd.NA] * len(participant_ids)
         )
-        if dense and verified:
-            state = [pid in verified_participants for pid in participant_ids]
-            policy = (
-                [pid not in diverged for pid in participant_ids] if fingerprint_checked
-                else [pd.NA] * len(participant_ids)
-            )
-        else:
-            # Unverified curated loads are known not to be verified; the native phase has nothing to verify.
-            state = [False if dense else pd.NA] * len(participant_ids)
-            policy = [pd.NA] * len(participant_ids)
         metadata["state_verified"] = pd.array(state, dtype="boolean")
         metadata["policy_current"] = pd.array(policy, dtype="boolean")
         metadata["acquisition_classified_fraction"] = pd.array(
@@ -1395,7 +1459,7 @@ class AppleHealthFeatureLoader:
             registry_unit = None
             if unit_policy is not None:
                 if role is schema.ColumnRole.MEASUREMENT and column in spec.measurement_columns:
-                    registry_unit = unit_policy.raw_unit
+                    registry_unit = stored_unit(self.feature_name, column).unit
                 elif column == "canonical_value":
                     registry_unit = unit_policy.canonical_unit
             records.append({
@@ -1451,9 +1515,7 @@ class AppleHealthFeatureLoader:
             data_columns = list(dict.fromkeys(columns))
         else:
             data_columns = [
-                name
-                for name in dict.fromkeys(observed_columns or ())
-                if name not in self._data_index_names
+                name for name in dict.fromkeys(observed_columns or ()) if name not in self._data_index_names
             ]
         known = dtypes or {}
         empty = pd.DataFrame({name: pd.Series(dtype=known.get(name, "object")) for name in data_columns})

@@ -57,7 +57,7 @@ def test_curated_state_marker_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "curated"
     _minimal_native_csv(root)
     (root / CURATION_STATE_FILENAME).touch()
-    with pytest.raises(InputLayoutError, match="Milestone 2 curated root") as caught:
+    with pytest.raises(InputLayoutError, match="curated root") as caught:
         validate_native_input_root(root)
     assert NATIVE_STATE_FILENAME in str(caught.value)
 
@@ -84,7 +84,7 @@ def test_curate_rejects_curated_input_before_creating_output(tmp_path: Path) -> 
     output = tmp_path / "out"
     _minimal_native_csv(root)
     (root / CURATION_STATE_FILENAME).touch()
-    with pytest.raises(InputLayoutError, match="Milestone 2 curated root"):
+    with pytest.raises(InputLayoutError, match="curated root"):
         curate_dataset(root, output, workers=1, max_in_flight=1)
     assert not output.exists()
 
@@ -94,7 +94,7 @@ def test_audit_rejects_curated_input(tmp_path: Path) -> None:
     output = tmp_path / "audit"
     _minimal_native_csv(root)
     (root / CURATION_STATE_FILENAME).touch()
-    with pytest.raises(AuditError, match="Milestone 2 curated root"):
+    with pytest.raises(AuditError, match="curated root"):
         run_curation_audit(root, output, workers=1)
     assert not output.exists()
 
@@ -109,5 +109,5 @@ def test_cli_returns_layout_error_for_curated_input(tmp_path: Path, capsys: pyte
     ])
     captured = capsys.readouterr()
     assert result == 2
-    assert "Milestone 2 curated root" in captured.err
+    assert "curated root" in captured.err
     assert not output.exists()

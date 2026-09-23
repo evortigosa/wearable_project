@@ -33,8 +33,14 @@ from wearable_project.exceptions import (
 )
 
 
-CURATED_SAMPLE = Path(os.environ.get("WEARABLE_CURATED_SAMPLE", "/home/claude/w4/curated_apple_healthkit"))
-NATIVE_SAMPLE = Path(os.environ.get("WEARABLE_NATIVE_SAMPLE", "/home/claude/w4/cleaned_apple_healthkit"))
+CURATED_SAMPLE = Path(os.environ.get(
+    "WEARABLE_CURATED_SAMPLE",
+    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_curated_apple_healthkit"
+))
+NATIVE_SAMPLE = Path(os.environ.get(
+    "WEARABLE_NATIVE_SAMPLE",
+    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_cleaned_apple_healthkit"
+))
 needs_sample = pytest.mark.skipif(
     not CURATED_SAMPLE.is_dir() or not NATIVE_SAMPLE.is_dir(),
     reason="curated and native sample roots are required for end-to-end profile tests",
@@ -94,7 +100,6 @@ def restore_default_max_rows():
 
 
 # ============================================================ profile(): agreement with get_data
-
 @needs_sample
 def test_profile_describes_exactly_what_get_data_returns_for_every_feature_and_phase():
     """The central promise of profile(), checked across all 33 features in both phases."""
@@ -138,7 +143,6 @@ def test_profile_inclusion_matches_the_default_inclusion_subset():
 
 
 # ================================================================== profile(): content
-
 @needs_sample
 def test_profile_returns_a_report_with_summary_participants_and_text():
     profile = HeartRateLoader(root=CURATED_SAMPLE).profile()
@@ -229,7 +233,6 @@ def test_profile_never_writes(tmp_path: Path):
 
 
 # ======================================================== profile(): fallbacks and integrity
-
 @needs_sample
 def test_profile_without_state_falls_back_to_the_filesystem(tmp_path: Path):
     root = _copy_root(tmp_path, CURATED_SAMPLE, "StepCount", None)
@@ -320,7 +323,6 @@ def test_profile_on_a_missing_root_raises(tmp_path: Path):
 
 
 # ====================================================================== size guard
-
 @needs_sample
 def test_oversized_request_is_refused_before_any_csv_is_parsed(count_csv_reads):
     with pytest.raises(DataLoaderSizeError, match="would return 379,245 rows"):
@@ -425,15 +427,15 @@ def test_size_estimate_is_reported():
 
 
 # ========================================================= writer-activity guard, both journals
-
 @needs_sample
-def test_native_hot_journal_only_drops_the_advisory_estimate(tmp_path: Path):
+def test_native_hot_journal_is_refused_like_a_curated_one(tmp_path: Path):
     root = _copy_root(tmp_path, NATIVE_SAMPLE, "StepCount", NATIVE_STATE)
     (root / (NATIVE_STATE + "-journal")).write_bytes(b"\0" * 512)
-    data = StepCountLoader(phase="native", root=root).get_data()
+    with pytest.raises(DataLoaderStateError, match="uncommitted writes"):
+        StepCountLoader(phase="native", root=root).get_data()
+    data = StepCountLoader(phase="native", root=root, state_validation="off").get_data()
     assert len(data.df) == 52_247
     assert data.load_report["size_estimate"] is None
-    assert "uncommitted writes" in data.load_report["size_estimate_note"]
 
 
 @needs_sample
@@ -445,7 +447,6 @@ def test_curated_hot_rollback_journal_is_refused_like_a_wal(tmp_path: Path):
 
 
 # ============================================================ acquisition coverage in get_data
-
 @needs_sample
 def test_get_data_reports_acquisition_coverage():
     report = HeartRateLoader(root=CURATED_SAMPLE).get_data().load_report

@@ -91,16 +91,6 @@ from wearable_project.DataLoaders.StepCountLoader import StepCountLoader
 step_count = StepCountLoader().get_data().df
 ```
 
-The default processing phase is curated. The permanent HPP roots are:
-
-```text
-native:
-/net/mraid20/ifs/wisdom/segal_lab/genie/LabData/Data/10K/aws_lab_files/third-party/EV_cleaned_apple_healthkit
-
-curated:
-/net/mraid20/ifs/wisdom/segal_lab/genie/LabData/Data/10K/aws_lab_files/third-party/EV_curated_apple_healthkit
-```
-
 Choose the native representation explicitly:
 
 ```python
@@ -215,15 +205,19 @@ questions. An analyst who wants the policy default subset requests it explicitly
 df = WeightLoader().get_data(default_inclusion_only=True).df
 ```
 
-#### Verification against the curation state
+#### Verification against the state database
 
-In the curated phase, each file is checked against its row in
-`.wearable_curation_state.sqlite` before any filter is applied: its SHA-256, size,
-and row count; its `pass`, `review`, and `exclude_default` counts; its inclusion
-counts; and its acquisition-method and flag counts. The hash proves the file is
-exactly what curation wrote; the counts prove the loader's reconstruction agrees
-with the logical state the writer recorded. Any disagreement raises
-`DataLoaderStateError`, a subclass of `DataLoaderReadError`.
+Each file is checked against its row in the phase's state database before any
+filter is applied. Curated files are compared with `curation_outputs` in
+`.wearable_curation_state.sqlite` on SHA-256, size, and row count; on their
+`pass`, `review`, and `exclude_default` counts; on their inclusion counts; and on
+their acquisition-method and flag counts. Native files are compared with
+`feature_outputs` in `.wearable_state.sqlite` on SHA-256, size, and row count.
+The hash proves the file is exactly what the writer produced; the curated counts
+additionally prove the loader's dense reconstruction agrees with the logical
+state that was recorded. Any disagreement raises `DataLoaderStateError`, a
+subclass of `DataLoaderReadError`, and so does a file the state database does not
+record at all, such as a stray copy of a participant folder.
 
 ```python
 StepCountLoader(state_validation="auto")      # default: verify when the database exists
@@ -236,13 +230,13 @@ Sample trees without a state database load under `"auto"` and report
 fingerprint that differs from the installed registry, and files the database
 records but that are no longer on disk, are reported and raise a warning without
 failing the load. A database migrated from an engine that predates inclusion
-counts is recognized; those two checks are skipped and reported. The native phase
-has no curation state, so `"required"` is rejected there.
+counts is recognized; those two checks are skipped and reported.
 
 The state database is opened with SQLite's `immutable=1`, so loading never writes
 side files into the data tree and works from read-only directories. If a
-non-empty `-wal` or `-journal` file shows a curation run in progress or an
-unclean shutdown, the loader refuses to verify rather than read stale state.
+non-empty `-wal` or `-journal` file shows a curation or processing run in
+progress or an unclean shutdown, the loader refuses to verify rather than read
+stale state.
 
 #### Returned dtypes
 
@@ -274,6 +268,9 @@ dates, datetimes, numpy `datetime64` values, or strings; timezone-aware values
 are converted to UTC. Numbers are rejected, because pandas would read
 `20240101` as nanoseconds since 1970, and so are missing values; pass `None` for
 no bound.
+
+`reg_ids` and `cols` are accepted as exact aliases of `registration_codes` and
+`columns`, for the HPP spelling; passing both an alias and its long form raises.
 
 Registration codes may be strings or integers, including numpy integers and
 whole-number floats, so a column of codes can be passed directly. The `10K_`
@@ -345,6 +342,57 @@ readable state database, the limit is enforced as rows are retained instead, so
 a narrow date window over a large cohort still loads. The request's size is
 reported in `load_report["size_estimate"]`.
 
+#### Local wall-clock time
+
+Stored timestamps are UTC, and each row's `utc_offset_minutes` recovers the local
+clock that diurnal analyses need:
+
+```python
+df = SleepLoader().get_data().with_local_time().df
+df["start_date_local"].dt.hour.value_counts()   # bedtime near local midnight
+```
+
+`with_local_time()` returns a new result with `start_date_local` and
+`end_date_local` added and the UTC columns kept. The added columns are
+timezone-naive, because one pandas column cannot hold the per-row offsets that
+daylight saving time produces, and each row's offset applies to both its start
+and end. ActivitySummary stores no offset, and `datetime` is the export's UTC day
+key rather than an event time, so both are refused.
+
+#### Harmonized values
+
+`value` holds whatever unit a row was stored in, which for features such as
+Weight differs between participants. `with_harmonized_values()` adds each row's
+value in a trusted unit, without touching `value` or `canonical_value`:
+
+```python
+df = WeightLoader().get_data().with_harmonized_values().df
+df.loc[df["harmonized_unit_source"] != "unresolved", ["harmonized_value", "harmonized_unit"]]
+```
+
+`harmonized_unit_source` records which layer established the unit, row by row:
+
+```text
+curation     a curation unit verdict resolved it; the value is canonical_value
+processing   native processing converted it, such as a fraction to percent
+registry     the registry fixes a single unit, so the stored value is canonical
+unresolved   no layer established a unit; value and unit are missing
+```
+
+A curation verdict decides first, so a unit curation withheld stays unresolved
+even where a registry names one. The registry path is also governed by what the
+curation registry declares about the stored unit, in both phases: EnergyConsumed
+is labeled kcal by processing, but curation declares its stored unit unknown
+(kcal or kJ), so it is unresolved whether loaded native or curated, while its
+stored `value` and `raw_unit` stay exactly as written. The same reconciliation
+decides the `registry_unit` shown in `df_columns_metadata`, so the metadata and
+the harmonized values always agree. Features without a numeric `value` are
+refused, and so is a result whose unit verdict a projection or `columns=` list
+dropped, rather than harmonizing on weaker evidence.
+
+`load_report["derived"]` records what each helper produced, including the count
+of rows per unit source.
+
 #### Changes from 0.2.0rc5
 
 The default projection no longer returns every stored column; pass
@@ -359,7 +407,11 @@ Declared dtypes replace plain text and `object` columns. `get_data()` now
 refuses requests above `max_rows`, 25,000,000 rows by default, raising
 `DataLoaderSizeError`; pass `max_rows=None` for the previous unlimited
 behavior. `profile()`, acquisition-method coverage, and the reported request
-size are new. Values now load exactly as stored: about 3% of float values differ
+size are new, as are `with_local_time()`, `with_harmonized_values()`, and the
+`reg_ids` and `cols` aliases. Native files are now verified against the
+processing state database as curated files are against the curation state, so
+`state_validation="required"` applies to both phases and a damaged or unrecorded
+native file is refused rather than loaded. Values now load exactly as stored: about 3% of float values differ
 from earlier releases in the last digit, and Dexcom `"None"` trend arrows are no
 longer read as missing. Malformed participant codes and date bounds now raise
 instead of silently returning nothing or everything. Stored data are unchanged,

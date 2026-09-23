@@ -167,7 +167,7 @@ def test_scan_rejects_curated_output_root(tmp_path: Path) -> None:
     try:
         scan_processing_plan(input_root, output_root, workers=1, show_progress=False)
     except Exception as exc:
-        assert "Milestone 2 curated root" in str(exc)
+        assert "curated root" in str(exc)
     else:
         raise AssertionError("Expected curated output root to be rejected")
 

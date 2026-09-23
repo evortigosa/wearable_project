@@ -220,13 +220,14 @@ def test_include_by_default_is_a_plain_boolean(tmp_path: Path):
 
 
 @needs_sample
-def test_native_phase_is_never_densified():
+def test_native_phase_is_never_densified_but_is_verified():
     data = StepCountLoader(phase="native", root=NATIVE_SAMPLE).get_data(projection="full")
     for column in DENSE:
         assert column not in data.df.columns
     assert data.load_report["dense_reconstruction"] is False
     assert data.load_report["rows_reconstructed"] == {}
-    assert data.load_report["state_verified"] is None
+    assert data.load_report["state_verified"] is True
+    assert data.load_report["files_verified"] == data.load_report["files_read"]
 
 
 @needs_sample
@@ -415,9 +416,12 @@ def test_invalid_state_validation_is_rejected():
         StepCountLoader(state_validation="sometimes")
 
 
-def test_required_validation_is_rejected_for_native():
-    with pytest.raises(DataLoaderConfigurationError, match="applies only to phase='curated'"):
-        StepCountLoader(phase="native", state_validation="required")
+def test_required_validation_applies_to_native(tmp_path: Path):
+    """Native roots are verified against the processing state, so 'required' is meaningful there too."""
+    (tmp_path / "123").mkdir()
+    loader = StepCountLoader(phase="native", root=tmp_path, state_validation="required")
+    with pytest.raises(DataLoaderStateError, match="native processing state database is absent"):
+        loader.get_data()
 
 
 def test_constructor_performs_no_filesystem_access(tmp_path: Path):
@@ -511,9 +515,10 @@ def test_df_metadata_dtypes_are_stable():
 
 
 @needs_sample
-def test_df_metadata_in_the_native_phase_marks_verification_not_applicable():
+def test_df_metadata_in_the_native_phase_reports_verification():
     md = WeightLoader(phase="native", root=NATIVE_SAMPLE).get_data().df_metadata
-    assert md["state_verified"].isna().all()
+    assert md["state_verified"].all()
+    # Policy currency is a curation concept, so it stays not applicable for native rows.
     assert md["policy_current"].isna().all()
 
 

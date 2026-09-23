@@ -17,18 +17,7 @@ from wearable_project.curation.registry import (
 )
 from wearable_project.curation.models import EvidenceGrade, PolicyExecutionMode
 from wearable_project.curation.environment import environment_manifest
-
-
-EXPECTED_PROCESSING_HASHES = {
-    "__init__.py": "83af96eeb0831dc64ede0e88d26664fe5abebaa4b2fe9a83f66dea0fd618b10c",
-    "cleaners.py": "d39c0815858e66edea43f976813375ec14527942d2f615365766df5e975926c8",
-    "parser.py": "588d8f7a1836355146be6663201cac1bc8378f778f99221f171a520e603bea24",
-    "pipeline.py": "e4c4bf6a7ab16b022ef2c45e095db3deda46d0de93c4d3ddbd67deb62d42a92d",
-    "registry.py": "6182345bed1bd8fca32727c052301fbf3908955793e7011cd8860c0dab2220ef",
-    "resampling.py": "2732a7c0025cd5266115310ce88b22f686be0b7eab26e68b102da2a1556394df",
-    "tracker.py": "e94c294293547ed85b409bce27c103287f37253f12b65427f6fd59335d34dbaa",
-    "writer.py": "82fed4478741bb6c1df7babc1575ba3bd47fe25e489eb42c86e3a3fa50a0ed86",
-}
+from wearable_project.utils.release_manifest import EXPECTED_CORE_PROCESSING_MODULE_SHA256
 
 
 def test_registry_covers_exactly_the_33_full_cohort_features() -> None:
@@ -171,9 +160,9 @@ def test_milestone_one_processing_modules_are_byte_frozen() -> None:
     processing = Path(__file__).parents[1] / "wearable_project" / "processing"
     actual = {
         name: hashlib.sha256((processing / name).read_bytes()).hexdigest()
-        for name in EXPECTED_PROCESSING_HASHES
+        for name in EXPECTED_CORE_PROCESSING_MODULE_SHA256
     }
-    assert actual == EXPECTED_PROCESSING_HASHES
+    assert actual == EXPECTED_CORE_PROCESSING_MODULE_SHA256
     # RC2 adds one read-only operational utility
     assert (processing / "scan.py").is_file()
 
