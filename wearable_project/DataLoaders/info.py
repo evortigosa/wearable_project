@@ -67,6 +67,61 @@ _STATE_VALIDATION = {
     "required": "fails when the state database is absent",
     "off": "skips verification; for deliberately assembled sample trees",
 }
+_MEASUREMENT_KINDS = {
+    # measurement_kind declared by the curation registry -> (matrix label, how to read and combine the values)
+    "extensive_total": (
+        "total: sum",
+        "Each row is a total accumulated over its stored interval, not a reading at an instant. A row can hold "
+        "a fractional share of a source sample that spans more than one interval, so fractional values are "
+        "expected. Combine rows by summing them.",
+    ),
+    "intensive_value": (
+        "level: average",
+        "Each row is a level or a rate, not an amount, so a sum of rows has no meaning. Summarize over time with "
+        "averages or other statistics.",
+    ),
+    "ratio": (
+        "proportion: average",
+        "Each row is a proportion, not an amount, so a sum of rows has no meaning. Summarize over time with "
+        "averages or other statistics.",
+    ),
+    "event_amount": (
+        "event amount: sum",
+        "Each row is an amount logged for one event. Summing the events in a period gives the total logged "
+        "in that period.",
+    ),
+    "summary_statistic": (
+        "device summary",
+        "Each row is a summary the device computed over a longer window, not a raw reading. Use it as reported "
+        "rather than aggregating it like raw readings.",
+    ),
+    "multivariate_point": (
+        "reading set",
+        "Each row is one reading of several values that belong together. Keep them together, and never sum them.",
+    ),
+    "multivariate_summary": (
+        "daily summary",
+        "Each row is one summary object holding several measures; read the caveats before treating a row as a "
+        "calendar day.",
+    ),
+    "categorical_state": (
+        "state",
+        "value names a state, not a quantity. Time spent in each state comes from start_date and end_date.",
+    ),
+    "duration": (
+        "duration: union",
+        "The amount is the session's duration, end_date minus start_date. Merge overlapping sessions rather "
+        "than adding them, or shared time is counted twice.",
+    ),
+    "signal": (
+        "waveform",
+        "Each row is one recording: the waveform samples and summary values computed from them.",
+    ),
+}
+_FLOAT_NOTE = (
+    "Values are float64, exactly as stored: whole numbers appear as x.0, and some carry floating-point noise "
+    "from earlier arithmetic, such as 61.99999999999999 for 62. Round only for presentation, after any aggregation."
+)
 _WITHHELD_ROLES = [role for role in schema.ColumnRole if role not in schema.DEFAULT_ROLES]
 
 
@@ -366,6 +421,36 @@ def _harmonization(feature: str, spec: FeatureSpec) -> dict[str, Any]:
     }
 
 
+def _values(feature: str, spec: FeatureSpec, policy: dict[str, Any]) -> dict[str, Any]:
+    """How to read and combine this feature's values, from its declared measurement kind and units."""
+
+    kind = policy["semantics"]["measurement_kind"]
+    label, reading = _MEASUREMENT_KINDS.get(kind, (kind, ""))
+    numeric = [
+        column for column in spec.measurement_columns
+        if column not in schema.categorical_columns(feature) and schema.role_of(column) is not schema.ColumnRole.PAYLOAD
+    ]
+    counts = spec.unit_policy is not None and spec.unit_policy.raw_unit == "count"
+    guidance = [reading] if reading else []
+    if kind == "extensive_total" and counts:
+        guidance.append(
+            f"{feature} counts whole units, but stored rows need not be whole numbers. Sum rows first, and round "
+            "the total if whole numbers are needed: rounding each row changes the totals."
+        )
+    if numeric:
+        guidance.append(_FLOAT_NOTE)
+    return {
+        "measurement_kind": kind,
+        "aggregation": policy["resampling"]["aggregation"],
+        "combine": label,
+        "extensive_total": kind == "extensive_total",
+        "count_unit": counts,
+        "numeric_columns": numeric,
+        "dtype": "float64" if numeric else None,
+        "guidance": guidance,
+    }
+
+
 def _local_time(loader: AppleHealthFeatureLoader) -> dict[str, Any]:
     if loader.date_column == "start_date":
         return {
@@ -487,6 +572,7 @@ def _overview_report(*, native_root: Path, curated_root: Path) -> InfoReport:
         loader_cls = _loader_class(feature)
         local = _local_time(loader_cls())
         harmonized = _harmonization(feature, spec)
+        values = _values(feature, spec, get_policy(feature, allow_fallback=False).as_dict())
         feature_rows.append({
             "feature": feature,
             "loader": loader_cls.__name__,
@@ -496,7 +582,10 @@ def _overview_report(*, native_root: Path, curated_root: Path) -> InfoReport:
             "short_description": guide.short_description,
             "local_time": local["available"],
             "harmonized_values": harmonized["matrix"],
+            "values": values["combine"],
+            "extensive_total": values["extensive_total"],
         })
+    totals = [row["feature"] for row in feature_rows if row["extensive_total"]]
     max_rows = AppleHealthFeatureLoader.default_max_rows
     limit_text = "no limit" if max_rows is None else f"{max_rows:,} rows"
 
@@ -553,6 +642,17 @@ def _overview_report(*, native_root: Path, curated_root: Path) -> InfoReport:
                 "load_report['requested_participants_missing_from_root']."
             ),
             "storage": "DataLoaders are read-only and never modify native or curated roots.",
+        },
+        "values": {
+            "dtype": "float64",
+            "exactness": _FLOAT_NOTE,
+            "extensive_totals": totals,
+            "totals_guidance": (
+                "Totals are stored per interval, and a row can hold a fractional share of a source sample that spans "
+                "more than one interval, even for counts. Sum rows first, and round the total if whole numbers are "
+                "needed: rounding each row changes the totals."
+            ),
+            "never_sum": "Levels, rates and proportions are summarized with averages or other statistics, never sums.",
         },
         "result": {
             "df": "rows indexed by RegistrationCode and Date",
@@ -614,6 +714,16 @@ def _overview_report(*, native_root: Path, curated_root: Path) -> InfoReport:
         "  start_date/end_date are inclusive UTC bounds. A bare date means midnight, so end a year with",
         "  end_date='2024-12-31 23:59:59'.",
         "",
+        "Values",
+        *_wrap(_FLOAT_NOTE),
+        *_wrap(
+            f"Totals ({', '.join(totals)}) are stored per interval, and a row can hold a fractional share of a "
+            "source sample that spans more than one interval, even for counts. Sum rows first, and round the total "
+            "if whole numbers are needed: rounding each row changes the totals."
+        ),
+        *_wrap("Levels, rates and proportions, such as HeartRate, are summarized with averages or other statistics, "
+               "never sums. The matrix below says how each feature's values combine."),
+        "",
         "What a result holds",
         "  .df                   rows, indexed by RegistrationCode and Date",
         "  .df_metadata          one row per participant: row counts, date span, verification, coverage",
@@ -657,12 +767,12 @@ def _overview_report(*, native_root: Path, curated_root: Path) -> InfoReport:
         "  print(DataLoaders.info('StepCount'))",
         "  payload = DataLoaders.info('StepCount').as_dict()",
         "",
-        "Features, and what the helpers give in the curated phase",
-        f"  {'feature':24s} {'family':22s} {'local time':11s} harmonized values",
+        "Features: how their values combine, and what the helpers give in the curated phase",
+        f"  {'feature':24s} {'values':21s} {'local time':11s} harmonized values",
     ])
     for row in feature_rows:
         lines.append(
-            f"  {row['feature']:24s} {row['processing_family']:22s} "
+            f"  {row['feature']:24s} {row['values']:21s} "
             f"{'yes' if row['local_time'] else 'no':11s} {row['harmonized_values']}"
         )
     return InfoReport(kind="overview", title="Wearable DataLoaders", payload=payload, text="\n".join(lines))
@@ -695,6 +805,7 @@ def _feature_report(loader: AppleHealthFeatureLoader, *, include_evidence: bool,
     units = _units(feature, processing_spec)
     harmonized = _harmonization(feature, processing_spec)
     local = _local_time(loader)
+    values = _values(feature, processing_spec, policy_payload)
     columns = _columns(feature, processing_spec, phase)
     dtypes = _dtypes(feature, phase)
     status = _analytical_status(policy_payload, phase)
@@ -734,6 +845,7 @@ def _feature_report(loader: AppleHealthFeatureLoader, *, include_evidence: bool,
                 "does not execute curation."
             ),
         },
+        "values": values,
         "columns": columns,
         "units": units,
         "derived_helpers": {"with_local_time": local, "with_harmonized_values": harmonized},
@@ -776,6 +888,9 @@ def _feature_report(loader: AppleHealthFeatureLoader, *, include_evidence: bool,
         "What it is",
         *_wrap(guide.short_description),
         *_wrap(f"One row: {guide.one_row_means}"),
+        "",
+        "Values",
+        *[line for item in values["guidance"] for line in _wrap(item)],
         "",
         "Time",
         f"  Index: {', '.join(loader._data_index_names)}. Date is {date_text}.",
@@ -854,6 +969,8 @@ def _feature_report(loader: AppleHealthFeatureLoader, *, include_evidence: bool,
     ))
 
     lines.extend(["", "Returned dtypes"])
+    if values["dtype"]:
+        lines.extend(_wrap(f"Measurements ({', '.join(values['numeric_columns'])}): float64; see Values above."))
     lines.extend(_wrap(f"Categorical, where present: {', '.join(dtypes['categorical'])}."))
     if dtypes["categorical_value"]:
         lines.extend(_wrap("value is categorical for this feature, because it holds states rather than quantities."))
