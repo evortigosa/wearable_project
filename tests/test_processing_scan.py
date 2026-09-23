@@ -279,7 +279,8 @@ def test_scan_exposes_stored_versions_and_mismatch_only_warning(tmp_path: Path) 
     assert report.state_versions["stored_parser_version_counts"] == {"native-parser-local-test": 1}
     assert report.state_versions["stored_registry_version_counts"] == {"local-registry-test": 1}
     assert report.state_versions["version_mismatch_only_participants"] == 1
-    assert any("python -m wearable_project process" in item for item in report.warnings)
+    # A mismatch-only rebuild is flagged but deliberately not recommended until the processing version is verified.
+    assert any("Do not rebuild solely from this result" in item for item in report.warnings)
     rendered = report.as_dict(include_details=True)
     assert rendered["participant_details"][0]["stored_parser_version"] == "native-parser-local-test"
     assert "processing_environment" in rendered

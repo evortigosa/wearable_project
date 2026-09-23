@@ -131,7 +131,11 @@ def test_get_data_returns_hpp_style_multiindex_and_10k_codes(tmp_path: Path):
         "10K_123",
         "10K_456",
     }
-    assert str(df.index.get_level_values("Date").dtype) == "datetime64[ns, UTC]"
+    # The contract is a timezone-aware UTC datetime level. Its resolution follows the pandas version: nanoseconds
+    # under pandas 2, microseconds under pandas 3, which parses timestamps at microsecond resolution.
+    date_level = df.index.get_level_values("Date")
+    assert isinstance(date_level.dtype, pd.DatetimeTZDtype)
+    assert str(date_level.dtype.tz) == "UTC"
     assert len(df) == 3
     assert result.metadata["feature"] == "StepCount"
     assert result.metadata["phase"] == "curated"

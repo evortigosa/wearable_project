@@ -24,6 +24,9 @@ from wearable_project.DataLoaders.StepCountLoader import StepCountLoader
 from wearable_project.DataLoaders.WeightLoader import WeightLoader
 from wearable_project.exceptions import DataLoaderConfigurationError
 from wearable_project.processing.registry import get_feature_spec
+from wearable_project.DataLoaders._units import stored_unit  # noqa: E402
+from wearable_project.curation.registry import get_policy  # noqa: E402
+from wearable_project.processing.registry import SPECS  # noqa: E402
 
 
 CURATED_SAMPLE = Path(os.environ.get(
@@ -357,11 +360,6 @@ def test_derived_columns_chain_and_recompute_cleanly():
 
 
 # ============================================================================ unit reconciliation
-from wearable_project.DataLoaders._units import stored_unit  # noqa: E402
-from wearable_project.curation.registry import get_policy  # noqa: E402
-from wearable_project.processing.registry import SPECS  # noqa: E402
-
-
 def test_curation_withholds_energy_consumed_units_in_the_resolver():
     unit = stored_unit("EnergyConsumed", "value")
     assert unit.unit is None and unit.withheld_by_curation
@@ -433,3 +431,31 @@ def test_metadata_and_harmonizer_agree_on_the_established_unit():
     report = data.with_harmonized_values().load_report["derived"]["harmonized_values"]
     assert data.df_columns_metadata.loc["value", "registry_unit"] == report["registry_unit"] == "beats/min"
     assert report["unit_withheld_by_curation"] is False and report["unit_candidates"] == []
+
+
+# ================================================================ derived-helper regressions
+@needs_sample
+@pytest.mark.parametrize("chain", ["l,h,l", "h,l,h", "l,l", "h,h"])
+def test_metadata_stays_aligned_when_helpers_are_reapplied(chain):
+    """Recomputing a derived column keeps its place in df; its metadata row must stay in the same place."""
+    data = WeightLoader(root=CURATED_SAMPLE).get_data()
+    for step in chain.split(","):
+        data = data.with_local_time() if step == "l" else data.with_harmonized_values()
+    assert list(data.df_columns_metadata.index) == list(data.df.columns)
+    assert len(set(data.df.columns)) == len(data.df.columns)
+
+
+@needs_sample
+def test_metadata_follows_a_user_trimmed_frame():
+    data = WeightLoader(root=CURATED_SAMPLE).get_data()
+    trimmed = LoaderData(df=data.df[["value", "canonical_value", "canonical_unit", "curation_unit_status"]],
+                         df_columns_metadata=data.df_columns_metadata, load_report=data.load_report)
+    out = trimmed.with_harmonized_values()
+    assert list(out.df_columns_metadata.index) == list(out.df.columns)
+
+
+def test_harmonization_without_load_context_is_a_configuration_error():
+    with pytest.raises(DataLoaderConfigurationError, match="feature and phase"):
+        LoaderData(df=pd.DataFrame({"value": [1.0]})).with_harmonized_values()
+    with pytest.raises(DataLoaderConfigurationError):
+        LoaderData(df=pd.DataFrame({"value": [1.0]})).with_local_time()

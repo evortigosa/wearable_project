@@ -10,6 +10,7 @@ consistency tests below fail until the role table is updated.
 
 from __future__ import annotations
 import os
+import warnings
 from pathlib import Path
 import pandas as pd
 import pytest
@@ -330,11 +331,13 @@ def test_empty_projected_result_keeps_the_projected_schema():
 
 @needs_sample
 def test_empty_projected_result_concatenates_with_a_populated_one():
-    populated = StepCountLoader(root=CURATED_SAMPLE).get_data(
-        registration_codes="10K_1235738253"
-    ).df
+    populated = StepCountLoader(root=CURATED_SAMPLE).get_data(registration_codes="10K_1235738253").df
     empty = StepCountLoader(root=CURATED_SAMPLE).get_data(start_date="2099-01-01").df
-    combined = pd.concat([empty, populated])
+    # pandas 2 announces that concatenation will stop ignoring empty frames when choosing dtypes; pandas 3 made
+    # that change. This is the caller's concat, and the assertions below must hold under both behaviors.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="The behavior of DataFrame concatenation", category=FutureWarning)
+        combined = pd.concat([empty, populated])
     assert list(combined.columns) == list(populated.columns)
     assert len(combined) == len(populated)
 

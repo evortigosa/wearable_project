@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -139,13 +140,25 @@ def _projection_schema() -> Any:
     return _PROJECTION_SCHEMA
 
 
+@lru_cache(maxsize=1)
+def _parsed_utc_dtype() -> Any:
+    """
+    The dtype pandas gives timestamps parsed the way this loader parses them: nanosecond resolution under pandas 2,
+    microsecond under pandas 3. Empty results use it wherever no parsed column exists to copy, so they carry the
+    same dtype as populated results in every pandas version; an empty ``DatetimeIndex`` would otherwise default to
+    second resolution under pandas 3.
+    """
+
+    return pd.to_datetime(pd.Series(["2000-01-01T00:00:00Z"]), utc=True, errors="raise", format="mixed").dtype
+
+
 def _empty_participant_metadata() -> pd.DataFrame:
     frame = pd.DataFrame(
         {
             "participant_id": pd.Series(dtype="object"),
             "rows": pd.Series(dtype="int64"),
-            "first_date": pd.Series(pd.DatetimeIndex([], tz="UTC")),
-            "last_date": pd.Series(pd.DatetimeIndex([], tz="UTC")),
+            "first_date": pd.Series(dtype=_parsed_utc_dtype()),
+            "last_date": pd.Series(dtype=_parsed_utc_dtype()),
             "stored_rows": pd.Series(dtype="int64"),
             "state_verified": pd.Series(dtype="boolean"),
             "policy_current": pd.Series(dtype="boolean"),
@@ -1520,7 +1533,7 @@ class AppleHealthFeatureLoader:
         known = dtypes or {}
         empty = pd.DataFrame({name: pd.Series(dtype=known.get(name, "object")) for name in data_columns})
         anchor = known.get(self.date_column)
-        date_level = pd.Index([], dtype=anchor) if anchor is not None else pd.DatetimeIndex([], tz="UTC")
+        date_level = pd.Index([], dtype=anchor if anchor is not None else _parsed_utc_dtype())
         # The default text dtype of the running pandas version, so the code level matches a populated result.
         code_level = pd.Index([], dtype=pd.Series(["10K_"]).dtype)
         empty.index = pd.MultiIndex.from_arrays([code_level, date_level], names=self._data_index_names)

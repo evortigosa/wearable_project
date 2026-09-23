@@ -58,13 +58,13 @@ def _metadata_rows(frame: pd.DataFrame, descriptions: dict[str, str], registry_u
 def _with_columns(data: Any, frame: pd.DataFrame, descriptions: dict[str, str],
                   registry_units: dict[str, Any], report_key: str, report: dict[str, Any]) -> Any:
     existing = data.df_columns_metadata.drop(index=[n for n in descriptions if n in data.df_columns_metadata.index])
+    # Recomputing a column keeps its place in the frame, so the metadata is realigned to the frame's column order
+    # rather than left with the recomputed rows at the end; df_columns_metadata always describes df column by column.
+    metadata = pd.concat([existing, _metadata_rows(frame, descriptions, registry_units)])
+    metadata = metadata.reindex(pd.Index(frame.columns, name="column"))
     load_report = dict(data.load_report)
     load_report["derived"] = {**load_report.get("derived", {}), report_key: report}
-    return replace(
-        data, df=frame,
-        df_columns_metadata=pd.concat([existing, _metadata_rows(frame, descriptions, registry_units)]),
-        load_report=load_report,
-    )
+    return replace(data, df=frame, df_columns_metadata=metadata, load_report=load_report)
 
 
 def with_local_time(data: Any, columns: Sequence[str] | None = None) -> Any:
@@ -133,8 +133,12 @@ def with_harmonized_values(data: Any) -> Any:
     curation declares kcal-or-kJ, is unresolved in both phases while ``value`` and ``raw_unit`` are kept.
     """
 
-    feature = data.load_report["feature"]
-    phase = data.load_report["phase"]
+    feature = data.load_report.get("feature")
+    phase = data.load_report.get("phase")
+    if feature is None or phase is None:
+        raise DataLoaderConfigurationError(
+            "harmonized values need the feature and phase recorded by get_data(); this LoaderData carries none"
+        )
     available = set(data.load_report.get("columns_available", data.df.columns))
     if "value" not in available:
         raise DataLoaderConfigurationError(
