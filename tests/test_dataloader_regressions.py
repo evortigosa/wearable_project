@@ -150,7 +150,9 @@ def test_named_sparse_numeric_column_keeps_its_numeric_dtype(loader, column):
     """Filling absent columns per file with pd.NA made them object under pandas 3."""
     projected = loader(root=CURATED_SAMPLE).get_data(projection="full").df[column]
     named = loader(root=CURATED_SAMPLE).get_data(columns=[column]).df[column]
-    assert str(named.dtype) == str(projected.dtype) == "float64"
+    from wearable_project.curation import schema as _schema
+    # Whole-number columns are nullable integers; every other numeric column is float64.
+    assert str(named.dtype) == str(projected.dtype) == ("Int64" if column in _schema.INTEGER_COLUMNS else "float64")
     assert named.tolist() == projected.tolist() or named.isna().equals(projected.isna())
 
 

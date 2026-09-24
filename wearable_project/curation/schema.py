@@ -246,6 +246,15 @@ CATEGORICAL_COLUMNS: frozenset[str] = frozenset({
 # densely reconstructed, never missing, and returned as a plain boolean.
 NULLABLE_BOOLEAN_COLUMNS: frozenset[str] = frozenset({"was_user_entered"})
 
+# Whole-number columns: counts, codes and offsets. pandas would type them int64 in a file whose cells are all
+# filled and float64 in one with blanks, so a column's dtype would depend on which participants a call reads.
+# They are returned as pandas nullable integers (Int64) whatever the subset, and every other numeric column,
+# measurements included, as float64.
+INTEGER_COLUMNS: frozenset[str] = frozenset({
+    "utc_offset_minutes", "occurrence_count", "duplicate_count", "revision_count", "payload_index",
+    "waveform_sample_count", "vo2_max_test_type", "heart_rate_motion_context", "metadata_sync_version",
+})
+
 
 def categorical_columns(feature: str) -> frozenset[str]:
     """

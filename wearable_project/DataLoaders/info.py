@@ -488,6 +488,8 @@ def _dtypes(feature: str, phase: str) -> dict[str, Any]:
         "categorical": categorical,
         "categorical_value": "value" in categorical,
         "nullable_boolean": sorted(schema.NULLABLE_BOOLEAN_COLUMNS),
+        "nullable_integer": sorted(schema.INTEGER_COLUMNS),
+        "other_numeric": "float64",
         "boolean": ["include_by_default"] if phase == "curated" else [],
         "timestamps": "timezone-aware UTC",
     }
@@ -716,6 +718,8 @@ def _overview_report(*, native_root: Path, curated_root: Path) -> InfoReport:
         "",
         "Values",
         *_wrap(_FLOAT_NOTE),
+        *_wrap("Whole-number columns such as utc_offset_minutes are nullable integers (Int64). A column's dtype never "
+               "depends on which participants a call reads."),
         *_wrap(
             f"Totals ({', '.join(totals)}) are stored per interval, and a row can hold a fractional share of a "
             "source sample that spans more than one interval, even for counts. Sum rows first, and round the total "
@@ -977,6 +981,10 @@ def _feature_report(loader: AppleHealthFeatureLoader, *, include_evidence: bool,
     lines.extend(_wrap(
         "Nullable boolean: " + ", ".join(dtypes["nullable_boolean"])
         + ("; boolean: include_by_default" if curated else "") + ". Timestamps are timezone-aware UTC."
+    ))
+    lines.extend(_wrap(
+        f"Whole numbers, where present, as nullable integers (Int64): {', '.join(dtypes['nullable_integer'])}. "
+        "Every other numeric column is float64. A column's dtype never depends on which participants a call reads."
     ))
 
     lines.extend(["", "Scale"])

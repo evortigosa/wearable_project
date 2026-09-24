@@ -150,6 +150,25 @@ Values come back exactly as stored. Floats are parsed to the nearest double, and
 only empty cells are missing, so text such as the Dexcom trend arrow `"None"` is
 kept rather than read as a missing value.
 
+Values are `float64`. Totals such as StepCount, FlightsClimbed, distances and
+energy are stored per interval, and a row can hold a fractional share of a source
+sample that spans more than one interval, even for counts: sum rows first, and
+round the total if whole numbers are needed, because rounding each row changes the
+totals. Levels, rates and proportions such as HeartRate are summarized with
+averages or other statistics, never sums. Some values also carry floating-point
+noise from earlier arithmetic, such as `61.99999999999999` for 62, so round only
+for presentation, after any aggregation. `DataLoaders.info()` states how each
+feature's values combine.
+
+Dtypes never depend on which participants a call reads. Whole-number columns
+(counts, codes and offsets such as `utc_offset_minutes`) are pandas nullable
+integers (`Int64`), and every other numeric column is `float64`. Columns the schema
+declares categorical, such as identifiers, device names and units, are read as text
+and returned as categories, so an identifier stored as `"0012"` keeps its text.
+Columns keep the order of the stored files: the first participant's columns, then
+each column another participant adds, merged in participant-id order whatever
+order the participants were requested in.
+
 A call's columns are fixed by the files it reads. Date bounds and
 `default_inclusion_only` never change them, and an empty result carries the same
 columns and dtypes as a populated one. Because each participant's file stores
@@ -859,9 +878,11 @@ condition until the processing environments are reconciled.
 
 ## DataLoader introspection and feature help
 
-The DataLoader package exposes read-only documentation derived from the same
-processing registry, curation registry, and user-facing feature guidance used
-by the pipeline.  It does not inspect or modify the data roots.
+`DataLoaders.info()` documents the loaders from the same executable contracts they
+run on: the processing registry, the curation registry and its guidance, the column
+roles and projections, and the stored-unit reconciliation. It never inspects or
+modifies the data roots. `profile()` is its empirical counterpart: `info()` states
+the contract, `profile()` reports what a particular root holds.
 
 ```python
 from wearable_project import DataLoaders
@@ -874,7 +895,8 @@ structured = report.as_dict()
 ```
 
 Every feature loader also exposes the same feature report with its configured
-phase and root reflected in the output:
+phase and root reflected in the output, including in its usage examples, which run
+as printed:
 
 ```python
 from wearable_project.DataLoaders.WeightLoader import WeightLoader
@@ -884,14 +906,25 @@ print(loader.info())
 policy_and_usage = loader.info().as_dict()
 ```
 
-The overview documents phase semantics, default roots, HPP index conventions,
-participant/date/column filtering, curated default-inclusion behavior, sparse
-derived columns, read-only guarantees, and memory/scalability considerations.
-A feature report additionally includes the Milestone-1 feature family/unit and
-deduplication contract, the Milestone-2 curation policy and future resampling
-declaration, evidence-linked feature guidance, caveats, and runnable usage
-examples.  Resampling declarations are informative only: DataLoaders never
-resample, interpolate, impute, or silently aggregate the stored rows.
+The overview summarizes the loading contract (projections, filters, the result's
+tables and helpers, phases, verification, and the size limit) and ends with a
+capability matrix showing whether local time is available and
+what harmonized values the curated phase yields.
+
+A feature report explains what one row is; its time anchor and whether local
+wall-clock time can be recovered; which columns the projections return; what each
+registry declares about its units, the unit the loaders actually use, and what
+`with_harmonized_values()` yields in each phase; its curation policy, including the
+policy's own rationale, fallback and open audits; how files are verified; the
+returned dtypes; the size limit; caveats; and runnable usage examples. Reports are
+phase-aware: a native-phase report says that curation has not run rather than
+presenting curated behavior. Resampling declarations are informative only:
+DataLoaders never resample, interpolate, impute, or silently aggregate the stored
+rows.
+
+`tests/test_dataloader_info.py` holds these statements against the loaders'
+behavior on the representative samples, so the documentation cannot drift from
+what the code does.
 
 ## License
 

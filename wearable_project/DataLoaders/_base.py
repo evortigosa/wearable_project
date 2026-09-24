@@ -455,6 +455,7 @@ class AppleHealthFeatureLoader:
         # The same, restricted to what the projection admits; this is the schema an empty projected
         # result must carry so it concatenates with a populated one.
         projected_columns: dict[str, None] = {}
+        stored_columns: dict[str, list[str]] = {}
         # Each column's dtype after timestamp parsing, from the first file that carries it. Used only to type
         # an empty result like a populated one, so concatenation does not degrade datetimes or numbers to text.
         column_dtypes: dict[str, list[Any]] = {}
@@ -554,12 +555,8 @@ class AppleHealthFeatureLoader:
             # Whether a column exists is a property of the file, not of the rows that survive the
             # filters below. Record it here so an empty date window cannot be mistaken for an absent
             # column, and so the schema is known even when nothing survives.
-            observed_columns.update(dict.fromkeys(frame.columns))
+            stored_columns[participant_id] = list(frame.columns)
             undeclared_columns.update(dict.fromkeys(schema.undeclared_columns(frame.columns)))
-            if projecting:
-                projected_columns.update(
-                    dict.fromkeys(schema.columns_for_projection(projection, frame.columns))
-                )
             if requested_columns is not None:
                 requested_columns_seen.update(name for name in requested_columns if name in frame.columns)
 
@@ -618,6 +615,14 @@ class AppleHealthFeatureLoader:
             frame.insert(1, "Date", date_values.loc[frame.index])
             frames.append(frame)
             loaded_participants.append(participant_id)
+
+        # Column order is a property of the stored files, not of the order participants were requested in:
+        # each file's columns are merged in participant-id order, so [a, b] and [b, a] return the same columns.
+        for participant_id in sorted(stored_columns):
+            names = stored_columns[participant_id]
+            observed_columns.update(dict.fromkeys(names))
+            if projecting:
+                projected_columns.update(dict.fromkeys(schema.columns_for_projection(projection, names)))
 
         if files_read and requested_columns is not None:
             unknown = [
@@ -776,14 +781,13 @@ class AppleHealthFeatureLoader:
         reg_ids: str | int | Iterable[str | int] | None = None,
     ) -> ProfileReport:
         """
-        Describe what this root holds for the feature, without parsing any feature CSV.
-        Figures come from the phase's state database (``curation_outputs`` for curated roots,
-        ``feature_outputs`` for native roots) and one ``stat`` per file. They cover the files ``get_data``
-        would read for the same participants, so ``profile().summary["rows"]`` equals the row count of an
-        unfiltered ``get_data`` call. Curated profiles add curation status, default inclusion,
-        acquisition-method coverage, unit-resolution coverage, and policy currency. Integrity checks compare
-        each file's presence and size with its state record. Without a readable state database the profile
-        falls back to the filesystem and reports bytes but not rows. Nothing is written.
+        Describe what this root holds for the feature, without parsing any feature CSV. Figures come from the
+        phase's state database (``curation_outputs`` for curated roots, ``feature_outputs`` for native roots)
+        and one ``stat`` per file. They cover the files ``get_data`` would read for the same participants, so
+        ``profile().summary["rows"]`` equals the row count of an unfiltered ``get_data`` call. Curated profiles
+        add curation status, default inclusion, acquisition-method coverage, unit-resolution coverage, and policy
+        currency. Integrity checks compare each file's presence and size with its state record. Without a readable
+        state database the profile falls back to the filesystem and reports bytes but not rows. Nothing is written.
         """
 
         registration_codes = self._resolve_alias("registration_codes", registration_codes, "reg_ids", reg_ids)
@@ -1131,12 +1135,18 @@ class AppleHealthFeatureLoader:
         ``float_precision="round_trip"`` parses each float to the nearest double, as Python's ``float()`` does;
         pandas' default parser misses by one unit in the last place on roughly 3% of stored float values.
         Only empty cells are missing: pandas' default NA tokens would otherwise turn legitimate text such as
-        the Dexcom trend arrow ``"None"`` into missing data.
+        the Dexcom trend arrow ``"None"`` into missing data. Columns the schema declares categorical are
+        identifiers and labels, so they are read as text: a source id such as ``"0012"`` or a version such as
+        ``"1.10"`` keeps its stored text, and a column whose cells are all empty is not typed as a number.
         """
 
+        from wearable_project.curation import schema
+
+        text_columns = {column: str for column in schema.categorical_columns(self.feature_name)}
         try:
             return pd.read_csv(
                 path, low_memory=False, keep_default_na=False, na_values=[""], float_precision="round_trip",
+                dtype=text_columns,
             )
         except Exception as exc:
             raise DataLoaderReadError(f"failed reading {path}: {exc}") from exc
@@ -1164,11 +1174,12 @@ class AppleHealthFeatureLoader:
     def _as_boolean(series: pd.Series) -> pd.Series:
         if pd.api.types.is_bool_dtype(series):
             return series.fillna(False)
+        # Each cell is judged on its own, so a column mixing "True" with "0" reads both correctly.
         numeric = pd.to_numeric(series, errors="coerce")
-        if numeric.notna().any():
-            return numeric.fillna(0).astype(int).astype(bool)
         lowered = series.astype("string").str.strip().str.lower()
-        return lowered.isin({"1", "true", "t", "yes", "y"})
+        truthy = lowered.isin({"1", "true", "t", "yes", "y"}).fillna(False).to_numpy(dtype=bool)
+        nonzero = numeric.fillna(0).to_numpy(dtype=float) != 0
+        return pd.Series(truthy | nonzero, index=series.index)
 
     def _open_manifest(self, root: Path) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
         """
@@ -1263,11 +1274,10 @@ class AppleHealthFeatureLoader:
     @classmethod
     def _densify(cls, frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], bool]:
         """
-        Restore the curated logical schema from sparse storage.
-        Absent columns take their documented default for every row; for ``acquisition_method`` and
-        ``curation_flags`` blank cells do too. ``include_by_default`` is returned as a plain boolean. Row
-        count and every other column are unchanged. Returns the frame, per-column counts of reconstructed
-        rows, and whether ``include_by_default`` was absent from the stored file.
+        Restore the curated logical schema from sparse storage. Absent columns take their documented default for
+        every row; for ``acquisition_method`` and ``curation_flags`` blank cells do too. ``include_by_default``
+        is returned as a plain boolean. Row count and every other column are unchanged. Returns the frame,
+        per-column counts of reconstructed rows, and whether ``include_by_default`` was absent from the stored file.
         """
 
         filled: dict[str, int] = {}
@@ -1391,13 +1401,34 @@ class AppleHealthFeatureLoader:
             values = frame[column]
             if column in categorical and (
                 pd.api.types.is_object_dtype(values) or pd.api.types.is_string_dtype(values)
+                or bool(values.isna().all())
             ):
                 frame[column] = values.astype("category")
             elif column in schema.NULLABLE_BOOLEAN_COLUMNS:
                 converted = self._as_nullable_boolean(values)
                 if converted is not None:
                     frame[column] = converted
+            elif column in schema.INTEGER_COLUMNS:
+                frame[column] = self._as_nullable_integer(values)
+            elif pd.api.types.is_numeric_dtype(values) and not pd.api.types.is_bool_dtype(values):
+                frame[column] = values.astype("float64")
         return frame
+
+    @staticmethod
+    def _as_nullable_integer(values: pd.Series) -> pd.Series:
+        """
+        Return a whole-number column as pandas nullable integers, missing values as NA. A column holding a
+        non-integral number is returned as float64 instead, so no stored value is ever altered.
+        """
+
+        if values.isna().all():
+            return pd.Series(pd.array([pd.NA] * len(values), dtype="Int64"), index=values.index)
+        if not pd.api.types.is_numeric_dtype(values):
+            return values
+        try:
+            return values.astype("Int64")
+        except (TypeError, ValueError):
+            return values.astype("float64")
 
     @staticmethod
     def _as_nullable_boolean(values: pd.Series) -> pd.Series | None:
