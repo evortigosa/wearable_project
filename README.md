@@ -169,6 +169,22 @@ Columns keep the order of the stored files: the first participant's columns, the
 each column another participant adds, merged in participant-id order whatever
 order the participants were requested in.
 
+Files are read exactly or not at all. A file is refused, with a `DataLoaderReadError`
+naming the file and, where there is one, the row and value, when reading it would
+change what it says: a row with more fields than the header (pandas would shift
+every value into the wrong column), a header naming a column twice, text in a
+numeric column, an unrecognized true/false flag, or a row without its date. On a
+file that could not be verified against the state database, a row with fewer fields
+than the header is refused too; a verified file is byte-identical to what the
+pipeline wrote, so it skips that pass. A broken link or a directory in place of a
+feature file is refused rather than treated as missing data. What a call could not
+deliver is reported: `load_report["requested_participants_missing_from_root"]` lists
+requested participants without a folder, `load_report["requested_participants_without_file"]`
+those whose folder holds no file for the feature, and
+`load_report["manifest_files_missing"]`, together with a warning, files the state
+database records but the disk no longer holds. Timestamps written without an offset
+are read as UTC, and a blank inclusion flag means the row is not included by default.
+
 A call's columns are fixed by the files it reads. Date bounds and
 `default_inclusion_only` never change them, and an empty result carries the same
 columns and dtypes as a populated one. Because each participant's file stores
@@ -705,6 +721,10 @@ python -m pip install --upgrade pip
 python -m pip install ./wearable_project-0.2.0rc5-py3-none-any.whl
 ```
 
+The package requires Python 3.10 or newer and pandas 2.0 or newer. The DataLoaders
+are tested on Python 3.10 with pandas 2.0, and on Python 3.12 with pandas 2.1, 2.2
+and 3.0.
+
 Verify outside a source checkout:
 
 ```bash
@@ -875,6 +895,28 @@ When source signatures are unchanged, committed outputs are usable, and the only
 rebuild reason is a stored version mismatch, the scan emits a dedicated warning. It
 does not suppress the rebuild automatically: a version mismatch remains a real safety
 condition until the processing environments are reconciled.
+
+## Cohort acceptance check
+
+The DataLoader test suites run on a representative sample. Before announcing a new
+cohort release, check the real roots for what only the full cohort can show:
+
+```bash
+python -m wearable_project.utils.cohort_acceptance --participants 50 --seed 1 --out ~/acceptance
+```
+
+It first profiles every feature in both phases, reading only the state databases,
+so the whole cohort is covered in minutes: unrecorded files and size mismatches
+fail, recorded files missing from disk are reported, and the two phases must agree
+on each participant's rows. It then loads every feature in both phases for a seeded
+random set of participants with `state_validation="required"`, checking that dtypes
+are identical whether one participant or the set is loaded and that both helpers
+work where they apply. Columns the representative sample never showed, and
+implausible values, are reported as warnings. The roots default to the permanent HPP
+roots; `--native` and `--curated` point elsewhere, `--features` limits the run, and
+`--profile-only` skips the loads. It writes `cohort_acceptance.json` and
+`cohort_acceptance.txt` to `--out`, never inside a data root, and exits with 0 when
+nothing failed, 1 when a check failed, and 2 for invalid arguments.
 
 ## DataLoader introspection and feature help
 

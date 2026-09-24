@@ -14,9 +14,11 @@ from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
+import csv
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import warnings
 import numpy as np
@@ -150,6 +152,17 @@ def _parsed_utc_dtype() -> Any:
     """
 
     return pd.to_datetime(pd.Series(["2000-01-01T00:00:00Z"]), utc=True, errors="raise", format="mixed").dtype
+
+
+# Text a flag column may hold, compared case-insensitively after trimming.
+_BOOLEAN_TOKENS = frozenset({"1", "0", "1.0", "0.0", "true", "false", "t", "f", "yes", "no", "y", "n"})
+
+
+def _mangled_duplicate(name: Any, columns: Any) -> str | None:
+    """The original name when pandas renamed a repeated header, as it does to ``value.1``."""
+
+    match = re.fullmatch(r"(.+)\.(\d+)", str(name))
+    return match.group(1) if match and match.group(1) in {str(c) for c in columns} else None
 
 
 def _empty_participant_metadata() -> pd.DataFrame:
@@ -502,8 +515,14 @@ class AppleHealthFeatureLoader:
         for participant_id in participant_ids:
             path = root / participant_id / self.filename
             if not path.is_file():
+                if path.is_symlink() or path.exists():
+                    raise DataLoaderReadError(
+                        f"{path} exists but is not a readable file (a broken link or a directory), so this "
+                        "participant's data cannot be read"
+                    )
                 continue
             frame = self._read_feature_file(path)
+            stored_width = len(frame.columns)
             files_read += 1
             read_participants.append(participant_id)
             stored_rows[participant_id] = int(len(frame))
@@ -513,6 +532,7 @@ class AppleHealthFeatureLoader:
                     f"{path} does not contain required date anchor column "
                     f"{self.date_column!r} for {self.feature_name}"
                 )
+            self._check_content(frame, path)
 
             # Dense reconstruction and reconciliation both act on the complete stored file, before any date
             # or inclusion filter, because the state database describes whole files. Checking a filtered
@@ -552,6 +572,9 @@ class AppleHealthFeatureLoader:
                 self._verify_native(frame, path, entry)
                 verified_participants.add(participant_id)
 
+            if participant_id not in verified_participants:
+                self._check_row_widths(path, stored_width)
+
             # Whether a column exists is a property of the file, not of the rows that survive the
             # filters below. Record it here so an empty date window cannot be mistaken for an absent
             # column, and so the schema is known even when nothing survives.
@@ -561,6 +584,12 @@ class AppleHealthFeatureLoader:
                 requested_columns_seen.update(name for name in requested_columns if name in frame.columns)
 
             frame = self._parse_temporal_columns(frame, path)
+            absent = frame[self.date_column].isna()
+            if bool(absent.any()):
+                raise DataLoaderReadError(
+                    f"{path}: data row {int(absent[absent].index[0]) + 1} has no {self.date_column}; every row "
+                    "needs its date anchor to be placed on the Date index"
+                )
             files_parsed += 1
             for column, dtype in frame.dtypes.items():
                 column_dtypes.setdefault(column, []).append(dtype)
@@ -684,6 +713,10 @@ class AppleHealthFeatureLoader:
         if manifest is not None:
             in_scope = set(manifest) if registration_codes is None else set(manifest) & set(participant_ids)
             manifest_files_missing = sorted(in_scope - set(read_participants))
+        requested_without_file = (
+            sorted(set(participant_ids) - set(read_participants) - set(manifest_files_missing) - set(missing_requested))
+            if registration_codes is not None else []
+        )
 
         declared_withheld = (
             sorted(set(observed_columns) - set(projected_columns) - set(undeclared_columns))
@@ -699,6 +732,7 @@ class AppleHealthFeatureLoader:
             "participants_loaded": len(set(loaded_participants)),
             "participant_ids_loaded": sorted(set(loaded_participants)),
             "requested_participants_missing_from_root": missing_requested,
+            "requested_participants_without_file": requested_without_file,
             "rows": int(len(combined)),
             "default_inclusion_only": bool(default_inclusion_only),
             "root_override": self.uses_root_override,
@@ -743,7 +777,8 @@ class AppleHealthFeatureLoader:
             )
         if manifest_files_missing:
             warnings.warn(
-                f"The curation state database records {len(manifest_files_missing)} {self.feature_name} "
+                f"The {'curation' if self.phase == 'curated' else 'native processing'} state database records "
+                f"{len(manifest_files_missing)} {self.feature_name} "
                 "file(s) that are no longer on disk; the returned rows are verified but incomplete relative "
                 "to the manifest. See load_report['manifest_files_missing'].",
                 UserWarning, stacklevel=2,
@@ -1046,7 +1081,10 @@ class AppleHealthFeatureLoader:
         if registration_codes is None:
             ids = sorted(
                 path.name for path in root.iterdir()
-                if path.is_dir() and not path.name.startswith(".") and (path / self.filename).is_file()
+                # Any entry under the feature's name counts, so that a broken link or a directory is refused
+                # when read rather than silently treated as a participant without data.
+                if path.is_dir() and not path.name.startswith(".")
+                and ((path / self.filename).is_symlink() or (path / self.filename).exists())
             )
             return ids, []
 
@@ -1144,19 +1182,100 @@ class AppleHealthFeatureLoader:
 
         text_columns = {column: str for column in schema.categorical_columns(self.feature_name)}
         try:
-            return pd.read_csv(
+            frame = pd.read_csv(
                 path, low_memory=False, keep_default_na=False, na_values=[""], float_precision="round_trip",
                 dtype=text_columns,
             )
         except Exception as exc:
             raise DataLoaderReadError(f"failed reading {path}: {exc}") from exc
+        # When every row has one field more than the header, pandas quietly makes the first column the index,
+        # shifting every value into the wrong column; and it renames a repeated header to "name.1". Either
+        # would change what the file says, so the file is refused instead.
+        if not isinstance(frame.index, pd.RangeIndex):
+            raise DataLoaderReadError(
+                f"{path} has rows with more fields than its header; reading it would shift values into the "
+                "wrong columns, so it is refused"
+            )
+        repeated = sorted({base for name in frame.columns if (base := _mangled_duplicate(name, frame.columns))})
+        if repeated:
+            raise DataLoaderReadError(
+                f"{path} names {', '.join(map(repr, repeated))} more than once in its header, so it is refused"
+            )
+        return frame
 
-    def _read_date_anchor(self, path: Path) -> pd.Series:
-        try:
-            anchor = pd.read_csv(path, usecols=[self.date_column])[self.date_column]
-            return pd.to_datetime(anchor, utc=True, errors="raise", format="mixed")
-        except Exception as exc:
-            raise DataLoaderReadError(f"failed reading date anchor {self.date_column!r} from {path}: {exc}") from exc
+    def _numeric_columns(self) -> set[str]:
+        """Columns that hold numbers: the feature's numeric measurements, canonical values, whole-number columns."""
+
+        from wearable_project.curation import schema
+        from wearable_project.processing.registry import get_feature_spec
+
+        categorical = schema.categorical_columns(self.feature_name)
+        measurements = {
+            column for column in get_feature_spec(self.feature_name).measurement_columns
+            if column not in categorical and schema.role_of(column) is not schema.ColumnRole.PAYLOAD
+        }
+        return measurements | {"canonical_value"} | set(schema.INTEGER_COLUMNS)
+
+    def _check_content(self, frame: pd.DataFrame, path: Path) -> None:
+        """
+        Refuse content pandas would otherwise alter without a word: one non-numeric cell turns a whole numeric
+        column into text, and an unrecognized flag would be read as False. The pipeline writes neither, so on a
+        verified file these checks cannot fail; they protect unverified trees and expose pipeline defects. They
+        only examine columns that did not already parse cleanly, so clean files cost nothing.
+        """
+
+        from wearable_project.curation import schema
+
+        for column in sorted(self._numeric_columns() & set(frame.columns)):
+            values = frame[column]
+            if pd.api.types.is_numeric_dtype(values) and not pd.api.types.is_bool_dtype(values):
+                continue
+            present = values.notna()
+            if pd.api.types.is_bool_dtype(values):
+                bad = present
+            else:
+                bad = present & pd.to_numeric(values.where(present), errors="coerce").isna()
+            if bool(bad.any()):
+                row = int(bad[bad].index[0])
+                raise DataLoaderReadError(
+                    f"{path}: column {column!r} must hold numbers, but data row {row + 1} holds "
+                    f"{values.loc[row]!r}; the file is refused rather than read with the column turned to text"
+                )
+        for column in sorted(({"include_by_default"} | set(schema.NULLABLE_BOOLEAN_COLUMNS)) & set(frame.columns)):
+            values = frame[column]
+            if pd.api.types.is_bool_dtype(values):
+                continue
+            present = values.notna()
+            if pd.api.types.is_numeric_dtype(values):
+                bad = present & ~values.isin([0, 1])
+            else:
+                tokens = values.astype("string").str.strip().str.lower()
+                bad = present & ~tokens.isin(_BOOLEAN_TOKENS).fillna(False).astype(bool)
+            if bool(bad.any()):
+                row = int(bad[bad].index[0])
+                raise DataLoaderReadError(
+                    f"{path}: column {column!r} must hold true/false flags, but data row {row + 1} holds "
+                    f"{values.loc[row]!r}; the file is refused rather than read with that flag guessed"
+                )
+
+    @staticmethod
+    def _check_row_widths(path: Path, width: int) -> None:
+        """
+        On a file that could not be verified, confirm that every row has as many fields as the header. pandas
+        fills a short row's missing fields with NaN without a word, so a truncated or hand-edited file would
+        otherwise load with values silently missing. A verified file is byte-identical to what the pipeline
+        wrote, so it needs no such pass.
+        """
+
+        with open(path, newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle)
+            next(reader, None)
+            for number, record in enumerate(reader, start=1):
+                if record and len(record) != width:
+                    raise DataLoaderReadError(
+                        f"{path}: data row {number} has {len(record)} field(s) where the header has {width}; "
+                        "the file is refused rather than read with values missing or misplaced"
+                    )
 
     @staticmethod
     def _parse_temporal_columns(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
@@ -1165,9 +1284,16 @@ class AppleHealthFeatureLoader:
             if column not in frame.columns:
                 continue
             try:
-                frame[column] = pd.to_datetime(frame[column], utc=True, errors="raise", format="mixed")
+                parsed = pd.to_datetime(frame[column], utc=True, errors="raise", format="mixed")
             except Exception as exc:
-                raise DataLoaderReadError(f"failed parsing timestamp column {column!r} in {path}: {exc}") from exc
+                raise DataLoaderReadError(
+                    f"failed parsing timestamp column {column!r} in {path}: {exc}"
+                ) from exc
+            # An empty or all-blank column has no values to infer a resolution from; give it the one the
+            # parser gives stored timestamps, so a header-only file is typed like any other.
+            if bool(parsed.isna().all()) and parsed.dtype != _parsed_utc_dtype():
+                parsed = parsed.astype(_parsed_utc_dtype())
+            frame[column] = parsed
         return frame
 
     @staticmethod
@@ -1397,8 +1523,14 @@ class AppleHealthFeatureLoader:
         """Apply the dtypes declared in ``curation.schema``; values are unchanged."""
 
         categorical = schema.categorical_columns(self.feature_name)
+        numeric = self._numeric_columns()
         for column in frame.columns:
             values = frame[column]
+            if column in numeric and (pd.api.types.is_object_dtype(values) or pd.api.types.is_string_dtype(values)):
+                # Only an empty file or an absent column leaves a numeric column untyped: any text was refused
+                # when its file was read, so this conversion changes no value.
+                values = pd.to_numeric(values)
+                frame[column] = values
             if column in categorical and (
                 pd.api.types.is_object_dtype(values) or pd.api.types.is_string_dtype(values)
                 or bool(values.isna().all())

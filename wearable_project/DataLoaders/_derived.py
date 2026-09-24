@@ -85,12 +85,16 @@ def with_local_time(data: Any, columns: Sequence[str] | None = None) -> Any:
         raise DataLoaderConfigurationError(
             f"{feature} stores no {OFFSET_COLUMN}, so local time cannot be recovered"
         )
-    _require(data, [OFFSET_COLUMN], "local time")
     requested = list(columns) if columns is not None else [c for c in LOCAL_DEFAULT_COLUMNS if c in data.df.columns]
     if isinstance(columns, str):
         requested = [columns]
     if not requested:
-        raise DataLoaderConfigurationError("local time needs start_date or end_date in the result")
+        missing = "start_date or end_date" + (f", and {OFFSET_COLUMN}" if OFFSET_COLUMN not in data.df.columns else "")
+        raise DataLoaderConfigurationError(
+            f"local time needs {missing}, which this result omits; reload with the default projection, or add "
+            "them to columns="
+        )
+    _require(data, [OFFSET_COLUMN], "local time")
     for name in requested:
         if name == "datetime":
             raise DataLoaderConfigurationError(
