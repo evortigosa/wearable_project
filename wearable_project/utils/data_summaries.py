@@ -23,14 +23,11 @@ participant at a time, so memory stays bounded at cohort scale.
 
 
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
-
 import numpy as np
 import pandas as pd
-
 from wearable_project.exceptions import DataLoaderConfigurationError
 from wearable_project.utils import data_statistics as ds
 
@@ -45,6 +42,14 @@ class ValidDayRule:
     min_records: int = 1
     min_hours_with_data: int | None = None
     min_completeness: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.min_records < 0:
+            raise DataLoaderConfigurationError("min_records cannot be negative")
+        if self.min_hours_with_data is not None and not 0 <= self.min_hours_with_data <= 24:
+            raise DataLoaderConfigurationError("min_hours_with_data must be between 0 and 24")
+        if self.min_completeness is not None and not 0 <= self.min_completeness <= 1:
+            raise DataLoaderConfigurationError("min_completeness must be between 0 and 1")
 
     def describe(self) -> str:
         parts = [f"records >= {self.min_records}"]
@@ -219,7 +224,7 @@ class Summaries:
 
 
 def cohort_table(participant_metrics: pd.DataFrame, adherence: pd.DataFrame) -> pd.DataFrame:
-    """Table 1: per feature and metric, the distribution across participants of their medians over valid days."""
+    """Table: per feature and metric, the distribution across participants of their medians over valid days."""
 
     rows = []
 
@@ -258,6 +263,14 @@ def retention(adherence: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["feature", "days_since_first_valid", "participants", "fraction"])
 
 
+def _check_rules(rules: dict[str, ValidDayRule] | None) -> None:
+    """A rule for a feature that does not exist would silently never apply, so it is refused."""
+
+    unknown = sorted(set(rules or {}) - set(ds.available_features()))
+    if unknown:
+        raise DataLoaderConfigurationError(f"rules name unknown feature(s): {', '.join(unknown)}")
+
+
 def summarize(source: "ds.DailyStatistics | str | Path", *, rules: dict[str, ValidDayRule] | None = None,
               features: Iterable[str] | None = None, out: str | Path | None = None,
               chunksize: int = 200_000) -> Summaries:
@@ -284,6 +297,7 @@ def summarize(source: "ds.DailyStatistics | str | Path", *, rules: dict[str, Val
             return ds.iter_daily(directory, feature, chunksize=chunksize)
 
     chosen = [f for f in available if features is None or f in set(features)]
+    _check_rules(rules)
     chosen_rules = {f: (rules or {}).get(f, DEFAULT_RULES.get(f, DEFAULT_RULE)) for f in chosen}
     cadence = {(r["feature"], r["RegistrationCode"]): r for r in cadence_table.to_dict("records")}
     metric_rows, adherence_rows = [], []
@@ -309,7 +323,7 @@ def summarize(source: "ds.DailyStatistics | str | Path", *, rules: dict[str, Val
     return result
 
 
-# ------------------------------------------------------------------------------------ wave 3: context
+# ------------------------------------------------------------------------------------ context
 # Friday and Saturday (Monday = 0): the Israeli weekend, the HPP cohort's, where the working week runs Sunday to
 # Thursday. Pass weekend_days=(5, 6) for a Saturday-Sunday weekend.
 WEEKEND_DAYS = (4, 5)
@@ -391,6 +405,9 @@ def temporal_patterns(source, *, rules: dict[str, ValidDayRule] | None = None, f
     month, over valid days only; then, across participants, the median and interquartile range of those medians.
     """
 
+    if not weekend_days or any(d not in range(7) for d in weekend_days):
+        raise DataLoaderConfigurationError("weekend_days must be weekday numbers from 0 (Monday) to 6 (Sunday)")
+    _check_rules(rules)
     src = _Source(source, chunksize)
     cadence = {(r["feature"], r["RegistrationCode"]): r for r in src.table("participant_feature").to_dict("records")}
     chosen = [f for f in src.features if features is None or f in set(features)]
@@ -474,7 +491,7 @@ def time_zones(source) -> pd.DataFrame:
         code = str(days["RegistrationCode"].iloc[0])
         per_day = {}
         for day, text in zip(days["local_date"], days["utc_offsets"]):
-            offsets = {int(x) for x in str(text).split(";") if x not in ("", "nan", "None")}
+            offsets = {int(float(x)) for x in str(text).split(";") if x not in ("", "nan", "None")}
             if offsets:
                 per_day[day] = offsets
         if not per_day:
@@ -509,7 +526,7 @@ def time_zones(source) -> pd.DataFrame:
 def day_overlap(source) -> pd.DataFrame:
     """
     For every pair of features, the participant-days holding both, those holding either, and their ratio (the
-    Jaccard index): how often two modalities can be analysed on the same day. The diagonal gives each feature's days.
+    Jaccard index): how often two modalities can be analyzed on the same day. The diagonal gives each feature's days.
     """
 
     single: dict[str, int] = {}
@@ -536,7 +553,12 @@ def day_overlap(source) -> pd.DataFrame:
 def days_with(source, features: Iterable[str]) -> pd.DataFrame:
     """Per participant, the days on which every one of ``features`` has data, with the first and last such day."""
 
-    wanted = set(features)
+    wanted = {features} if isinstance(features, str) else set(features)
+    if not wanted:
+        raise DataLoaderConfigurationError("days_with needs at least one feature")
+    unknown = sorted(wanted - set(ds.available_features()))
+    if unknown:
+        raise DataLoaderConfigurationError(f"unknown feature(s): {', '.join(unknown)}")
     rows = []
     for days in _Source(source).grouped("participant_days"):
         chosen = [d for d, text in zip(days["local_date"], days["features"]) if wanted <= set(str(text).split(";"))]

@@ -113,6 +113,8 @@ def _features(features: Iterable[str] | None) -> tuple[str, ...]:
     unknown = sorted(set(chosen) - set(known))
     if unknown:
         raise DataLoaderConfigurationError(f"unknown feature(s): {', '.join(unknown)}")
+    if not chosen:
+        raise DataLoaderConfigurationError("no features chosen; pass None for every feature")
     return tuple(f for f in known if f in set(chosen))
 
 
@@ -283,20 +285,42 @@ def _pieces(start: pd.Series, end: pd.Series, unit: str = "D") -> pd.DataFrame:
     return pd.DataFrame({"row": source, "day": day, "start": piece_start, "end": piece_end, "share": share})
 
 
-def _union_minutes(pieces: pd.DataFrame, keys: list[str]) -> pd.Series:
-    """Minutes covered by the union of the pieces' intervals, per group: overlapping time is counted once."""
+def _union_spans(pieces: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """The union of the pieces' intervals per group, as disjoint spans: overlapping or touching intervals merge."""
 
     frame = pieces[pieces["end"] > pieces["start"]].sort_values(keys + ["start"])
     if frame.empty:
-        return pd.Series(dtype="float64")
+        return pd.DataFrame(columns=[*keys, "start", "end"])
     running = frame.groupby(keys, sort=False)["end"].cummax()
     previous = running.groupby([frame[k] for k in keys], sort=False).shift()
     new_segment = previous.isna() | (frame["start"] > previous)
     segment = new_segment.cumsum()
     spans = frame.assign(segment=segment.to_numpy(), running=running.to_numpy()).groupby(
         keys + ["segment"], sort=False).agg(start=("start", "min"), end=("running", "max"))
+    return spans.reset_index().drop(columns="segment")
+
+
+def _union_minutes(pieces: pd.DataFrame, keys: list[str]) -> pd.Series:
+    """Minutes covered by the union of the pieces' intervals, per group: overlapping time is counted once."""
+
+    spans = _union_spans(pieces, keys)
+    if spans.empty:
+        return pd.Series(dtype="float64")
     minutes = (spans["end"] - spans["start"]).dt.total_seconds() / 60.0
-    return minutes.groupby(level=list(range(len(keys)))).sum()
+    return minutes.groupby([spans[k] for k in keys]).sum()
+
+
+def _minutes_covered_at_least(spans: pd.DataFrame, keys: list[str], count: int) -> pd.Series:
+    """Minutes per group covered by at least ``count`` of the given spans, by a sweep over their start and end times."""
+
+    if spans.empty:
+        return pd.Series(dtype="float64")
+    events = pd.concat([spans[keys].assign(time=spans["start"], delta=1), spans[keys].assign(time=spans["end"], delta=-1)],
+                       ignore_index=True).sort_values(keys + ["time", "delta"], ignore_index=True)
+    running = events.groupby(keys, sort=False)["delta"].cumsum()
+    following = events.groupby(keys, sort=False)["time"].shift(-1)
+    length = (following - events["time"]).dt.total_seconds().fillna(0.0) / 60.0
+    return length.where(running >= count, 0.0).groupby([events[k] for k in keys]).sum()
 
 
 def _out_of_range(feature, kind, df, keys, unit, harmonize):
@@ -461,17 +485,15 @@ def summarize_result(data, feature: str | None = None, *, harmonize: bool = True
             df[column] = np.nan
     unit = None
     if "value" in value_columns and harmonize:
-        daily["values_unresolved"] = np.nan
-        try:
-            harmonized = data.with_harmonized_values().df.reset_index()
-            df["value"] = harmonized["harmonized_value"].to_numpy()
-            units = harmonized["harmonized_unit"].dropna().astype(str).unique()
-            unit = units[0] if len(units) == 1 else (None if not len(units) else "mixed")
-            daily["values_unresolved"] = df.assign(
-                missing=harmonized["harmonized_unit_source"].astype(str).eq("unresolved").to_numpy()
-            ).groupby(keys)["missing"].sum()
-        except DataLoaderError:
-            pass
+        # No fallback: if harmonization fails, the participant-feature is recorded as an error, rather than being
+        # summarized silently from stored values in another unit.
+        harmonized = data.with_harmonized_values().df.reset_index()
+        df["value"] = harmonized["harmonized_value"].to_numpy()
+        units = harmonized["harmonized_unit"].dropna().astype(str).unique()
+        unit = units[0] if len(units) == 1 else (None if not len(units) else "mixed")
+        daily["values_unresolved"] = df.assign(
+            missing=harmonized["harmonized_unit_source"].astype(str).eq("unresolved").to_numpy()
+        ).groupby(keys)["missing"].sum()
     daily["value_unit"] = unit
 
     # Where the data come from, and how plausible it is.
@@ -490,9 +512,10 @@ def summarize_result(data, feature: str | None = None, *, harmonize: bool = True
     else:
         daily["records_user_entered"] = np.nan
     if basis == "local" and "source" in pieces:
-        per_source = _union_minutes(pieces, keys + ["source"])
-        per_source = per_source.groupby(level=[0, 1]).sum().reindex(daily.index).fillna(0.0) if not per_source.empty else 0.0
-        daily["redundant_minutes"] = (per_source - daily["observed_minutes"]).clip(lower=0.0)
+        # Minutes recorded by at least two devices: each device's coverage is merged first, so a device overlapping
+        # itself is not redundancy, and three devices at once count once, never twice.
+        per_source = _union_spans(pieces, keys + ["source"])
+        daily["redundant_minutes"] = _minutes_covered_at_least(per_source, keys, 2).reindex(daily.index).fillna(0.0)
     else:
         daily["redundant_minutes"] = np.nan
     below, above = _out_of_range(feature, kind, df, keys, unit, harmonize)
@@ -546,6 +569,8 @@ PARTICIPANT_TABLES = ("participant_feature", "participant_days", "hourly_profile
 _PARTICIPANT_FEATURE_COLUMNS = ["RegistrationCode", "feature", "days_with_data", "first_day", "last_day", "records",
                                 "typical_gap_minutes", "regular_share"]
 _DATE_COLUMNS = ("local_date", "first_day", "last_day")
+# Semicolon-separated lists: read as text, so a column whose every cell holds one offset is not taken for numbers.
+_TEXT_COLUMNS = {"features": str, "utc_offsets": str}
 
 
 @dataclass
@@ -694,6 +719,12 @@ def _typed(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def _compression(path: Path) -> dict[str, Any] | None:
+    """Gzip with a fixed header time: identical results give identical bytes, so a run's files can be checksummed."""
+
+    return {"method": "gzip", "mtime": 0} if str(path).endswith(".gz") else None
+
+
 def _table_path(out: Path, name: str) -> Path:
     """Participant-level tables are compressed; cohort-level ones are plain CSV."""
 
@@ -708,7 +739,7 @@ def _iter_participants(path: Path, chunksize: int):
     # round_trip parses each float to the value that was written; pandas' default parser can miss by one unit in
     # the last place, which would make statistics read back from files differ from the in-memory ones.
     for chunk in pd.read_csv(path, chunksize=chunksize, keep_default_na=False, na_values=[""], low_memory=False,
-                             float_precision="round_trip"):
+                             float_precision="round_trip", dtype=_TEXT_COLUMNS):
         chunk = _typed(chunk)
         if carry is not None:
             chunk = pd.concat([carry, chunk], ignore_index=True)
@@ -725,6 +756,9 @@ def iter_daily(out: str | Path, feature: str, chunksize: int = 200_000):
     """A written run's daily table for one feature, one participant at a time, so memory stays bounded."""
 
     path = Path(out) / "daily" / f"{feature}.csv.gz"
+    parameters = Path(out) / "run_parameters.json"
+    if parameters.is_file() and feature not in json.loads(parameters.read_text()).get("features", [feature]):
+        raise DataLoaderConfigurationError(f"{feature} was not among the features of the run in {out}")
     if not path.is_file():
         return
     yield from _iter_participants(path, chunksize)
@@ -744,7 +778,8 @@ def read_table(out: str | Path, name: str) -> pd.DataFrame:
     path = _table_path(Path(out), name)
     if not path.is_file():
         raise DataLoaderConfigurationError(f"{path} does not exist")
-    return _typed(pd.read_csv(path, keep_default_na=False, na_values=[""], low_memory=False, float_precision="round_trip"))
+    return _typed(pd.read_csv(path, keep_default_na=False, na_values=[""], low_memory=False, float_precision="round_trip",
+                              dtype=_TEXT_COLUMNS))
 
 
 def export_parquet(out: str | Path) -> list[Path]:
@@ -818,7 +853,7 @@ class _Outputs:
             kept = kept[kept["RegistrationCode"].isin(self.completed)] if "RegistrationCode" in kept else kept
             # Compression is stated, not inferred from the temporary name, so a .gz file stays gzip.
             temporary = path.with_name(path.name + ".repair")
-            kept.to_csv(temporary, index=False, compression="gzip" if path.name.endswith(".gz") else None)
+            kept.to_csv(temporary, index=False, compression=_compression(path))
             temporary.replace(path)
 
     def _append(self, path: Path, frame: pd.DataFrame) -> None:
@@ -827,7 +862,7 @@ class _Outputs:
             self.headers[path] = list(pd.read_csv(path, nrows=0).columns)
         if exists and list(frame.columns) != self.headers[path]:
             raise RuntimeError(f"{path.name}: rows with columns {list(frame.columns)} cannot follow {self.headers[path]}")
-        frame.to_csv(path, mode="a" if exists else "w", header=not exists, index=False)
+        frame.to_csv(path, mode="a" if exists else "w", header=not exists, index=False, compression=_compression(path))
         self.headers.setdefault(path, list(frame.columns))
 
     def write(self, result: dict[str, Any], tables: dict[str, pd.DataFrame]) -> None:
@@ -950,7 +985,9 @@ def compute_daily_statistics(
                   "daily_provenance": pd.DataFrame(), "daily_curation": pd.DataFrame()}
         daily = {}
 
-    run = {"tool": "data_statistics", **_provenance(phase, root_path), "parameters": {
+    with_data = set(participant_feature["RegistrationCode"]) if len(participant_feature) else set()
+    run = {"tool": "data_statistics", **_provenance(phase, root_path),
+           "participants_without_data": sorted(set(codes) - with_data), "parameters": {
                **{k: v for k, v in parameters.items() if k != "participants"}, "participants": len(codes)},
            "workers": workers, "resumed": bool(outputs is not None and len(pending) < len(codes)),
            "participants_processed_now": len(pending), "errors": len(errors),

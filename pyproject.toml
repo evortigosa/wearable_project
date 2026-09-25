@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+plots = ["matplotlib>=3.5"]
 
 [project.scripts]
 wearable-project = "wearable_project.cli:main"

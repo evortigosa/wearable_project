@@ -64,6 +64,10 @@ class NightRule:
 
     min_asleep_minutes: float = 180.0
 
+    def __post_init__(self) -> None:
+        if not 0 <= self.min_asleep_minutes <= 1440:
+            raise DataLoaderConfigurationError("min_asleep_minutes must be between 0 and 1440")
+
     def describe(self) -> str:
         return f"asleep recorded and asleep_minutes >= {self.min_asleep_minutes:g}"
 
@@ -86,18 +90,21 @@ NIGHT_COLUMNS = [
     "in_bed_recorded", "onset_local", "offset_local", "midpoint_local", "onset_hours_after_noon",
     "offset_hours_after_noon", "midpoint_hours_after_noon", "sleep_period_minutes", "asleep_minutes",
     "waso_minutes", "awake_recorded_minutes", "in_bed_minutes", "efficiency", "efficiency_basis", "core_minutes",
-    "deep_minutes", "rem_minutes", "asleep_unspecified_minutes", "core_share", "deep_share", "rem_share",
-    "episodes", "nap_minutes",
+    "deep_minutes", "rem_minutes", "asleep_unspecified_minutes", "staged_minutes", "staging_sources", "core_share",
+    "deep_share", "rem_share", "episodes", "nap_minutes",
 ]
 
 
 def _night_pieces(df: pd.DataFrame) -> pd.DataFrame:
     """Records split at local noon: one piece per record and night window, with its state."""
 
-    shift = pd.Timedelta(hours=NIGHT_START_HOUR)
+    shift = pd.Timedelta(NIGHT_START_HOUR, unit="h")
     pieces = ds._pieces(df["local_start"] - shift, df["local_end"] - shift)
-    pieces["start"] = pd.to_datetime(pieces["start"]) + shift
-    pieces["end"] = pd.to_datetime(pieces["end"]) + shift
+    # Timedeltas are built with an explicit unit: under pandas 2 with numpy 2.4 or later, keyword construction such as
+    # pd.Timedelta(hours=12) uses a "generic" numpy unit that numpy has deprecated and will make an error.
+    dtype = df["local_start"].dtype
+    pieces["start"] = pd.to_datetime(pieces["start"]).astype(dtype) + shift
+    pieces["end"] = pd.to_datetime(pieces["end"]).astype(dtype) + shift
     # The same dtype as night dates computed from the records: pandas 2.1 cannot concatenate date columns of
     # different resolutions.
     pieces["night"] = pd.to_datetime(pieces["day"]).astype(df["local_start"].dtype)
@@ -113,7 +120,7 @@ def sleep_nights(data) -> pd.DataFrame:
         return pd.DataFrame(columns=NIGHT_COLUMNS)
     df, _ = ds._local_frame(data)
     keys = ["RegistrationCode", "night"]
-    shift = pd.Timedelta(hours=NIGHT_START_HOUR)
+    shift = pd.Timedelta(NIGHT_START_HOUR, unit="h")
     pieces = _night_pieces(df)
     counts = df.assign(night=(df["local_start"] - shift).dt.normalize()).groupby(keys).agg(
         records=("local_start", "size"), records_without_offset=("without_offset", "sum"))
@@ -136,7 +143,7 @@ def sleep_nights(data) -> pd.DataFrame:
     if not asleep.empty:
         running = asleep.groupby(keys, sort=False)["end"].cummax()
         previous = running.groupby([asleep[k] for k in keys], sort=False).shift()
-        new = previous.isna() | ((asleep["start"] - previous) > pd.Timedelta(minutes=EPISODE_GAP_MINUTES))
+        new = previous.isna() | ((asleep["start"] - previous) > pd.Timedelta(EPISODE_GAP_MINUTES, unit="m"))
         asleep = asleep.assign(episode=new.cumsum().to_numpy())
         per_episode = ds._union_minutes(asleep, keys + ["episode"])
         main = {index[2] for index in per_episode.groupby(level=[0, 1]).idxmax()}  # ties: the earliest episode
@@ -164,9 +171,21 @@ def sleep_nights(data) -> pd.DataFrame:
         bed = pd.concat([bounds.reset_index().rename(columns={"onset": "start", "offset": "end"})[keys + ["start", "end"]],
                          in_bed[keys + ["start", "end"]]], ignore_index=True)
         bed_minutes = ds._union_minutes(bed, keys).reindex(idx)
-        staged = (main_pieces[main_pieces["state"].isin(STAGE_STATES)].groupby(keys).size().reindex(idx).fillna(0) > 0)
-        stages = {column: union(main_pieces[main_pieces["state"] == state]) for state, column in (
-            ("CORE", "core_minutes"), ("DEEP", "deep_minutes"), ("REM", "rem_minutes"), ("ASLEEP", "asleep_unspecified_minutes"))}
+        # Stages come from one source per night, the one that staged the most sleep: two devices staging the same
+        # minutes differently would otherwise count those minutes under two stages. Total sleep still unions all.
+        stage_pieces = main_pieces[main_pieces["state"].isin(STAGE_STATES)]
+        if "source" in stage_pieces and not stage_pieces.empty:
+            per_source = ds._union_minutes(stage_pieces, keys + ["source"])
+            chosen = set(per_source.groupby(level=[0, 1]).idxmax())  # ties: the first source identifier
+            staging_sources = per_source.groupby(level=[0, 1]).size().reindex(idx).fillna(0).astype(int)
+            stage_pieces = stage_pieces[[key in chosen for key in zip(*(stage_pieces[k] for k in keys + ["source"]))]]
+        else:
+            staging_sources = (stage_pieces.groupby(keys).size().reindex(idx).fillna(0) > 0).astype(int)
+        staged = staging_sources > 0
+        staged_minutes = union(stage_pieces).where(staged)
+        stages = {column: union(stage_pieces[stage_pieces["state"] == state]) for state, column in (
+            ("CORE", "core_minutes"), ("DEEP", "deep_minutes"), ("REM", "rem_minutes"))}
+        stages["asleep_unspecified_minutes"] = union(main_pieces[main_pieces["state"] == "ASLEEP"])
         denominator = bed_minutes.where(overlapping, period)
         metrics = pd.DataFrame({
             "onset_local": bounds["onset"], "offset_local": bounds["offset"],
@@ -176,8 +195,8 @@ def sleep_nights(data) -> pd.DataFrame:
             "bed_minutes": bed_minutes, "in_bed_overlapping": overlapping,
             "efficiency": asleep_minutes / denominator.where(denominator > 0),
             "efficiency_basis": np.where(overlapping, "in_bed", "sleep_period"),
-            **stages,
-            **{share: (stages[stage] / asleep_minutes).where(staged) for stage, share in (
+            **stages, "staged_minutes": staged_minutes, "staging_sources": staging_sources,
+            **{share: (stages[stage] / staged_minutes).where(staged) for stage, share in (
                 ("core_minutes", "core_share"), ("deep_minutes", "deep_share"), ("rem_minutes", "rem_share"))},
             "staged": staged,
             "episodes": per_episode.groupby(level=[0, 1]).size().reindex(idx),
@@ -194,19 +213,25 @@ def sleep_nights(data) -> pd.DataFrame:
     bed = table["bed_minutes"] if "bed_minutes" in table else pd.Series(np.nan, index=table.index)
     table["in_bed_minutes"] = bed.where(asleep_recorded, whole_night)  # nights without sleep keep their in-bed time
     overlapping = table["in_bed_overlapping"] if "in_bed_overlapping" in table else pd.Series(False, index=table.index)
-    table["in_bed_recorded"] = overlapping.fillna(False).astype(bool).where(asleep_recorded, whole_night.notna())
-    table["staged"] = table["staged"].fillna(False).astype(bool) if "staged" in table else False
+    # eq(True) gives booleans directly, without relying on pandas' deprecated downcasting of object columns.
+    table["in_bed_recorded"] = overlapping.eq(True).where(asleep_recorded, whole_night.notna())
+    table["staged"] = table["staged"].eq(True) if "staged" in table else False
     table["episodes"] = table["episodes"].fillna(0).astype(int)
+    table["staging_sources"] = table["staging_sources"].fillna(0).astype(int)
     table = table.reset_index().rename(columns={"night": "night_date"})
     noon = pd.to_datetime(table["night_date"]) + shift
-    table["onset_local"] = pd.to_datetime(table["onset_local"])
-    table["offset_local"] = pd.to_datetime(table["offset_local"])
+    # The records' resolution, also for a participant whose nights are all in-bed only (whose times are all missing).
+    table["onset_local"] = pd.to_datetime(table["onset_local"]).astype(df["local_start"].dtype)
+    table["offset_local"] = pd.to_datetime(table["offset_local"]).astype(df["local_start"].dtype)
     table["midpoint_local"] = table["onset_local"] + (table["offset_local"] - table["onset_local"]) / 2
     for name in ("onset", "offset", "midpoint"):
         table[f"{name}_hours_after_noon"] = (table[f"{name}_local"] - noon).dt.total_seconds() / 3600.0
     table["night_date"] = pd.to_datetime(table["night_date"]).dt.date
     for column in ("asleep_recorded", "staged", "in_bed_recorded"):
         table[column] = table[column].astype(bool)
+    # One dtype per column whatever the participant: text here even where every night lacks it; missing stays NaN,
+    # as a written run reads it back.
+    table["efficiency_basis"] = table["efficiency_basis"].astype(object)
     return table[NIGHT_COLUMNS]
 
 
@@ -227,8 +252,9 @@ def _period_frame(period: dict[str, Any]) -> pd.DataFrame:
     for column in CGM_PERIOD_COLUMNS:
         if column not in ("RegistrationCode", "cgm", "sufficient", "first_day", "last_day"):
             frame[column] = pd.to_numeric(frame[column]).astype(float)
-    for column in ("first_day", "last_day"):
-        frame[column] = pd.to_datetime(frame[column]).dt.date
+    for column in ("first_day", "last_day"):  # dates or None, one dtype whether or not the participant has CGM days
+        value = frame.at[0, column]
+        frame[column] = pd.Series([pd.Timestamp(value).date() if pd.notna(value) else pd.NaT], dtype=object)
     frame["cgm"] = frame["cgm"].astype(bool)
     frame["sufficient"] = frame["sufficient"].astype(bool)
     return frame
@@ -294,6 +320,7 @@ def cgm_metrics(data) -> tuple[pd.DataFrame, pd.DataFrame]:
         rows.append({"RegistrationCode": code, "local_date": day, "readings": len(group), "completeness": completeness,
                      "valid": completeness >= CGM_MIN_DAY_COMPLETENESS, **_describe_glucose(group["mgdl"].to_numpy())})
     days = pd.DataFrame(rows, columns=CGM_DAY_COLUMNS)
+    period.update({"valid_days": 0, "readings": 0})  # a monitor's cadence, but perhaps no reading with a usable unit
     if len(days):
         valid = days[days["valid"]]
         span = (days["local_date"].max() - days["local_date"].min()).days + 1
@@ -416,7 +443,9 @@ def compute_domain_metrics(
                   for n in DOMAIN_TABLES}
         errors_path = out_dir / "errors.csv"
         errors = pd.read_csv(errors_path, dtype=str).to_dict("records") if errors_path.is_file() else []
+    with_data = set(tables["sleep_nights"]["RegistrationCode"]) | set(tables["cgm_periods"]["RegistrationCode"])
     run = {"tool": "domain_metrics", **ds._provenance(phase, root_path),
+           "participants_without_data": sorted(set(codes) - with_data),
            "parameters": {**{k: v for k, v in parameters.items() if k != "participants"}, "participants": len(codes)},
            "workers": workers, "resumed": bool(outputs is not None and len(pending) < len(codes)),
            "participants_processed_now": len(pending), "errors": len(errors),

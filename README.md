@@ -60,7 +60,6 @@ wearable_project/
 │   │   ├── data_statistics.py      # Cohort coverage and daily statistics
 │   │   ├── data_summaries.py       # Valid days, adherence, participant summaries
 │   │   ├── domain_metrics.py       # Sleep nights and CGM consensus metrics
-│   │   ├── regenerate_manifest.py  # Rebuild and check the release manifest
 │   │   └── release_manifest.py     # Release fingerprints and module hashes
 │   ├── cli.py              # Expose simple commands
 │   ├── exceptions.py
@@ -949,6 +948,13 @@ values are harmonized first, unless `harmonize=False`. The command line runs eit
 tier: `python -m wearable_project.utils.data_statistics daily --phase curated --out DIR`.
 Outputs are never written inside a data root.
 
+Written runs are reproducible: running again with the same data and parameters gives
+byte-identical files (apart from the times in `run.json`), so a run can be verified
+by checksum. `run.json` also lists `participants_without_data`, requested
+participants for whom no feature had data. Arguments that would silently mislead,
+such as a rule naming a misspelled feature or an impossible weekday, are refused
+with an explanation.
+
 Daily rows also describe sampling cadence (the median and longest gap between
 records), and each participant-feature its typical interval and regularity. A
 written run is made for the full cohort: an interrupted run continues with
@@ -977,6 +983,31 @@ Completeness applies only to data with a fixed cadence, so finger-stick glucose
 readings are never judged against a monitor's 288 readings a day. Summaries use
 valid days only, with each feature's metric chosen by its measurement kind.
 
+Daily rows also carry context. `sources` counts the distinct devices that recorded
+data that day, `records_user_entered` the records flagged as entered by hand, and
+`redundant_minutes` the time recorded by more than one device. `values_below_range` and
+`values_above_range` count values outside broad physiological limits
+(`data_statistics.PLAUSIBLE_RANGES`, declared in each feature's harmonized unit):
+values are counted, never altered, and a day with nothing that can be checked is
+reported as not assessed rather than as zero. The hourly profile holds values as well
+as records, with totals split at hour boundaries. Two long tables,
+`daily_provenance` and `daily_curation`, count records per acquisition method and per
+curation status and flag; `participant_days` lists each day's UTC offsets.
+
+```python
+summaries_by_time = sm.temporal_patterns(daily)   # day of week, weekday/weekend, month
+people, cohort = sm.hour_of_day(daily)            # per local hour of day
+sm.time_zones(daily)                              # home zone, days away, trips
+sm.day_overlap(daily)                             # participant-days shared by each pair of features
+sm.days_with(daily, ["HeartRate", "Sleep"])       # days on which all given features have data
+sm.quality_report(daily)                          # provenance, redundancy, plausibility, curation
+```
+
+The weekend defaults to Friday and Saturday, the cohort's weekend in Israel; pass
+`weekend_days=(5, 6)` for Saturday and Sunday. A participant's home zone is their most
+common UTC offset together with the offset an hour away that covers at least 10% of
+their days, their daylight-saving time, so a clock change is never mistaken for travel.
+
 `wearable_project.utils.domain_metrics` adds sleep by night and CGM metrics:
 
 ```python
@@ -990,10 +1021,12 @@ dm.summarize_domain(metrics).cohort               # Table 1 rows for sleep and C
 
 A night is the local noon-to-noon window starting on its `night_date`. Asleep records
 at most 120 minutes apart from one episode; the longest is the main sleep, the rest
-are naps. Each night reports onset, offset and midpoint, sleep period, total sleep time 
-counted once
+are naps. Each night reports onset, offset and midpoint (also as hours after noon, so
+they average without wrapping at midnight), sleep period, total sleep time counted once
 across devices, wake after sleep onset, time in bed, efficiency, and stage minutes and
-shares where stages were recorded. A night with only in-bed records has no sleep
+shares where stages were recorded, taken from the night's stage source (the device
+that staged the most sleep) so that two devices staging the same minutes never count
+them twice; `staging_sources` shows how many devices staged each night. A night with only in-bed records has no sleep
 metrics, since its sleep was not measured. CGM metrics are computed only for data with
 a continuous monitor's cadence, classifying readings in mg/dL (the consensus ranges'
 unit) with HealthKit's conversion factor 18.015588, so readings at exactly 70 or 54
@@ -1001,6 +1034,39 @@ mg/dL fall in the right range. Per participant, pooled over days with at least 7
 expected readings: mean glucose, GMI, SD, CV and time in each consensus range, with a
 flag for the 14-day sufficiency criterion. Every threshold is a named constant,
 recorded in the run's `run.json`.
+
+## Figures
+
+`wearable_project.utils.data_plots` draws from the statistics outputs, never from raw
+files, so every figure uses local days, kind-aware values, harmonized units and valid
+days. matplotlib is optional:
+
+```bash
+pip install "wearable_project[plots]"
+```
+
+```python
+from wearable_project.utils import data_plots as dp
+
+figure = dp.plot_hour_of_day(daily, "HeartRate", path="heart_rate_by_hour.png")
+figure.data        # the exact table the figure draws
+```
+
+Each function returns a matplotlib `Figure` built without `pyplot` (nothing is shown,
+no global state, no display needed) and saves it when given `path=`. Every figure
+carries the table it draws as `figure.data`. Every histogram bin is drawn; nothing is
+clipped unless `clip_quantile` is given, and then the figure states how many values lie
+beyond; participant identifiers appear only with `show_ids=True`.
+
+| Figures | From |
+| ----- | ---- |
+| `plot_feature_presence`, `plot_participants_per_feature`, `plot_features_per_participant`, `plot_data_volume` | `compute_coverage` |
+| `plot_active_participants`, `plot_feature_activity`, `plot_hour_of_day`, `plot_daily_values`, `plot_monthly_distribution`, `plot_co_availability` | `compute_daily_statistics` (or a written run) |
+| `plot_weekly_pattern`, `plot_monthly_pattern` | `temporal_patterns` |
+| `plot_adherence`, `plot_retention`, `plot_bmi_categories` (WHO classes) | `summarize` |
+| `plot_acquisition`, `plot_curation` | `quality_report` |
+| `plot_sleep`, `plot_cgm_ranges` | `compute_domain_metrics` |
+
 
 ## DataLoader introspection and feature help
 
