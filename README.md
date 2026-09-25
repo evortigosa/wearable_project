@@ -56,9 +56,12 @@ wearable_project/
 │   │   ├── strategies.py       # Named strategy declarations
 │   │   └── unit_resolution.py  # Context-, scale-, participant-, and cross-feature unit res.
 │   ├── utils/
-│   │   ├── release_manifest.py
-│   │   ├── 
-│   │   └── 
+│   │   ├── cohort_acceptance.py    # Check a cohort release on the real roots
+│   │   ├── data_statistics.py      # Cohort coverage and daily statistics
+│   │   ├── data_summaries.py       # Valid days, adherence, participant summaries
+│   │   ├── domain_metrics.py       # Sleep nights and CGM consensus metrics
+│   │   ├── regenerate_manifest.py  # Rebuild and check the release manifest
+│   │   └── release_manifest.py     # Release fingerprints and module hashes
 │   ├── cli.py              # Expose simple commands
 │   ├── exceptions.py
 │   └── __main__.py
@@ -917,6 +920,87 @@ roots; `--native` and `--curated` point elsewhere, `--features` limits the run, 
 `--profile-only` skips the loads. It writes `cohort_acceptance.json` and
 `cohort_acceptance.txt` to `--out`, never inside a data root, and exits with 0 when
 nothing failed, 1 when a check failed, and 2 for invalid arguments.
+
+## Cohort statistics
+
+`wearable_project.utils.data_statistics` computes statistics through the DataLoaders,
+for either phase, in two tiers:
+
+```python
+from wearable_project.utils import data_statistics as ds
+
+coverage = ds.compute_coverage("curated")              # no CSV is parsed
+coverage.features                                      # participants, rows, bytes per feature
+coverage.co_availability(["Height", "Weight", "BMI"])  # participants with all three
+
+daily = ds.compute_daily_statistics("curated", participants=["10K_1235738253"])
+daily.daily["StepCount"]                               # one row per participant and local day
+```
+
+Coverage comes from each loader's `profile()`, so the whole cohort takes minutes.
+Daily statistics stream one participant at a time, so memory stays bounded; with
+`out=` each feature's table is written as participants finish, and `workers=`
+processes participants in parallel. A day is the participant's local calendar day,
+from each row's `utc_offset_minutes`; intervals are split at local midnight; values
+are combined as the feature's declared measurement kind requires (totals summed in
+proportion to their overlap with each day, levels described by mean, median, minimum
+and maximum, never summed); time is never counted twice when records overlap; and
+values are harmonized first, unless `harmonize=False`. The command line runs either
+tier: `python -m wearable_project.utils.data_statistics daily --phase curated --out DIR`.
+Outputs are never written inside a data root.
+
+Daily rows also describe sampling cadence (the median and longest gap between
+records), and each participant-feature its typical interval and regularity. A
+written run is made for the full cohort: an interrupted run continues with
+`resume=True` (`--resume`), `read_daily`, `iter_daily` and `read_table` read the
+tables back one participant at a time, `export_parquet` adds Parquet copies where
+pyarrow is installed, and `run.json` records the versions, registry fingerprints and
+state-database checksum the statistics were computed from.
+
+`wearable_project.utils.data_summaries` builds on those tables:
+
+```python
+from wearable_project.utils import data_summaries as sm
+
+summaries = sm.summarize(daily)           # or the directory of a written run
+summaries.adherence                        # valid days, adherence, runs and gaps
+summaries.participant_metrics              # per participant: n, mean, SD, median, percentiles
+summaries.cohort                           # Table 1 across participants
+summaries.wide()                           # one row per participant, one column per metric
+```
+
+A day counts when it meets its feature's valid-day rule. The defaults are
+conventions, overridable with `rules=`: heart rate needs at least 10 hours with
+data; glucose from a continuous monitor needs at least 70% of its expected readings,
+the consensus CGM criterion; every other feature needs at least one record.
+Completeness applies only to data with a fixed cadence, so finger-stick glucose
+readings are never judged against a monitor's 288 readings a day. Summaries use
+valid days only, with each feature's metric chosen by its measurement kind.
+
+`wearable_project.utils.domain_metrics` adds sleep by night and CGM metrics:
+
+```python
+from wearable_project.utils import domain_metrics as dm
+
+metrics = dm.compute_domain_metrics("curated")   # also out=, resume=, workers=
+metrics.sleep_nights                              # one row per participant and night
+metrics.cgm_periods                               # one row per participant
+dm.summarize_domain(metrics).cohort               # Table 1 rows for sleep and CGM
+```
+
+A night is the local noon-to-noon window starting on its `night_date`. Asleep records
+at most 120 minutes apart from one episode; the longest is the main sleep, the rest
+are naps. Each night reports onset, offset and midpoint, sleep period, total sleep time 
+counted once
+across devices, wake after sleep onset, time in bed, efficiency, and stage minutes and
+shares where stages were recorded. A night with only in-bed records has no sleep
+metrics, since its sleep was not measured. CGM metrics are computed only for data with
+a continuous monitor's cadence, classifying readings in mg/dL (the consensus ranges'
+unit) with HealthKit's conversion factor 18.015588, so readings at exactly 70 or 54
+mg/dL fall in the right range. Per participant, pooled over days with at least 70% of
+expected readings: mean glucose, GMI, SD, CV and time in each consensus range, with a
+flag for the 14-day sufficiency criterion. Every threshold is a named constant,
+recorded in the run's `run.json`.
 
 ## DataLoader introspection and feature help
 
