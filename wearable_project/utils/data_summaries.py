@@ -1,7 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Participant and cohort summaries, built on the daily tables of ``data_statistics``. ``data_statistics`` describes
-every participant-day. This module decides which days are usable and summarizes participants and the cohort over them:
+Participant and cohort summaries, built on the daily tables of ``data_statistics``.
+``data_statistics`` describes every participant-day. This module decides which days are usable and summarizes
+participants and the cohort over them:
 - Valid days. A day counts when it meets its feature's ``ValidDayRule``. The defaults are conventions, stated here
   and overridable per feature: heart rate needs at least 10 hours with data, a common wear-time criterion; glucose
   from a continuous monitor needs at least 70% of its expected readings, the international consensus criterion for
@@ -14,7 +15,7 @@ every participant-day. This module decides which days are usable and summarizes 
 - Participant summaries over valid days: for each feature's headline metrics (chosen by its measurement kind) and
   coverage metrics, the number of days, mean, standard deviation, median, 10th, 25th, 75th and 90th percentiles,
   minimum and maximum.
-- A cohort Table 1: the distribution across participants of their medians, with valid days and adherence.
+- A cohort Table: the distribution across participants of their medians, with valid days and adherence.
 - Retention: how many participants still contribute valid days k days after their first.
 ``summarize`` accepts the result of ``compute_daily_statistics`` or the directory of a written run, which it reads one
 participant at a time, so memory stays bounded at cohort scale.
@@ -22,11 +23,14 @@ participant at a time, so memory stays bounded at cohort scale.
 
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
 import numpy as np
 import pandas as pd
+
 from wearable_project.exceptions import DataLoaderConfigurationError
 from wearable_project.utils import data_statistics as ds
 
@@ -303,3 +307,297 @@ def summarize(source: "ds.DailyStatistics | str | Path", *, rules: dict[str, Val
         result.retention.to_csv(directory / "retention.csv", index=False)
         pd.Series(result.rules, name="rule").rename_axis("feature").to_csv(directory / "valid_day_rules.csv")
     return result
+
+
+# ------------------------------------------------------------------------------------ wave 3: context
+# Friday and Saturday (Monday = 0): the Israeli weekend, the HPP cohort's, where the working week runs Sunday to
+# Thursday. Pass weekend_days=(5, 6) for a Saturday-Sunday weekend.
+WEEKEND_DAYS = (4, 5)
+# The home zone is the participant's most common UTC offset, together with the offset 60 minutes from it that is
+# next most common, when that offset covers at least this share of days: the zone's daylight-saving time.
+DST_PARTNER_MIN_SHARE = 0.10
+
+
+class _Source:
+    """Uniform access to a daily-statistics run, in memory or written, one participant at a time."""
+
+    def __init__(self, source, chunksize: int = 200_000) -> None:
+        self.chunksize = chunksize
+        if isinstance(source, ds.DailyStatistics):
+            self.memory, self.dir = source, None
+            self.features = list(source.daily)
+        else:
+            self.memory, self.dir = None, Path(source)
+            if not (self.dir / "run.json").is_file():
+                raise DataLoaderConfigurationError(f"{self.dir} is not a finished data_statistics run (no run.json)")
+            self.features = sorted(p.name.replace(".csv.gz", "") for p in (self.dir / "daily").glob("*.csv.gz"))
+
+    def participants_of(self, feature: str):
+        if self.memory is not None:
+            table = self.memory.daily.get(feature)
+            if table is not None:
+                for _, group in table.groupby("RegistrationCode", sort=True):
+                    yield group.reset_index(drop=True)
+        else:
+            yield from ds.iter_daily(self.dir, feature, chunksize=self.chunksize)
+
+    def table(self, name: str) -> pd.DataFrame:
+        if self.memory is not None:
+            return {"participant_feature": self.memory.participant_feature, "participant_days": self.memory.participant_days,
+                    "hourly_profile": self.memory.hourly, "daily_provenance": self.memory.provenance,
+                    "daily_curation": self.memory.curation}[name]
+        path = ds._table_path(self.dir, name)
+        return ds.read_table(self.dir, name) if path.is_file() else pd.DataFrame()
+
+    def grouped(self, name: str):
+        """A participant-level table one participant at a time."""
+
+        if self.memory is not None:
+            table = self.table(name)
+            if len(table):
+                for _, group in table.groupby("RegistrationCode", sort=True):
+                    yield group.reset_index(drop=True)
+        else:
+            path = ds._table_path(self.dir, name)
+            if path.is_file():
+                yield from ds._iter_participants(path, self.chunksize)
+
+
+def _spread(values: pd.Series) -> dict[str, float]:
+    values = pd.to_numeric(values, errors="coerce").dropna()
+    if not len(values):
+        return {"participants": 0, "median": np.nan, "p25": np.nan, "p75": np.nan}
+    return {"participants": int(len(values)), "median": float(values.median()),
+            "p25": float(values.quantile(0.25)), "p75": float(values.quantile(0.75))}
+
+
+@dataclass
+class TemporalPatterns:
+    """Participant medians by day of week, weekday or weekend, and month, over valid days; and cohort spreads."""
+
+    day_of_week: pd.DataFrame
+    weekday_weekend: pd.DataFrame
+    month_of_year: pd.DataFrame
+    cohort_day_of_week: pd.DataFrame
+    cohort_weekday_weekend: pd.DataFrame
+    cohort_month_of_year: pd.DataFrame
+    weekend_days: tuple[int, ...]
+
+
+def temporal_patterns(source, *, rules: dict[str, ValidDayRule] | None = None, features: Iterable[str] | None = None,
+                      weekend_days: tuple[int, ...] = WEEKEND_DAYS, chunksize: int = 200_000) -> TemporalPatterns:
+    """
+    Each participant's median of each headline metric by day of week (Monday = 0), by weekday or weekend, and by
+    month, over valid days only; then, across participants, the median and interquartile range of those medians.
+    """
+
+    src = _Source(source, chunksize)
+    cadence = {(r["feature"], r["RegistrationCode"]): r for r in src.table("participant_feature").to_dict("records")}
+    chosen = [f for f in src.features if features is None or f in set(features)]
+    dow, month, split = [], [], []
+    for feature in chosen:
+        rule = (rules or {}).get(feature, DEFAULT_RULES.get(feature, DEFAULT_RULE))
+        for daily in src.participants_of(feature):
+            code = str(daily["RegistrationCode"].iloc[0])
+            c = cadence.get((feature, code), {})
+            valid = mark_valid_days(feature, daily, rule, expected_records_per_day(
+                feature, c.get("typical_gap_minutes"), c.get("regular_share")))
+            valid = valid[valid["valid"]]
+            if valid.empty:
+                continue
+            dates = pd.to_datetime(valid["local_date"])
+            weekday, months = dates.dt.weekday.to_numpy(), dates.dt.month.to_numpy()
+            weekend = np.isin(weekday, weekend_days)
+            for metric in headline_metrics(feature, daily.columns):
+                values = pd.to_numeric(valid[metric], errors="coerce").to_numpy(dtype=float)
+                for key, labels, rows in (("weekday", weekday, dow), ("month", months, month)):
+                    for label in np.unique(labels):
+                        chosen_values = values[(labels == label) & ~np.isnan(values)]
+                        if len(chosen_values):
+                            rows.append({"RegistrationCode": code, "feature": feature, "metric": metric, key: int(label),
+                                         "n_days": len(chosen_values), "median": float(np.median(chosen_values))})
+                work, rest = values[~weekend & ~np.isnan(values)], values[weekend & ~np.isnan(values)]
+                split.append({"RegistrationCode": code, "feature": feature, "metric": metric,
+                              "weekday_days": len(work), "weekday_median": float(np.median(work)) if len(work) else np.nan,
+                              "weekend_days": len(rest), "weekend_median": float(np.median(rest)) if len(rest) else np.nan})
+    dow_t = pd.DataFrame(dow, columns=["RegistrationCode", "feature", "metric", "weekday", "n_days", "median"])
+    month_t = pd.DataFrame(month, columns=["RegistrationCode", "feature", "metric", "month", "n_days", "median"])
+    split_t = pd.DataFrame(split, columns=["RegistrationCode", "feature", "metric", "weekday_days", "weekday_median",
+                                           "weekend_days", "weekend_median"])
+    split_t["weekend_minus_weekday"] = split_t["weekend_median"] - split_t["weekday_median"]
+
+    def cohort(table, by, value):
+        rows = [{**dict(zip(by, key if isinstance(key, tuple) else (key,))), **_spread(g[value])}
+                for key, g in table.groupby(by, sort=True)]
+        return pd.DataFrame(rows, columns=[*by, "participants", "median", "p25", "p75"])
+
+    return TemporalPatterns(dow_t, split_t, month_t, cohort(dow_t, ["feature", "metric", "weekday"], "median"),
+                            cohort(split_t, ["feature", "metric"], "weekend_minus_weekday"),
+                            cohort(month_t, ["feature", "metric", "month"], "median"), tuple(weekend_days))
+
+
+def hour_of_day(source) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    ``(participants, cohort)`` by local hour of day. Per participant: records per day with data at that hour, the
+    average amount per day at that hour for totals and event amounts, and the mean value for levels. Per feature
+    and hour: the median and interquartile range of those across participants.
+    """
+
+    src = _Source(source)
+    hourly = src.table("hourly_profile")
+    days = src.table("participant_feature")[["RegistrationCode", "feature", "days_with_data"]]
+    if hourly.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    table = hourly.merge(days, on=["RegistrationCode", "feature"], how="left")
+    table["records_per_day"] = table["records"] / table["days_with_data"]
+    table["value_per_day"] = table["value_sum"] / table["days_with_data"]
+    participants = table[["RegistrationCode", "feature", "hour", "records_per_day", "value_per_day", "value_mean"]]
+    rows = []
+    for (feature, hour), group in participants.groupby(["feature", "hour"], sort=True):
+        row = {"feature": feature, "hour": int(hour)}
+        for column in ("records_per_day", "value_per_day", "value_mean"):
+            spread = _spread(group[column])
+            row.update({f"{column}_{k}": v for k, v in spread.items() if k != "participants"})
+            row[f"{column}_participants"] = spread["participants"]
+        rows.append(row)
+    return participants.reset_index(drop=True), pd.DataFrame(rows)
+
+
+def time_zones(source) -> pd.DataFrame:
+    """
+    Per participant: the home zone (``DST_PARTNER_MIN_SHARE``), the days with any offset outside it, and the trips,
+    runs of consecutive such days. A day on which the clocks change carries both home offsets, and is not away.
+    """
+
+    rows = []
+    for days in _Source(source).grouped("participant_days"):
+        code = str(days["RegistrationCode"].iloc[0])
+        per_day = {}
+        for day, text in zip(days["local_date"], days["utc_offsets"]):
+            offsets = {int(x) for x in str(text).split(";") if x not in ("", "nan", "None")}
+            if offsets:
+                per_day[day] = offsets
+        if not per_day:
+            continue
+        counts: dict[int, int] = {}
+        for offsets in per_day.values():
+            for offset in offsets:
+                counts[offset] = counts.get(offset, 0) + 1
+        home = max(sorted(counts), key=lambda o: counts[o])
+        partners = [o for o in (home - 60, home + 60) if counts.get(o, 0) >= DST_PARTNER_MIN_SHARE * len(per_day)]
+        home_set = {home} | ({max(partners, key=lambda o: counts[o])} if partners else set())
+        away = sorted(d for d, offsets in per_day.items() if offsets - home_set)
+        runs, current = [], 1
+        for previous, day in zip(away, away[1:]):
+            if (day - previous).days == 1:
+                current += 1
+            else:
+                runs.append(current)
+                current = 1
+        if away:
+            runs.append(current)
+        distances = [abs(o - home) for d in away for o in per_day[d] - home_set]
+        rows.append({"RegistrationCode": code, "days_with_offsets": len(per_day),
+                     "home_offsets": ";".join(str(o) for o in sorted(home_set)),
+                     "distinct_offsets": len(counts), "days_away": len(away), "trips": len(runs),
+                     "longest_trip_days": max(runs) if runs else 0,
+                     "max_offset_difference_hours": max(distances) / 60 if distances else 0.0})
+    return pd.DataFrame(rows, columns=["RegistrationCode", "days_with_offsets", "home_offsets", "distinct_offsets",
+                                       "days_away", "trips", "longest_trip_days", "max_offset_difference_hours"])
+
+
+def day_overlap(source) -> pd.DataFrame:
+    """
+    For every pair of features, the participant-days holding both, those holding either, and their ratio (the
+    Jaccard index): how often two modalities can be analysed on the same day. The diagonal gives each feature's days.
+    """
+
+    single: dict[str, int] = {}
+    pairs: dict[tuple[str, str], int] = {}
+    for days in _Source(source).grouped("participant_days"):
+        for text in days["features"]:
+            present = sorted(str(text).split(";"))
+            for f in present:
+                single[f] = single.get(f, 0) + 1
+            for i, a in enumerate(present):
+                for b in present[i + 1:]:
+                    pairs[(a, b)] = pairs.get((a, b), 0) + 1
+    rows = []
+    names = sorted(single)
+    for i, a in enumerate(names):
+        for b in names[i:]:
+            both = single[a] if a == b else pairs.get((a, b), 0)
+            either = single[a] + single[b] - both if a != b else single[a]
+            rows.append({"feature_a": a, "feature_b": b, "days_both": both, "days_a": single[a], "days_b": single[b],
+                         "jaccard": both / either if either else np.nan})
+    return pd.DataFrame(rows, columns=["feature_a", "feature_b", "days_both", "days_a", "days_b", "jaccard"])
+
+
+def days_with(source, features: Iterable[str]) -> pd.DataFrame:
+    """Per participant, the days on which every one of ``features`` has data, with the first and last such day."""
+
+    wanted = set(features)
+    rows = []
+    for days in _Source(source).grouped("participant_days"):
+        chosen = [d for d, text in zip(days["local_date"], days["features"]) if wanted <= set(str(text).split(";"))]
+        if chosen:
+            rows.append({"RegistrationCode": str(days["RegistrationCode"].iloc[0]), "days": len(chosen),
+                         "first_day": min(chosen), "last_day": max(chosen)})
+    return pd.DataFrame(rows, columns=["RegistrationCode", "days", "first_day", "last_day"])
+
+
+@dataclass
+class QualityReport:
+    """Per feature: coverage, provenance and plausibility totals; acquisition methods; curation statuses and flags."""
+
+    features: pd.DataFrame
+    provenance: pd.DataFrame
+    curation: pd.DataFrame
+
+
+def quality_report(source) -> QualityReport:
+    """
+    Totals per feature: records, participant-days, records flagged user-entered, observed and redundant minutes
+    (coverage duplicated across devices), and values below or above the declared plausible range, with the days on
+    which plausibility could be assessed; the share of records by acquisition method; and, in the curated phase, the
+    records per curation status and per flag. Counts only, never names.
+    """
+
+    src = _Source(source)
+    rows = []
+    for feature in src.features:
+        totals = {"feature": feature, "participants": 0, "participant_days": 0, "records": 0,
+                  "records_user_entered": 0.0, "observed_minutes": 0.0, "redundant_minutes": 0.0,
+                  "values_below_range": 0.0, "values_above_range": 0.0, "days_assessed": 0}
+        seen = {"records_user_entered": False, "observed_minutes": False, "redundant_minutes": False,
+                "values_below_range": False}
+        for daily in src.participants_of(feature):
+            totals["participants"] += 1
+            totals["participant_days"] += len(daily)
+            totals["records"] += int(daily["records"].sum())
+            for column in ("records_user_entered", "observed_minutes", "redundant_minutes", "values_below_range",
+                           "values_above_range"):
+                if column in daily and daily[column].notna().any():
+                    totals[column] += float(daily[column].sum())
+                    seen[column if column != "values_above_range" else "values_below_range"] = True
+            if "values_below_range" in daily:
+                totals["days_assessed"] += int(daily["values_below_range"].notna().sum())
+        for column, present in seen.items():
+            if not present:
+                totals[column] = np.nan
+                if column == "values_below_range":
+                    totals["values_above_range"] = np.nan
+        totals["redundant_share"] = (totals["redundant_minutes"] / totals["observed_minutes"]
+                                     if totals["observed_minutes"] and not np.isnan(totals["redundant_minutes"]) else np.nan)
+        rows.append(totals)
+    features = pd.DataFrame(rows)
+    provenance = src.table("daily_provenance")
+    if len(provenance):
+        provenance = provenance.groupby(["feature", "acquisition_method"], sort=True)[["records", "records_user_entered"]].sum().reset_index()
+        provenance["share"] = provenance["records"] / provenance.groupby("feature")["records"].transform("sum")
+    curation = src.table("daily_curation")
+    if len(curation):
+        curation = curation.groupby(["feature", "kind", "name"], sort=True)["records"].sum().reset_index()
+        record_totals = features.set_index("feature")["records"]
+        curation["share_of_records"] = curation["records"] / curation["feature"].map(record_totals)
+    return QualityReport(features, provenance, curation)

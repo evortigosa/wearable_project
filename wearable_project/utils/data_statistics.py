@@ -54,10 +54,39 @@ from wearable_project.processing.registry import get_feature_spec
 
 
 PHASES = ("curated", "native")
+HOURLY_COLUMNS = ["RegistrationCode", "feature", "hour", "records", "value_sum", "value_mean", "value_count"]
+PROVENANCE_COLUMNS = ["RegistrationCode", "feature", "local_date", "acquisition_method", "records", "records_user_entered"]
+CURATION_COLUMNS = ["RegistrationCode", "feature", "local_date", "kind", "name", "records"]
 # HealthKit's sleep-analysis categories, and those that mean the participant was asleep (unspecified, core, deep,
 # REM). Every Sleep day carries a column for each, so all participants' tables share one set of columns.
 SLEEP_STATES = ("INBED", "ASLEEP", "AWAKE", "CORE", "DEEP", "REM")
 ASLEEP_STATES = frozenset({"ASLEEP", "CORE", "DEEP", "REM"})
+# Broad physiological limits, in each feature's harmonized unit, for reporting values that are likely errors; they
+# are conventions, not clinical thresholds, and values outside them are counted, never altered or removed. A range
+# is applied only when the values are in its unit. Totals and event amounts are never negative.
+PLAUSIBLE_RANGES: dict[str, dict[str, tuple[float | None, float | None, str | None]]] = {
+    "HeartRate": {"value": (25.0, 250.0, "beats/min")},
+    "RestingHeartRate": {"value": (25.0, 150.0, "beats/min")},
+    "WalkingHeartRate": {"value": (30.0, 220.0, "beats/min")},
+    "HeartRateVariability": {"value": (1.0, 300.0, "ms")},
+    "OxygenSaturation": {"value": (50.0, 100.0, "%")},
+    "RespiratoryRate": {"value": (4.0, 60.0, "breaths/min")},
+    "BodyTemperature": {"value": (32.0, 43.0, "Cel")},
+    "BloodGlucose": {"value": (1.1, 33.3, "mmol/L")},
+    "Weight": {"value": (25.0, 300.0, "kg")},
+    "Height": {"value": (1.0, 2.5, "m")},
+    "BMI": {"value": (10.0, 80.0, "kg/m2")},
+    "BodyFatPercentage": {"value": (2.0, 75.0, "%")},
+    "LeanBodyMass": {"value": (15.0, 150.0, "kg")},
+    "WaistCircumference": {"value": (0.4, 2.0, "m")},
+    "Vo2Max": {"value": (5.0, 100.0, "mL/(kg*min)")},
+    "PeakFlow": {"value": (50.0, 1000.0, "L/min")},
+    "BloodAlcoholContent": {"value": (0.0, 0.5, "%")},
+    "BloodPressure": {"blood_pressure_systolic_value": (50.0, 300.0, "mmHg"),
+                      "blood_pressure_diastolic_value": (20.0, 200.0, "mmHg")},
+}
+_NON_NEGATIVE_KINDS = {"extensive_total", "event_amount"}
+
 _US = np.timedelta64(1, "us")
 _DAY = np.timedelta64(1, "D")
 
@@ -232,19 +261,23 @@ def _local_frame(data) -> tuple[pd.DataFrame, str]:
     return df, "local"
 
 
-def _pieces(start: pd.Series, end: pd.Series) -> pd.DataFrame:
-    """Split each [start, end] interval at local midnights: one row per (source row, day) piece."""
+def _pieces(start: pd.Series, end: pd.Series, unit: str = "D") -> pd.DataFrame:
+    """
+    Split each [start, end] interval at unit boundaries, local midnights by default or hours with ``unit="h"``: one
+    row per (source row, unit) piece; ``day`` holds the start of the piece's day or hour.
+    """
 
+    step = np.timedelta64(1, unit)
     s = start.to_numpy(dtype="datetime64[us]")
     e = end.to_numpy(dtype="datetime64[us]")
-    first = s.astype("datetime64[D]")
-    last = np.where(e > s, (e - _US).astype("datetime64[D]"), first)
-    count = (last - first).astype("timedelta64[D]").astype(np.int64) + 1
+    first = s.astype(f"datetime64[{unit}]")
+    last = np.where(e > s, (e - _US).astype(f"datetime64[{unit}]"), first)
+    count = (last - first).astype(f"timedelta64[{unit}]").astype(np.int64) + 1
     source = np.repeat(np.arange(len(s)), count)
     offset = np.arange(int(count.sum())) - np.repeat(np.cumsum(count) - count, count)
-    day = first[source] + offset.astype("timedelta64[D]")
+    day = first[source] + offset.astype(f"timedelta64[{unit}]")
     piece_start = np.maximum(s[source], day.astype("datetime64[us]"))
-    piece_end = np.minimum(e[source], (day + _DAY).astype("datetime64[us]"))
+    piece_end = np.minimum(e[source], (day + step).astype("datetime64[us]"))
     length = (e - s)[source]
     share = np.where(length > np.timedelta64(0, "us"), (piece_end - piece_start) / np.where(length > np.timedelta64(0, "us"), length, _US), 1.0)
     return pd.DataFrame({"row": source, "day": day, "start": piece_start, "end": piece_end, "share": share})
@@ -264,6 +297,107 @@ def _union_minutes(pieces: pd.DataFrame, keys: list[str]) -> pd.Series:
         keys + ["segment"], sort=False).agg(start=("start", "min"), end=("running", "max"))
     minutes = (spans["end"] - spans["start"]).dt.total_seconds() / 60.0
     return minutes.groupby(level=list(range(len(keys)))).sum()
+
+
+def _out_of_range(feature, kind, df, keys, unit, harmonize):
+    """Values below and above the feature's declared range, per day; ``(None, None)`` where it cannot be assessed."""
+
+    declared = dict(PLAUSIBLE_RANGES.get(feature, {}))
+    if kind in _NON_NEGATIVE_KINDS and "value" in df and "value" not in declared:
+        declared["value"] = (0.0, None, None)
+    groups = [df[k] for k in keys]
+    below = above = assessed = None
+    for column, (low, high, required) in declared.items():
+        if column not in df:
+            continue
+        if required is not None:  # a range applies only to values in its unit
+            if column == "value" and harmonize:
+                established = unit
+            else:
+                established = column_units(feature).get(column, {}).get("established")
+            if established != required:
+                continue
+        values = pd.to_numeric(df[column], errors="coerce")
+        low_hits = (values < low) if low is not None else pd.Series(False, index=values.index)
+        high_hits = (values > high) if high is not None else pd.Series(False, index=values.index)
+        b = low_hits.astype(int).groupby(groups).sum()
+        a = high_hits.astype(int).groupby(groups).sum()
+        n = values.notna().astype(int).groupby(groups).sum()
+        below = b if below is None else below.add(b, fill_value=0)
+        above = a if above is None else above.add(a, fill_value=0)
+        assessed = n if assessed is None else assessed.add(n, fill_value=0)
+    if assessed is None:
+        return None, None
+    # A day with no value that could be checked is not assessed, which is not the same as nothing out of range.
+    return below.where(assessed > 0), above.where(assessed > 0)
+
+
+def _hourly_values(hourly: pd.DataFrame, df: pd.DataFrame, kind: str, feature: str) -> pd.DataFrame:
+    """
+    Value statistics per local hour of day, pooled over all days: totals split at hour boundaries in proportion to
+    overlap, event amounts summed at their start hour, levels averaged at their start hour.
+    """
+
+    keys = ["RegistrationCode", "hour"]
+    frame = hourly.set_index(keys)
+    frame["value_sum"] = np.nan
+    frame["value_mean"] = np.nan
+    frame["value_count"] = np.nan
+    if "value" in df:
+        values = pd.to_numeric(df["value"], errors="coerce")
+        if kind == "extensive_total":
+            pieces = _pieces(df["local_start"], df["local_end"], unit="h")
+            pieces["RegistrationCode"] = df["RegistrationCode"].to_numpy()[pieces["row"]]
+            pieces["hour"] = pd.to_datetime(pieces["day"]).dt.hour
+            pieces["value"] = values.to_numpy()[pieces["row"]] * pieces["share"]
+            sums = pieces.groupby(keys)["value"].sum(min_count=1)
+            frame = frame.reindex(frame.index.union(sums.index))
+            frame["records"] = frame["records"].fillna(0).astype(int)
+            frame["value_sum"] = sums.reindex(frame.index)
+        else:
+            groups = [df["RegistrationCode"], df["local_start"].dt.hour.rename("hour")]
+            if kind == "event_amount":
+                frame["value_sum"] = values.groupby(groups).sum(min_count=1).reindex(frame.index)
+                frame["value_count"] = values.groupby(groups).count().reindex(frame.index)
+            elif kind in ("intensive_value", "ratio", "summary_statistic"):
+                frame["value_mean"] = values.groupby(groups).mean().reindex(frame.index)
+                frame["value_count"] = values.groupby(groups).count().reindex(frame.index)
+    frame = frame.reset_index()
+    frame["feature"] = feature
+    return frame[HOURLY_COLUMNS]
+
+
+def provenance_tables(data, feature: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    ``(provenance, curation)`` of one result in long format: per participant, local day and acquisition method, the
+    records and those flagged user-entered; and, in the curated phase, the records per curation status and per flag.
+    A file with no acquisition method gives ``not_recorded``. Only categories and counts, never source names.
+    """
+
+    feature = feature or data.load_report["feature"]
+    if data.df.empty:
+        return pd.DataFrame(columns=PROVENANCE_COLUMNS), pd.DataFrame(columns=CURATION_COLUMNS)
+    df, _ = _local_frame(data)
+    df["local_date"] = df["local_start"].dt.date
+    df["method"] = df["acquisition_method"].astype(str) if "acquisition_method" in df else "not_recorded"
+    df["flagged"] = df["was_user_entered"].eq(True).fillna(False).astype(int) if "was_user_entered" in df else 0
+    provenance = df.groupby(["RegistrationCode", "local_date", "method"], sort=True).agg(
+        records=("method", "size"), records_user_entered=("flagged", "sum")).reset_index().rename(
+        columns={"method": "acquisition_method"})
+    provenance.insert(1, "feature", feature)
+    parts = []
+    if "curation_status" in df:
+        status = df.groupby(["RegistrationCode", "local_date", df["curation_status"].astype(str).rename("name")]).size()
+        parts.append(status.rename("records").reset_index().assign(kind="status"))
+    if "curation_flags" in df:
+        flags = df[["RegistrationCode", "local_date"]].assign(name=df["curation_flags"].astype(str).str.split(";")).explode("name")
+        flags = flags[flags["name"].notna() & (flags["name"] != "") & (flags["name"] != "nan")]
+        if len(flags):
+            parts.append(flags.groupby(["RegistrationCode", "local_date", "name"]).size().rename("records").reset_index().assign(kind="flag"))
+    curation = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=CURATION_COLUMNS)
+    curation["feature"] = feature
+    return provenance[PROVENANCE_COLUMNS], curation.sort_values(["RegistrationCode", "local_date", "kind", "name"],
+                                                               ignore_index=True)[CURATION_COLUMNS]
 
 
 def summarize_result(data, feature: str | None = None, *, harmonize: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -312,7 +446,7 @@ def summarize_result(data, feature: str | None = None, *, harmonize: bool = True
         daily["median_gap_minutes"] = gaps.groupby(keys)["gap"].median().reindex(daily.index)
         daily["max_gap_minutes"] = gaps.groupby(keys)["gap"].max().reindex(daily.index)
     else:
-        hourly = pd.DataFrame(columns=["RegistrationCode", "feature", "hour", "records"])
+        hourly = pd.DataFrame(columns=HOURLY_COLUMNS)
 
     if basis == "local":
         daily["observed_minutes"] = _union_minutes(pieces, keys).reindex(daily.index).fillna(0.0)
@@ -339,6 +473,33 @@ def summarize_result(data, feature: str | None = None, *, harmonize: bool = True
         except DataLoaderError:
             pass
     daily["value_unit"] = unit
+
+    # Where the data come from, and how plausible it is.
+    if "source_id" in df:
+        # Distinct known sources; a day on which no record names its source is not assessed. For redundancy, records
+        # without a source form one group of their own, so their coverage is not lost.
+        known = df["source_id"].astype(object).where(df["source_id"].notna(), None).to_numpy()[pieces["row"]]
+        counted = pd.Series(known, index=pieces.index).groupby([pieces[k] for k in keys]).nunique()
+        daily["sources"] = counted.where(counted > 0).reindex(daily.index)
+        pieces["source"] = pd.Series(known, index=pieces.index).fillna("unknown").astype(str).to_numpy()
+    else:
+        daily["sources"] = np.nan
+    if "was_user_entered" in df:  # the flag is set only where true
+        daily["records_user_entered"] = df.assign(flagged=df["was_user_entered"].eq(True).fillna(False).astype(int)).groupby(
+            keys)["flagged"].sum().reindex(daily.index).fillna(0).astype(int)
+    else:
+        daily["records_user_entered"] = np.nan
+    if basis == "local" and "source" in pieces:
+        per_source = _union_minutes(pieces, keys + ["source"])
+        per_source = per_source.groupby(level=[0, 1]).sum().reindex(daily.index).fillna(0.0) if not per_source.empty else 0.0
+        daily["redundant_minutes"] = (per_source - daily["observed_minutes"]).clip(lower=0.0)
+    else:
+        daily["redundant_minutes"] = np.nan
+    below, above = _out_of_range(feature, kind, df, keys, unit, harmonize)
+    daily["values_below_range"] = below.reindex(daily.index) if below is not None else np.nan
+    daily["values_above_range"] = above.reindex(daily.index) if above is not None else np.nan
+    if basis == "local":
+        hourly = _hourly_values(hourly, df, kind, feature)
 
     if kind == "extensive_total" and "value" in df:
         pieces["value"] = df["value"].to_numpy()[pieces["row"]] * pieces["share"]
@@ -381,7 +542,7 @@ def summarize_result(data, feature: str | None = None, *, harmonize: bool = True
 
 
 # ------------------------------------------------------------------------------------------ the whole run
-PARTICIPANT_TABLES = ("participant_feature", "participant_days", "hourly_profile")
+PARTICIPANT_TABLES = ("participant_feature", "participant_days", "hourly_profile", "daily_provenance", "daily_curation")
 _PARTICIPANT_FEATURE_COLUMNS = ["RegistrationCode", "feature", "days_with_data", "first_day", "last_day", "records",
                                 "typical_gap_minutes", "regular_share"]
 _DATE_COLUMNS = ("local_date", "first_day", "last_day")
@@ -404,13 +565,15 @@ class DailyStatistics:
     active_participants: pd.DataFrame
     errors: list[dict[str, str]]
     run: dict[str, Any]
+    provenance: pd.DataFrame = field(default_factory=pd.DataFrame)
+    curation: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def sampling_cadence(data) -> dict[str, float]:
     """
     How regularly a result's records arrive: the median interval between consecutive distinct record starts, and the
     share of intervals within 10% of it. A continuous glucose monitor gives 5 minutes and a share near 1; adaptive
-    sources, such as the watch's heart rate, give a low share. Day-key features have no event times, so no cadence.
+    sources, such as the heart rate, give a low share. Day-key features have no event times, so no cadence.
     """
 
     if data.load_report["date_column"] != "start_date" or data.df.empty:
@@ -428,13 +591,16 @@ def _participant_task(args) -> dict[str, Any]:
     """Every requested feature for one participant; runs in a worker process when ``workers > 1``."""
 
     code, phase, root, features, default_inclusion_only, state_validation, harmonize = args
-    out = {"code": code, "daily": {}, "hourly": [], "cadence": {}, "errors": []}
+    out = {"code": code, "daily": {}, "hourly": [], "cadence": {}, "provenance": [], "curation": [], "offsets": {},
+           "errors": []}
     for feature in features:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
+                # The full projection carries source identifiers, needed to count devices; source names come
+                # with them but are never read or written.
                 data = _loader(feature, phase, root, state_validation=state_validation).get_data(
-                    registration_codes=code, max_rows=None,
+                    registration_codes=code, max_rows=None, projection="full",
                     **({"default_inclusion_only": True} if default_inclusion_only else {}))
             if data.df.empty:
                 continue
@@ -442,6 +608,15 @@ def _participant_task(args) -> dict[str, Any]:
             out["daily"][feature] = daily
             out["hourly"].append(hourly)
             out["cadence"][feature] = sampling_cadence(data)
+            provenance, curation = provenance_tables(data, feature)
+            out["provenance"].append(provenance)
+            out["curation"].append(curation)
+            if data.load_report["date_column"] == "start_date" and "utc_offset_minutes" in data.df:
+                local, _ = _local_frame(data)
+                pairs = pd.DataFrame({"day": local["local_start"].dt.date.to_numpy(),
+                                      "offset": pd.to_numeric(data.df["utc_offset_minutes"]).to_numpy()})
+                for day, offset in pairs.dropna().drop_duplicates().itertuples(index=False):
+                    out["offsets"].setdefault(day, set()).add(int(offset))
         except Exception as exc:  # recorded per participant and feature; the run continues
             out["errors"].append({"RegistrationCode": code, "feature": feature, "error": f"{type(exc).__name__}: {exc}"})
     return out
@@ -460,13 +635,18 @@ def _participant_tables(result: dict[str, Any]) -> dict[str, pd.DataFrame]:
         for day in daily["local_date"]:
             days.setdefault(day, []).append(feature)
     hourly = [h for h in result["hourly"] if not h.empty]
+    provenance = [f for f in result.get("provenance", []) if not f.empty]
+    curation = [f for f in result.get("curation", []) if not f.empty]
+    offsets = result.get("offsets", {})
     return {
         "participant_feature": pd.DataFrame(rows, columns=_PARTICIPANT_FEATURE_COLUMNS),
         "participant_days": pd.DataFrame(
-            [{"RegistrationCode": result["code"], "local_date": day, "features": ";".join(sorted(features))}
-             for day, features in sorted(days.items())], columns=["RegistrationCode", "local_date", "features"]),
-        "hourly_profile": pd.concat(hourly, ignore_index=True) if hourly else pd.DataFrame(
-            columns=["RegistrationCode", "feature", "hour", "records"]),
+            [{"RegistrationCode": result["code"], "local_date": day, "features": ";".join(sorted(features)),
+              "utc_offsets": ";".join(str(o) for o in sorted(offsets.get(day, ())))}
+             for day, features in sorted(days.items())], columns=["RegistrationCode", "local_date", "features", "utc_offsets"]),
+        "hourly_profile": pd.concat(hourly, ignore_index=True) if hourly else pd.DataFrame(columns=HOURLY_COLUMNS),
+        "daily_provenance": pd.concat(provenance, ignore_index=True) if provenance else pd.DataFrame(columns=PROVENANCE_COLUMNS),
+        "daily_curation": pd.concat(curation, ignore_index=True) if curation else pd.DataFrame(columns=CURATION_COLUMNS),
     }
 
 
@@ -766,7 +946,8 @@ def compute_daily_statistics(
         feature_path = _table_path(out_dir, "participant_feature")
         participant_feature = read_table(out_dir, "participant_feature") if feature_path.is_file() else pd.DataFrame(
             columns=_PARTICIPANT_FEATURE_COLUMNS)
-        tables = {"hourly_profile": pd.DataFrame(), "participant_days": pd.DataFrame()}
+        tables = {"hourly_profile": pd.DataFrame(), "participant_days": pd.DataFrame(),
+                  "daily_provenance": pd.DataFrame(), "daily_curation": pd.DataFrame()}
         daily = {}
 
     run = {"tool": "data_statistics", **_provenance(phase, root_path), "parameters": {
@@ -780,7 +961,7 @@ def compute_daily_statistics(
     if out_dir is not None:
         (out_dir / "run.json").write_text(json.dumps(run, indent=2, default=str))
     return DailyStatistics(phase, daily, tables["hourly_profile"], participant_feature, tables["participant_days"],
-                           cohort_daily, active, errors, run)
+                           cohort_daily, active, errors, run, tables["daily_provenance"], tables["daily_curation"])
 
 
 # ------------------------------------------------------------------------------------------------------ CLI
