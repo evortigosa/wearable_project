@@ -946,7 +946,27 @@ proportion to their overlap with each day, levels described by mean, median, min
 and maximum, never summed); time is never counted twice when records overlap; and
 values are harmonized first, unless `harmonize=False`. The command line runs either
 tier: `python -m wearable_project.utils.data_statistics daily --phase curated --out DIR`.
-Outputs are never written inside a data root.
+Nothing is written unless you ask. Without `out=`, statistics, summaries and domain
+metrics are computed in memory and returned. With `out=` (on the command line `--out`
+is required), they are written to that folder, crash-safe and resumable, and any
+summary or figure function accepts the folder in place of the in-memory result.
+Figures are saved only when given `path=`.
+
+None of these is ever written into a data root, so that the roots hold only wearable
+data. A location inside one is refused, before anything is created, with an
+explanation. The protected roots are:
+
+- both phases' permanent HPP roots;
+- every root read in the session;
+- the root a written run was computed from;
+- any directory recognizable as a data root by its content: a processing state
+  database, or participant folders holding feature files. A local copy is therefore
+  protected too.
+
+Symbolic links and relative paths are resolved first. A folder beside the roots, such
+as their parent, stays usable. `data_statistics.protected_roots()` lists the protected
+roots, and `data_statistics.guard_output(path)` applies the same check to your own
+files.
 
 Written runs are reproducible: running again with the same data and parameters gives
 byte-identical files (apart from the times in `run.json`), so a run can be verified
@@ -1057,15 +1077,6 @@ no global state, no display needed) and saves it when given `path=`. Every figur
 carries the table it draws as `figure.data`. Every histogram bin is drawn; nothing is
 clipped unless `clip_quantile` is given, and then the figure states how many values lie
 beyond; participant identifiers appear only with `show_ids=True`.
-
-| Figures | From |
-| ----- | ---- |
-| `plot_feature_presence`, `plot_participants_per_feature`, `plot_features_per_participant`, `plot_data_volume` | `compute_coverage` |
-| `plot_active_participants`, `plot_feature_activity`, `plot_hour_of_day`, `plot_daily_values`, `plot_monthly_distribution`, `plot_co_availability` | `compute_daily_statistics` (or a written run) |
-| `plot_weekly_pattern`, `plot_monthly_pattern` | `temporal_patterns` |
-| `plot_adherence`, `plot_retention`, `plot_bmi_categories` (WHO classes) | `summarize` |
-| `plot_acquisition`, `plot_curation` | `quality_report` |
-| `plot_sleep`, `plot_cgm_ranges` | `compute_domain_metrics` |
 
 
 ## DataLoader introspection and feature help

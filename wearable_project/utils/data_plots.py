@@ -11,7 +11,6 @@ Every figure carries the exact table it draws as ``figure.data``, so the numbers
 checked or re-plotted. The axes are honest: every histogram bin is drawn, nothing is clipped unless asked (and then
 the number of clipped values is stated on the figure), units come from the statistics tables, and each figure states
 how many participants it describes. Participant identifiers never appear on a figure unless ``show_ids=True``.
-matplotlib is an optional dependency: ``pip install "wearable_project[plots]"``.
 """
 
 
@@ -20,10 +19,13 @@ from pathlib import Path
 from typing import Any, Iterable
 import numpy as np
 import pandas as pd
+import json
 from wearable_project.exceptions import DataLoaderConfigurationError
 from wearable_project.utils import data_statistics as ds
 from wearable_project.utils import data_summaries as sm
 from wearable_project.utils import domain_metrics as dm
+from matplotlib.colors import ListedColormap
+from matplotlib.figure import Figure
 
 
 WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -34,30 +36,26 @@ VOLUME_BANDS = ((0, 1e6, "< 1 MB"), (1e6, 1e7, "1-10 MB"), (1e7, 1e8, "10-100 MB
 # WHO adult BMI classes, kg/m2, each a half-open interval [lower, upper).
 BMI_CLASSES = (("Underweight", 0.0, 18.5), ("Normal weight", 18.5, 25.0), ("Pre-obesity", 25.0, 30.0),
                ("Obesity class I", 30.0, 35.0), ("Obesity class II", 35.0, 40.0), ("Obesity class III", 40.0, np.inf))
-# Colours for the consensus glucose ranges, from very low to very high.
+# Colors for the consensus glucose ranges, from very low to very high.
 GLUCOSE_COLOURS = {"very_low_percent": "#8e0000", "low_percent": "#e53935", "in_range_percent": "#43a047",
                    "high_percent": "#fdd835", "very_high_percent": "#fb8c00"}
 GLUCOSE_LABELS = {"very_low_percent": "< 54 mg/dL", "low_percent": "54-69 mg/dL", "in_range_percent": "70-180 mg/dL",
                   "high_percent": "181-250 mg/dL", "very_high_percent": "> 250 mg/dL"}
-# Okabe-Ito, a palette distinguishable with the common colour-vision deficiencies.
+# Okabe-Ito, a palette distinguishable with the common color-vision deficiencies.
 PALETTE = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442", "#000000", "#999999", "#882255")
 TIME_IN_RANGE_TARGET = 70.0  # consensus target for most adults with diabetes, % of readings in 70-180 mg/dL
 
 
 # ------------------------------------------------------------------------------------------------ helpers
 def _figure(width: float = 9.0, height: float = 5.0, nrows: int = 1, ncols: int = 1):
-    try:
-        from matplotlib.figure import Figure
-    except ImportError as exc:
-        raise DataLoaderConfigurationError('figures need matplotlib: pip install "wearable_project[plots]"') from exc
     figure = Figure(figsize=(width, height), layout="constrained")
     return figure, figure.subplots(nrows, ncols, squeeze=False)
 
 
 def _finish(figure, data: pd.DataFrame, path: str | Path | None, dpi: int) -> Any:
     figure.data = data.reset_index(drop=True)
-    if path is not None:
-        figure.savefig(Path(path).expanduser(), dpi=dpi)
+    if path is not None:  # never into a data root (data_statistics.protected_roots)
+        figure.savefig(ds.guard_output(path), dpi=dpi)
     return figure
 
 
@@ -75,7 +73,6 @@ def _phase(source) -> str | None:
         return source.phase
     run = Path(source) / "run_parameters.json"
     if run.is_file():
-        import json
         return json.loads(run.read_text()).get("phase")
     return None
 
@@ -123,7 +120,7 @@ def plot_feature_presence(coverage: "ds.Coverage", *, show_ids: bool = False, pa
     presence = presence[presence.sum().sort_values(ascending=False, kind="stable").index]
     order = presence.assign(_n=presence.sum(axis=1)).sort_values(["_n"], ascending=False, kind="stable").index
     presence = presence.loc[order]
-    from matplotlib.colors import ListedColormap
+
     fig, axes = _figure(max(8.0, 0.28 * presence.shape[1] + 3), max(4.0, min(12.0, 0.18 * presence.shape[0] + 2)))
     ax = axes[0, 0]
     ax.imshow(presence.to_numpy(dtype=float), aspect="auto", interpolation="nearest", cmap=ListedColormap(["#f2f2f2", "#1f4e79"]), vmin=0, vmax=1)

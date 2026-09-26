@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Iterable
 import numpy as np
 import pandas as pd
+import json
 from wearable_project.exceptions import DataLoaderConfigurationError
 from wearable_project.utils import data_statistics as ds
 from wearable_project.utils import data_summaries as sm
@@ -252,7 +253,7 @@ def _period_frame(period: dict[str, Any]) -> pd.DataFrame:
     for column in CGM_PERIOD_COLUMNS:
         if column not in ("RegistrationCode", "cgm", "sufficient", "first_day", "last_day"):
             frame[column] = pd.to_numeric(frame[column]).astype(float)
-    for column in ("first_day", "last_day"):  # dates or None, one dtype whether or not the participant has CGM days
+    for column in ("first_day", "last_day"):  # dates or None, one dtype whether the participant has CGM days
         value = frame.at[0, column]
         frame[column] = pd.Series([pd.Timestamp(value).date() if pd.notna(value) else pd.NaT], dtype=object)
     frame["cgm"] = frame["cgm"].astype(bool)
@@ -402,6 +403,7 @@ def compute_domain_metrics(
     root_path = Path(root).expanduser() if root is not None else Path(
         ds.DEFAULT_CURATED_ROOT if phase == "curated" else ds.DEFAULT_NATIVE_ROOT)
     started, clock = datetime.now(timezone.utc), time.perf_counter()
+    ds._remember_root(root_path)
     out_dir = ds._guard_output(Path(out), [root_path]) if out is not None else None
     if participants is None:
         coverage = ds.compute_coverage(phase, root=root_path, features=["Sleep", "BloodGlucose"])
@@ -452,7 +454,6 @@ def compute_domain_metrics(
            "started": started.isoformat(), "finished": datetime.now(timezone.utc).isoformat(),
            "seconds": round(time.perf_counter() - clock, 2)}
     if out_dir is not None:
-        import json
         (out_dir / "run.json").write_text(json.dumps(run, indent=2, default=str))
     return DomainMetrics(tables["sleep_nights"], tables["cgm_days"], tables["cgm_periods"], errors, run)
 

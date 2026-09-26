@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 import pandas as pd
 from wearable_project import __release_label__, __version__
+from wearable_project.utils.data_statistics import protected_roots
 from wearable_project.curation import schema
 from wearable_project.DataLoaders import available_features
 from wearable_project.DataLoaders._base import DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, AppleHealthFeatureLoader
@@ -323,9 +324,9 @@ def main(argv: list[str] | None = None) -> int:
         if not getattr(args, name).is_dir():
             parser.error(f"--{name} {getattr(args, name)} is not a directory")
     out = (args.out or Path.cwd() / f"cohort_acceptance_{datetime.now():%Y%m%d-%H%M%S}").expanduser().resolve()
-    for root in (args.native, args.curated):
-        if out == root.resolve() or root.resolve() in out.parents:
-            parser.error(f"--out {out} lies inside a data root; reports are never written into the roots")
+    for root in protected_roots(args.native, args.curated):
+        if out == root or root in out.parents:
+            parser.error(f"--out {out} lies inside the data root {root}; reports are never written into a data root")
 
     result = run(args.native, args.curated, args.participants, args.seed, features, args.profile_only)
     out.mkdir(parents=True, exist_ok=True)

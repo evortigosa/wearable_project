@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+import json
 import numpy as np
 import pandas as pd
 from wearable_project.exceptions import DataLoaderConfigurationError
@@ -313,7 +314,7 @@ def summarize(source: "ds.DailyStatistics | str | Path", *, rules: dict[str, Val
                        retention(adherence) if len(adherence) else pd.DataFrame(),
                        {f: r.describe() for f, r in chosen_rules.items()})
     if out is not None:
-        directory = Path(out).expanduser()
+        directory = ds.guard_output(out)
         directory.mkdir(parents=True, exist_ok=True)
         result.participant_metrics.to_csv(directory / "participant_metrics.csv", index=False)
         result.adherence.to_csv(directory / "adherence.csv", index=False)
@@ -344,6 +345,8 @@ class _Source:
             self.memory, self.dir = None, Path(source)
             if not (self.dir / "run.json").is_file():
                 raise DataLoaderConfigurationError(f"{self.dir} is not a finished data_statistics run (no run.json)")
+            # The root this run was computed from is protected from outputs too (data_statistics.protected_roots).
+            ds._remember_root(json.loads((self.dir / "run.json").read_text()).get("parameters", {}).get("root"))
             self.features = sorted(p.name.replace(".csv.gz", "") for p in (self.dir / "daily").glob("*.csv.gz"))
 
     def participants_of(self, feature: str):

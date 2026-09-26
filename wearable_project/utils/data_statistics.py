@@ -31,6 +31,8 @@ command line. Outputs are written only outside the data roots.
 
 
 from __future__ import annotations
+import re
+import os
 import argparse
 import json
 import sys
@@ -48,7 +50,7 @@ from wearable_project import __release_label__, __version__
 from wearable_project.curation import schema
 from wearable_project.curation.registry import get_policy
 from wearable_project.DataLoaders import available_features
-from wearable_project.DataLoaders._base import DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT
+from wearable_project.DataLoaders._base import DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, _PHASE_STATE_FILES
 from wearable_project.exceptions import DataLoaderConfigurationError, DataLoaderError
 from wearable_project.processing.registry import get_feature_spec
 
@@ -144,13 +146,74 @@ def measurement_kind(feature: str) -> str:
     return get_policy(feature, allow_fallback=False).as_dict()["semantics"]["measurement_kind"]
 
 
-def _guard_output(out: Path, roots: Iterable[Path]) -> Path:
-    out = Path(out).expanduser().resolve()
-    for root in roots:
-        root = Path(root).expanduser().resolve()
+# Outputs never go into a data root, so that a root holds only wearable data: not statistics, summaries, figures or
+# reports. Protected are both phases' permanent roots, every root read in this session, and the root a written run
+# was computed from once that run is opened.
+_ROOTS_READ: set[Path] = set()
+
+
+def _remember_root(root: str | Path | None) -> None:
+    if root is not None:
+        _ROOTS_READ.add(Path(root).expanduser().resolve())
+
+
+def protected_roots(*roots: str | Path | None) -> list[Path]:
+    """
+    The data roots no output is ever written into: both phases' permanent roots, every root read in this session
+    (by ``compute_coverage``, ``compute_daily_statistics`` or ``compute_domain_metrics``, or recorded by a written run
+    that summaries or figures were drawn from), and any given.
+    """
+
+    candidates = [DEFAULT_NATIVE_ROOT, DEFAULT_CURATED_ROOT, *_ROOTS_READ, *(r for r in roots if r is not None)]
+    return sorted({Path(r).expanduser().resolve() for r in candidates})
+
+
+_PARTICIPANT_FOLDER = re.compile(r"^(10K_)?\d{6,}$")
+
+
+def _holds_wearable_data(directory: Path, scan: int = 500) -> bool:
+    """
+    Whether a directory is recognizably a data root by its content: a processing state database at its top, or a
+    participant folder holding a feature file. Only the first ``scan`` entries are examined, stopping at a match.
+    """
+
+    if any((directory / name).is_file() for name in _PHASE_STATE_FILES.values()):
+        return True
+    features = set(available_features())
+    try:
+        with os.scandir(directory) as entries:
+            for count, entry in enumerate(entries):
+                if count >= scan:
+                    break
+                if _PARTICIPANT_FOLDER.match(entry.name) and entry.is_dir():
+                    with os.scandir(entry.path) as inner:
+                        if any(e.name.endswith(".csv") and e.name[:-4] in features for e in inner):
+                            return True
+    except OSError:
+        return False
+    return False
+
+
+def guard_output(path: str | Path, *roots: str | Path | None) -> Path:
+    """
+    ``path`` resolved (symbolic links followed), or an error if it lies inside a data root: a protected root
+    (``protected_roots``), or any directory recognizably holding wearable data, whether this session read it.
+    """
+
+    out = Path(path).expanduser().resolve()
+    advice = ("statistics, summaries and figures are never written into a data root, so that it holds only wearable "
+              "data. Choose a folder outside it, such as ~/wearable_statistics")
+    for root in protected_roots(*roots):
         if out == root or root in out.parents:
-            raise DataLoaderConfigurationError(f"{out} lies inside the data root {root}; outputs are never written there")
+            raise DataLoaderConfigurationError(f"{out} lies inside the data root {root}; {advice}")
+    for directory in (out, *out.parents):
+        if directory.is_dir() and _holds_wearable_data(directory):
+            raise DataLoaderConfigurationError(f"{out} lies inside {directory}, which holds wearable data; {advice}")
     return out
+
+
+def _guard_output(out: Path, roots: Iterable[Path]) -> Path:
+    return guard_output(out, *roots)
 
 
 # ---------------------------------------------------------------------------------------------- coverage
@@ -192,6 +255,7 @@ def compute_coverage(phase: str = "curated", *, root: str | Path | None = None,
     phase = _check_phase(phase)
     rows, notes = [], []
     for feature in _features(features):
+        _remember_root(root)
         report = _loader(feature, phase, Path(root) if root is not None else None).profile()
         table = report.participants
         present = table[table["on_disk"].astype(bool)]
@@ -787,6 +851,7 @@ def export_parquet(out: str | Path) -> list[Path]:
     Write a Parquet copy beside every table of a written run, for faster reading. It needs pyarrow (or fastparquet),
     which the package does not require; the CSV files remain the run's record.
     """
+    guard_output(out)
 
     try:
         import pyarrow  # noqa: F401
@@ -924,6 +989,7 @@ def compute_daily_statistics(
     root_path = Path(root).expanduser() if root is not None else Path(DEFAULT_CURATED_ROOT if phase == "curated" else DEFAULT_NATIVE_ROOT)
     started = datetime.now(timezone.utc)
     clock = time.perf_counter()
+    _remember_root(root_path)
     out_dir = _guard_output(Path(out), [root_path]) if out is not None else None
     if participants is None:
         coverage = compute_coverage(phase, root=root_path, features=chosen)
