@@ -29,13 +29,12 @@ from __future__ import annotations
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 import numpy as np
 import pandas as pd
-import json
 from wearable_project.exceptions import DataLoaderConfigurationError
 from wearable_project.utils import data_statistics as ds
 from wearable_project.utils import data_summaries as sm
@@ -246,6 +245,20 @@ CGM_PERIOD_COLUMNS = ["RegistrationCode", "cgm", "typical_gap_minutes", "expecte
                       *[n for n, _, _ in GLUCOSE_RANGES]]
 
 
+# The layout of a written domain run; "domain-2" added the cgm_profile table.
+DOMAIN_OUTPUT_SCHEMA = "domain-2"
+CGM_READING_COLUMNS = ["RegistrationCode", "local_time", "local_date", "minute_of_day", "mgdl", "completeness", "valid_day"]
+# The Ambulatory Glucose Profile: these percentiles of glucose in each time-of-day bin, over valid days.
+AGP_PERCENTILES = (5, 25, 50, 75, 95)
+AGP_BIN_MINUTES = 15
+CGM_PROFILE_COLUMNS = ["RegistrationCode", "minute", "readings", "days", *[f"p{q}" for q in AGP_PERCENTILES]]
+SEGMENT_COLUMNS = ["RegistrationCode", "night_date", "state", "source", "start_local", "end_local", "start_hours_after_noon",
+                   "end_hours_after_noon", "minutes", "main_period", "counted"]
+REGULARITY_COLUMNS = ["RegistrationCode", "nights", "midpoint_sd_hours", "onset_sd_hours", "offset_sd_hours",
+                      "asleep_sd_minutes", "free_nights", "work_nights", "midpoint_free", "midpoint_work",
+                      "social_jetlag_hours", "asleep_free_minutes", "asleep_work_minutes"]
+
+
 def _period_frame(period: dict[str, Any]) -> pd.DataFrame:
     """The one-row period table, typed as a written run reads it back: numbers as floats, missing values as NaN."""
 
@@ -255,7 +268,7 @@ def _period_frame(period: dict[str, Any]) -> pd.DataFrame:
             frame[column] = pd.to_numeric(frame[column]).astype(float)
     for column in ("first_day", "last_day"):  # dates or None, one dtype whether the participant has CGM days
         value = frame.at[0, column]
-        frame[column] = pd.Series([pd.Timestamp(value).date() if pd.notna(value) else pd.NaT], dtype=object)
+        frame[column] = pd.Series([pd.Timestamp(value).date() if bool(pd.notna(value)) else pd.NaT], dtype=object)
     frame["cgm"] = frame["cgm"].astype(bool)
     frame["sufficient"] = frame["sufficient"].astype(bool)
     return frame
@@ -291,6 +304,18 @@ def _describe_glucose(mgdl: np.ndarray) -> dict[str, float]:
             **{name: 100.0 * float(np.mean(ranges == name)) for name, _, _ in GLUCOSE_RANGES}}
 
 
+def _glucose_frame(data) -> pd.DataFrame:
+    """One participant's rows with naive local times and glucose in mg/dL (NaN where the unit is not established)."""
+
+    harmonized = data.with_harmonized_values().df.reset_index()
+    units = set(harmonized["harmonized_unit"].dropna().astype(str))
+    if units - {"mmol/L"}:
+        raise DataLoaderConfigurationError(f"CGM metrics need glucose in mmol/L; found {sorted(units)}")
+    frame, _ = ds._local_frame(data)
+    frame["mgdl"] = glucose_mgdl(harmonized["harmonized_value"])
+    return frame
+
+
 def cgm_metrics(data) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     ``(days, period)`` for one participant's BloodGlucose result. ``period`` always has one row; its ``cgm`` column
@@ -306,12 +331,7 @@ def cgm_metrics(data) -> tuple[pd.DataFrame, pd.DataFrame]:
                    "sufficient": False})
     if expected is None:
         return pd.DataFrame(columns=CGM_DAY_COLUMNS), _period_frame(period)
-    harmonized = data.with_harmonized_values().df.reset_index()
-    units = set(harmonized["harmonized_unit"].dropna().astype(str))
-    if units - {"mmol/L"}:
-        raise DataLoaderConfigurationError(f"CGM metrics need glucose in mmol/L; found {sorted(units)}")
-    frame, _ = ds._local_frame(data)
-    frame["mgdl"] = glucose_mgdl(harmonized["harmonized_value"])
+    frame = _glucose_frame(data)
     period["unresolved_readings"] = int((~np.isfinite(frame["mgdl"])).sum())  # excluded: unit not established
     frame = frame[np.isfinite(frame["mgdl"])]
     frame["day"] = frame["local_start"].dt.date
@@ -336,8 +356,167 @@ def cgm_metrics(data) -> tuple[pd.DataFrame, pd.DataFrame]:
     return days, _period_frame(period)
 
 
+def cgm_readings(data) -> pd.DataFrame:
+    """
+    One participant's CGM readings with a usable unit: local time and day, minute of the day, glucose in mg/dL, and
+    the day's completeness and validity, decided as ``cgm_metrics`` decides them. Empty without a continuous
+    monitor's cadence.
+    """
+
+    if data.df.empty:
+        return pd.DataFrame(columns=CGM_READING_COLUMNS)
+    cadence = ds.sampling_cadence(data)
+    expected = sm.expected_records_per_day("BloodGlucose", cadence["typical_gap_minutes"], cadence["regular_share"])
+    if expected is None:
+        return pd.DataFrame(columns=CGM_READING_COLUMNS)
+    frame = _glucose_frame(data)
+    frame = frame[np.isfinite(frame["mgdl"])]
+    day = frame["local_start"].dt.date
+    completeness = (day.map(day.value_counts()) / expected).clip(upper=1.0)
+    start = frame["local_start"]
+    table = pd.DataFrame({"RegistrationCode": frame["RegistrationCode"].astype(str).to_numpy(), "local_time": start.to_numpy(),
+                          "local_date": day.to_numpy(),
+                          "minute_of_day": (start.dt.hour * 60 + start.dt.minute + start.dt.second / 60).to_numpy(dtype=float),
+                          "mgdl": frame["mgdl"].to_numpy(dtype=float), "completeness": completeness.to_numpy(dtype=float),
+                          "valid_day": (completeness >= CGM_MIN_DAY_COMPLETENESS).to_numpy()})
+    return table.sort_values("local_time", kind="stable").reset_index(drop=True)[CGM_READING_COLUMNS]
+
+
+def cgm_profile(readings: pd.DataFrame, *, bin_minutes: int = AGP_BIN_MINUTES) -> pd.DataFrame:
+    """
+    The Ambulatory Glucose Profile of each participant: over valid days, the 5th, 25th, 50th, 75th and 95th
+    percentiles of glucose (mg/dL) in each time-of-day bin of ``bin_minutes`` from midnight, pooling the days, with the
+    readings and days behind each bin. Every bin is present; one without readings has NaN percentiles. The
+    percentiles are not smoothed (the consensus AGP software smooths its curves).
+    """
+
+    if not (isinstance(bin_minutes, (int, np.integer)) and 1 <= bin_minutes <= 1440 and 1440 % bin_minutes == 0):
+        raise DataLoaderConfigurationError("bin_minutes must divide the day's 1,440 minutes, such as 5, 15 or 60")
+    valid = readings[readings["valid_day"].astype(bool)] if len(readings) else readings
+    rows = []
+    for code, part in valid.groupby("RegistrationCode", sort=True):
+        bins = (part["minute_of_day"].to_numpy(dtype=float) // bin_minutes).astype(int) * int(bin_minutes)
+        values, days = part["mgdl"].to_numpy(dtype=float), part["local_date"].to_numpy()
+        for minute in range(0, 1440, int(bin_minutes)):
+            here = bins == minute
+            v = values[here]
+            row = {"RegistrationCode": code, "minute": minute, "readings": int(here.sum()), "days": int(len(set(days[here])))}
+            row.update({f"p{q}": float(np.percentile(v, q)) if len(v) else np.nan for q in AGP_PERCENTILES})
+            rows.append(row)
+    return pd.DataFrame(rows, columns=CGM_PROFILE_COLUMNS)
+
+
+def sleep_segments(data) -> pd.DataFrame:
+    """
+    One participant's sleep records split at local noon into the nights they belong to, as the night metrics split
+    them: each piece's state (in bed, asleep, awake, or a stage), its source, local start and end, hours after the
+    night's noon, and minutes. For drawing one participant's nights.
+    ``main_period`` says whether the piece overlaps the night's main sleep period (from ``sleep_nights``' onset to
+    offset): asleep time there is the night's total sleep, asleep time outside it is naps. ``counted`` is False for a
+    stage the night's stage minutes leave out: outside the main period, or recorded by a second device on a night
+    another device staged more (the metrics take stages from the source that staged the most minutes within the main
+    period; ties: the first source identifier).
+    """
+
+    if data.df.empty:
+        return pd.DataFrame(columns=SEGMENT_COLUMNS)
+    df, _ = ds._local_frame(data)
+    pieces = _night_pieces(df)
+    pieces = pieces[pieces["end"] > pieces["start"]]
+    noon = pieces["night"] + pd.Timedelta(NIGHT_START_HOUR, unit="h")
+    hour, minute = pd.Timedelta(1, unit="h"), pd.Timedelta(1, unit="min")
+    table = pd.DataFrame({
+        "RegistrationCode": pieces["RegistrationCode"].astype(str).to_numpy(), "night_date": pieces["night"].dt.date.to_numpy(),
+        "state": pieces["state"].to_numpy(),
+        "source": df["source_id"].astype(str).to_numpy()[pieces["row"].to_numpy()] if "source_id" in df else None,
+        "start_local": pieces["start"].to_numpy(), "end_local": pieces["end"].to_numpy(),
+        "start_hours_after_noon": ((pieces["start"] - noon) / hour).to_numpy(dtype=float),
+        "end_hours_after_noon": ((pieces["end"] - noon) / hour).to_numpy(dtype=float),
+        "minutes": ((pieces["end"] - pieces["start"]) / minute).to_numpy(dtype=float)})
+    periods = sleep_nights(data)[["night_date", "onset_local", "offset_local"]]
+    table = table.merge(periods, on="night_date", how="left")
+    table["main_period"] = ((table["start_local"] < table["offset_local"]) & (table["end_local"] > table["onset_local"])).to_numpy(dtype=bool)
+    table["counted"] = True
+    is_stage = table["state"].isin(STAGE_STATES).to_numpy()
+    table.loc[is_stage, "counted"] = table.loc[is_stage, "main_period"]
+    keys = ["RegistrationCode", "night_date", "source"]
+    stages = table[is_stage & table["main_period"].to_numpy()]
+    if len(stages) and bool(table["source"].notna().all()):
+        clipped = stages.assign(start=stages[["start_local", "onset_local"]].max(axis=1), end=stages[["end_local", "offset_local"]].min(axis=1))
+        per_source = ds._union_minutes(clipped, keys)
+        chosen = set(per_source.groupby(level=[0, 1]).idxmax())
+        table.loc[stages.index, "counted"] = [key in chosen for key in zip(*(stages[k] for k in keys))]
+    return table.sort_values(["night_date", "start_local", "state"], kind="stable").reset_index(drop=True)[SEGMENT_COLUMNS]
+
+
+def sleep_regularity(nights: pd.DataFrame, *, rule: NightRule = NightRule(),
+                     weekend_days: Iterable[int] = sm.WEEKEND_DAYS) -> pd.DataFrame:
+    """
+    Per participant over valid nights: the standard deviations of sleep midpoint, onset and offset (hours) and of total
+    sleep time (minutes), and social jetlag, the mean midpoint on free nights minus that on work nights (positive:
+    later on free nights). A night is free when the day it ends on is a weekend day (``weekend_days``, Monday 0): with
+    the default Friday-Saturday weekend, the Thursday and Friday nights.
+    """
+
+    weekend = {int(d) for d in weekend_days}
+    valid = nights[nights["asleep_recorded"].astype(bool) & (nights["asleep_minutes"] >= rule.min_asleep_minutes)].copy()
+    if valid.empty:
+        return pd.DataFrame(columns=REGULARITY_COLUMNS)
+    ends = pd.to_datetime(valid["night_date"]) + pd.Timedelta(1, unit="D")
+    valid["free"] = ends.dt.weekday.isin(weekend).to_numpy()
+    rows = []
+    for code, group in valid.groupby("RegistrationCode", sort=True):
+        free, work = group[group["free"]], group[~group["free"]]
+        rows.append({"RegistrationCode": code, "nights": len(group),
+                     "midpoint_sd_hours": group["midpoint_hours_after_noon"].std(), "onset_sd_hours": group["onset_hours_after_noon"].std(),
+                     "offset_sd_hours": group["offset_hours_after_noon"].std(), "asleep_sd_minutes": group["asleep_minutes"].std(),
+                     "free_nights": len(free), "work_nights": len(work),
+                     "midpoint_free": free["midpoint_hours_after_noon"].mean() if len(free) else np.nan,
+                     "midpoint_work": work["midpoint_hours_after_noon"].mean() if len(work) else np.nan,
+                     "social_jetlag_hours": (free["midpoint_hours_after_noon"].mean() - work["midpoint_hours_after_noon"].mean())
+                     if len(free) and len(work) else np.nan,
+                     "asleep_free_minutes": free["asleep_minutes"].mean() if len(free) else np.nan,
+                     "asleep_work_minutes": work["asleep_minutes"].mean() if len(work) else np.nan})
+    return pd.DataFrame(rows, columns=REGULARITY_COLUMNS)
+
+
+def _one_participant(feature: str, participant: str, phase: str, root, state_validation: str):
+    root_path = _resolve_root(phase, root)
+    ds._remember_root(root_path)
+    code = str(participant).strip()
+    code = code if code.startswith("10K_") else f"10K_{code}"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        loader = ds._loader(feature, phase, root_path, state_validation=state_validation)
+        data = loader.get_data(registration_codes=code, max_rows=None, projection="full" if feature == "Sleep" else "default")
+    if data.df.empty:
+        raise DataLoaderConfigurationError(f"no {feature} data for participant {code}")
+    return data
+
+
+def load_sleep_segments(participant: str, phase: str = "curated", *, root: str | Path | None = None,
+                        state_validation: str = "auto") -> pd.DataFrame:
+    """``sleep_segments`` for one participant, read from the phase's root."""
+
+    return sleep_segments(_one_participant("Sleep", participant, phase, root, state_validation))
+
+
+def load_cgm_readings(participant: str, phase: str = "curated", *, root: str | Path | None = None,
+                      state_validation: str = "auto") -> pd.DataFrame:
+    """``cgm_readings`` for one participant, read from the phase's root."""
+
+    return cgm_readings(_one_participant("BloodGlucose", participant, phase, root, state_validation))
+
+
+def _resolve_root(phase: str, root: str | Path | None) -> Path:
+    """The root to read: the one given, or the phase's HPP root."""
+
+    return Path(root).expanduser() if root is not None else Path(
+        ds.DEFAULT_CURATED_ROOT if phase == "curated" else ds.DEFAULT_NATIVE_ROOT)
+
+
 # ------------------------------------------------------------------------------------------ cohort runs
-DOMAIN_TABLES = ("sleep_nights", "cgm_days", "cgm_periods")
+DOMAIN_TABLES = ("sleep_nights", "cgm_days", "cgm_periods", "cgm_profile")
 
 
 def read_domain_table(out: str | Path, name: str) -> pd.DataFrame:
@@ -361,6 +540,8 @@ class DomainMetrics:
     cgm_periods: pd.DataFrame
     errors: list[dict[str, str]]
     run: dict[str, Any]
+    # Each CGM participant's Ambulatory Glucose Profile (cgm_profile), per time-of-day bin over valid days.
+    cgm_profile: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=CGM_PROFILE_COLUMNS))
 
 
 def _domain_task(args) -> dict[str, Any]:
@@ -382,6 +563,7 @@ def _domain_task(args) -> dict[str, Any]:
                 out["tables"]["sleep_nights"] = sleep_nights(data)
             else:
                 out["tables"]["cgm_days"], out["tables"]["cgm_periods"] = cgm_metrics(data)
+                out["tables"]["cgm_profile"] = cgm_profile(cgm_readings(data))
         except Exception as exc:
             out["errors"].append({"RegistrationCode": code, "feature": feature, "error": f"{type(exc).__name__}: {exc}"})
     return out
@@ -400,8 +582,7 @@ def compute_domain_metrics(
     phase = ds._check_phase(phase)
     if default_inclusion_only and phase != "curated":
         raise DataLoaderConfigurationError("default_inclusion_only applies to the curated phase only")
-    root_path = Path(root).expanduser() if root is not None else Path(
-        ds.DEFAULT_CURATED_ROOT if phase == "curated" else ds.DEFAULT_NATIVE_ROOT)
+    root_path = _resolve_root(phase, root)
     started, clock = datetime.now(timezone.utc), time.perf_counter()
     ds._remember_root(root_path)
     out_dir = ds._guard_output(Path(out), [root_path]) if out is not None else None
@@ -410,7 +591,7 @@ def compute_domain_metrics(
         codes = sorted(coverage.participant_feature["RegistrationCode"].unique())
     else:
         codes = sorted({c if c.startswith("10K_") else f"10K_{c}" for c in (str(p).strip() for p in participants)})
-    parameters = {"tool": "domain_metrics", "phase": phase, "root": str(root_path.resolve()), "participants": codes,
+    parameters = {"tool": "domain_metrics", "output_schema": DOMAIN_OUTPUT_SCHEMA, "phase": phase, "root": str(root_path.resolve()), "participants": codes,
                   "default_inclusion_only": default_inclusion_only, "state_validation": state_validation,
                   "definitions": definitions()}
     outputs = ds._Outputs(out_dir, parameters, resume, tables=DOMAIN_TABLES) if out_dir is not None else None
@@ -436,7 +617,8 @@ def compute_domain_metrics(
         for task in tasks:
             consume(_domain_task(task))
 
-    columns = {"sleep_nights": NIGHT_COLUMNS, "cgm_days": CGM_DAY_COLUMNS, "cgm_periods": CGM_PERIOD_COLUMNS}
+    columns = {"sleep_nights": NIGHT_COLUMNS, "cgm_days": CGM_DAY_COLUMNS, "cgm_periods": CGM_PERIOD_COLUMNS,
+               "cgm_profile": CGM_PROFILE_COLUMNS}
     if outputs is None:
         tables = {n: pd.concat(memory[n], ignore_index=True) if memory[n] else pd.DataFrame(columns=columns[n])
                   for n in DOMAIN_TABLES}
@@ -454,8 +636,10 @@ def compute_domain_metrics(
            "started": started.isoformat(), "finished": datetime.now(timezone.utc).isoformat(),
            "seconds": round(time.perf_counter() - clock, 2)}
     if out_dir is not None:
+        import json
         (out_dir / "run.json").write_text(json.dumps(run, indent=2, default=str))
-    return DomainMetrics(tables["sleep_nights"], tables["cgm_days"], tables["cgm_periods"], errors, run)
+    return DomainMetrics(tables["sleep_nights"], tables["cgm_days"], tables["cgm_periods"], errors, run,
+                         cgm_profile=tables["cgm_profile"])
 
 
 # ------------------------------------------------------------------------------------------------ summaries

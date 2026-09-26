@@ -35,6 +35,7 @@ import re
 import os
 import argparse
 import json
+import operator
 import sys
 import time
 import warnings
@@ -56,7 +57,18 @@ from wearable_project.processing.registry import get_feature_spec
 
 
 PHASES = ("curated", "native")
-HOURLY_COLUMNS = ["RegistrationCode", "feature", "hour", "records", "value_sum", "value_mean", "value_count"]
+HOURLY_COLUMNS = ["RegistrationCode", "feature", "hour", "records", "days", "value_sum", "value_mean", "value_count"]
+# The layout of a written run. A run written with another layout cannot be resumed, since appended rows would not match
+# its files; "statistics-4" added the hourly profile's days and its complete 24 hours, "statistics-5" the clinical
+# threshold counts.
+OUTPUT_SCHEMA = "statistics-5"
+# Readings beyond clinical thresholds, counted per participant-day where the values are in the threshold's unit
+# (NaN otherwise): SpO2 below 90% (hypoxaemia) and body temperature at or above 38.0 degrees Celsius (fever).
+CLINICAL_THRESHOLDS = {
+    "OxygenSaturation": (("readings_below_90_percent", "<", 90.0, "%"),),
+    "BodyTemperature": (("readings_at_least_38_celsius", ">=", 38.0, "Cel"),),
+}
+_COMPARE = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
 PROVENANCE_COLUMNS = ["RegistrationCode", "feature", "local_date", "acquisition_method", "records", "records_user_entered"]
 CURATION_COLUMNS = ["RegistrationCode", "feature", "local_date", "kind", "name", "records"]
 # HealthKit's sleep-analysis categories, and those that mean the participant was asleep (unspecified, core, deep,
@@ -420,6 +432,31 @@ def _out_of_range(feature, kind, df, keys, unit, harmonize):
     return below.where(assessed > 0), above.where(assessed > 0)
 
 
+def _hour_coverage(df: pd.DataFrame) -> pd.Series:
+    """
+    Per participant and local hour of day, the days on which that hour holds data: an event in it, or an interval
+    overlapping it. Days are numbered, not dated, so instants and interval pieces combine whatever their resolution.
+    """
+
+    start, end = df["local_start"], df["local_end"]
+    interval = (end > start).to_numpy(dtype=bool)
+    codes = df["RegistrationCode"].to_numpy()
+    frames = []
+    if (~interval).any():
+        s = start[~interval]
+        frames.append(pd.DataFrame({"RegistrationCode": codes[~interval], "day": s.to_numpy().astype("datetime64[D]").astype("int64"),
+                                    "hour": s.dt.hour.to_numpy()}))
+    if interval.any():
+        pieces = _pieces(start[interval], end[interval], unit="h")
+        pieces = pieces[pieces["end"] > pieces["start"]]
+        stamp = pd.to_datetime(pieces["day"])
+        frames.append(pd.DataFrame({"RegistrationCode": codes[interval][pieces["row"].to_numpy()],
+                                    "day": stamp.to_numpy().astype("datetime64[D]").astype("int64"), "hour": stamp.dt.hour.to_numpy()}))
+    if not frames:
+        return pd.Series(dtype="int64")
+    return pd.concat(frames, ignore_index=True).drop_duplicates().groupby(["RegistrationCode", "hour"]).size()
+
+
 def _hourly_values(hourly: pd.DataFrame, df: pd.DataFrame, kind: str, feature: str) -> pd.DataFrame:
     """
     Value statistics per local hour of day, pooled over all days: totals split at hour boundaries in proportion to
@@ -441,6 +478,7 @@ def _hourly_values(hourly: pd.DataFrame, df: pd.DataFrame, kind: str, feature: s
             sums = pieces.groupby(keys)["value"].sum(min_count=1)
             frame = frame.reindex(frame.index.union(sums.index))
             frame["records"] = frame["records"].fillna(0).astype(int)
+            frame["days"] = frame["days"].fillna(0).astype(int)
             frame["value_sum"] = sums.reindex(frame.index)
         else:
             groups = [df["RegistrationCode"], df["local_start"].dt.hour.rename("hour")]
@@ -450,6 +488,14 @@ def _hourly_values(hourly: pd.DataFrame, df: pd.DataFrame, kind: str, feature: s
             elif kind in ("intensive_value", "ratio", "summary_statistic"):
                 frame["value_mean"] = values.groupby(groups).mean().reindex(frame.index)
                 frame["value_count"] = values.groupby(groups).count().reindex(frame.index)
+        # Amounts are zero in an hour without any, for a participant whose values are known; a participant whose
+        # values could not be harmonized keeps NaN, which is unknown rather than zero. Levels have no zero.
+        if kind in ("extensive_total", "event_amount"):
+            known = values.notna().groupby(df["RegistrationCode"].to_numpy()).any()
+            has = frame.index.get_level_values(0).isin(known[known].index)
+            frame.loc[has, "value_sum"] = frame.loc[has, "value_sum"].fillna(0.0)
+        if kind in ("event_amount", "intensive_value", "ratio", "summary_statistic"):
+            frame["value_count"] = frame["value_count"].fillna(0)
     frame = frame.reset_index()
     frame["feature"] = feature
     return frame[HOURLY_COLUMNS]
@@ -525,7 +571,11 @@ def summarize_result(data, feature: str | None = None, *, harmonize: bool = True
     if basis == "local":
         hours = df.assign(hour=df["local_start"].dt.hour)
         daily["hours_with_data"] = hours.groupby(keys)["hour"].nunique().reindex(daily.index).fillna(0).astype(int)
-        hourly = hours.groupby(["RegistrationCode", "hour"]).size().rename("records").reset_index()
+        # Every hour for every participant, zeros included: an hour without records is a true zero, and leaving it
+        # out would drop the participant from that hour's cohort median.
+        grid = pd.MultiIndex.from_product([sorted(df["RegistrationCode"].unique()), range(24)], names=["RegistrationCode", "hour"])
+        hourly = hours.groupby(["RegistrationCode", "hour"]).size().reindex(grid, fill_value=0).rename("records").reset_index()
+        hourly["days"] = _hour_coverage(df).reindex(grid, fill_value=0).to_numpy()
         hourly.insert(1, "feature", feature)
         starts = df[keys + ["local_start"]].drop_duplicates().sort_values(keys + ["local_start"])
         gaps = starts.groupby(keys, sort=False)["local_start"].diff().dt.total_seconds() / 60.0
@@ -599,6 +649,12 @@ def summarize_result(data, feature: str | None = None, *, harmonize: bool = True
         for name, fn in (("value_mean", "mean"), ("value_median", "median"), ("value_min", "min"),
                          ("value_max", "max"), ("value_count", "count")):
             daily[name] = getattr(grouped, fn)()
+        for name, op, limit, limit_unit in CLINICAL_THRESHOLDS.get(feature, ()):
+            if unit == limit_unit:
+                beyond = _COMPARE[op](pd.to_numeric(df["value"], errors="coerce"), limit)
+                daily[name] = beyond.groupby([df[k] for k in keys]).sum().astype(int)
+            else:  # values in another unit, or none established: the count is unknown, not zero
+                daily[name] = np.nan
     elif kind in ("multivariate_point", "multivariate_summary", "signal"):
         for column in value_columns:
             values = pd.to_numeric(df[column], errors="coerce")
@@ -757,7 +813,7 @@ def _cohort_tables(daily_frames: Iterable[tuple[str, pd.DataFrame]],
             records[(feature, day)] += int(n)
         if "value_sum" in frame:
             for day, value in grouped["value_sum"].sum(min_count=1).items():
-                if pd.notna(value):
+                if bool(pd.notna(value)):  # one value per day
                     sums[(feature, day)] = sums.get((feature, day), 0.0) + float(value)
     cohort = pd.DataFrame(
         [{"feature": f, "local_date": d, "participants": n, "records": records[(f, d)], "value_sum": sums.get((f, d))}
@@ -892,6 +948,11 @@ class _Outputs:
                     f"{directory} already holds a statistics run; pass resume=True to continue it, or choose an "
                     "empty directory")
             previous = json.loads(marker.read_text())
+            if previous.get("output_schema") != parameters.get("output_schema"):
+                raise DataLoaderConfigurationError(
+                    f"cannot resume {directory}: it was written with "
+                    f"{'output schema ' + previous['output_schema'] if previous.get('output_schema') else 'an earlier output schema'}, "
+                    f"and this version writes {parameters.get('output_schema')}; start a new run in an empty directory")
             if previous != parameters:
                 changed = sorted(k for k in set(previous) | set(parameters) if previous.get(k) != parameters.get(k))
                 raise DataLoaderConfigurationError(
@@ -996,7 +1057,7 @@ def compute_daily_statistics(
         codes = sorted(coverage.participant_feature["RegistrationCode"].unique())
     else:
         codes = sorted({c if c.startswith("10K_") else f"10K_{c}" for c in (str(p).strip() for p in participants)})
-    parameters = {"phase": phase, "root": str(root_path.resolve()), "features": list(chosen), "participants": codes,
+    parameters = {"output_schema": OUTPUT_SCHEMA, "phase": phase, "root": str(root_path.resolve()), "features": list(chosen), "participants": codes,
                   "default_inclusion_only": default_inclusion_only, "harmonize": harmonize,
                   "state_validation": state_validation}
     outputs = _Outputs(out_dir, parameters, resume) if out_dir is not None else None

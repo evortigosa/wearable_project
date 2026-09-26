@@ -456,6 +456,42 @@ def temporal_patterns(source, *, rules: dict[str, ValidDayRule] | None = None, f
                             cohort(month_t, ["feature", "metric", "month"], "median"), tuple(weekend_days))
 
 
+CLINICAL_COLUMNS = ["RegistrationCode", "feature", "threshold", "days", "readings", "beyond", "share_beyond", "days_beyond"]
+
+
+def clinical_thresholds(source) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Readings beyond the clinical thresholds of ``data_statistics.CLINICAL_THRESHOLDS`` (such as SpO2 below 90%):
+    ``(participants, cohort)``. Per participant, feature and threshold: the days with readings, the readings, those
+    beyond the threshold, their share, and the days with any. The cohort table sums them and counts participants with
+    any reading beyond. Participants whose values are not in the threshold's unit are left out, since their counts are
+    unknown.
+    """
+
+    src = _Source(source)
+    rows = []
+    for feature, thresholds in ds.CLINICAL_THRESHOLDS.items():
+        if feature not in src.features:
+            continue
+        for daily in src.participants_of(feature):
+            for name, *_ in thresholds:
+                if name not in daily or bool(daily[name].isna().all()):
+                    continue
+                known = daily.dropna(subset=[name])
+                readings = int(known["value_count"].sum())
+                beyond = int(known[name].sum())
+                rows.append({"RegistrationCode": str(daily["RegistrationCode"].iloc[0]), "feature": feature, "threshold": name,
+                             "days": int(len(known)), "readings": readings, "beyond": beyond,
+                             "share_beyond": beyond / readings if readings else np.nan,
+                             "days_beyond": int((known[name] > 0).sum())})
+    participants = pd.DataFrame(rows, columns=CLINICAL_COLUMNS)
+    cohort = participants.groupby(["feature", "threshold"], sort=True).agg(
+        participants=("RegistrationCode", "nunique"), participants_beyond=("beyond", lambda b: int((b > 0).sum())),
+        readings=("readings", "sum"), beyond=("beyond", "sum"), days=("days", "sum"), days_beyond=("days_beyond", "sum")).reset_index()
+    cohort["share_beyond"] = cohort["beyond"] / cohort["readings"].where(cohort["readings"] > 0)
+    return participants, cohort
+
+
 def hour_of_day(source) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     ``(participants, cohort)`` by local hour of day. Per participant: records per day with data at that hour, the
@@ -471,11 +507,14 @@ def hour_of_day(source) -> tuple[pd.DataFrame, pd.DataFrame]:
     table = hourly.merge(days, on=["RegistrationCode", "feature"], how="left")
     table["records_per_day"] = table["records"] / table["days_with_data"]
     table["value_per_day"] = table["value_sum"] / table["days_with_data"]
-    participants = table[["RegistrationCode", "feature", "hour", "records_per_day", "value_per_day", "value_mean"]]
+    # The share of the participant's days with data on which this hour holds data (runs written before
+    # output schema statistics-4 have no days column).
+    table["day_share"] = table["days"] / table["days_with_data"] if "days" in table else np.nan
+    participants = table[["RegistrationCode", "feature", "hour", "records_per_day", "value_per_day", "value_mean", "day_share"]]
     rows = []
     for (feature, hour), group in participants.groupby(["feature", "hour"], sort=True):
         row = {"feature": feature, "hour": int(hour)}
-        for column in ("records_per_day", "value_per_day", "value_mean"):
+        for column in ("records_per_day", "value_per_day", "value_mean", "day_share"):
             spread = _spread(group[column])
             row.update({f"{column}_{k}": v for k, v in spread.items() if k != "participants"})
             row[f"{column}_participants"] = spread["participants"]
@@ -593,16 +632,17 @@ def quality_report(source) -> QualityReport:
     for feature in src.features:
         totals = {"feature": feature, "participants": 0, "participant_days": 0, "records": 0,
                   "records_user_entered": 0.0, "observed_minutes": 0.0, "redundant_minutes": 0.0,
-                  "values_below_range": 0.0, "values_above_range": 0.0, "days_assessed": 0}
+                  "values_below_range": 0.0, "values_above_range": 0.0, "days_assessed": 0, "records_without_offset": 0}
         seen = {"records_user_entered": False, "observed_minutes": False, "redundant_minutes": False,
                 "values_below_range": False}
         for daily in src.participants_of(feature):
             totals["participants"] += 1
             totals["participant_days"] += len(daily)
             totals["records"] += int(daily["records"].sum())
+            totals["records_without_offset"] += int(daily["records_without_offset"].sum()) if "records_without_offset" in daily else 0
             for column in ("records_user_entered", "observed_minutes", "redundant_minutes", "values_below_range",
                            "values_above_range"):
-                if column in daily and daily[column].notna().any():
+                if column in daily and bool(daily[column].notna().any()):
                     totals[column] += float(daily[column].sum())
                     seen[column if column != "values_above_range" else "values_below_range"] = True
             if "values_below_range" in daily:
@@ -612,6 +652,7 @@ def quality_report(source) -> QualityReport:
                 totals[column] = np.nan
                 if column == "values_below_range":
                     totals["values_above_range"] = np.nan
+        totals["without_offset_share"] = totals["records_without_offset"] / totals["records"] if totals["records"] else np.nan
         totals["redundant_share"] = (totals["redundant_minutes"] / totals["observed_minutes"]
                                      if totals["observed_minutes"] and not np.isnan(totals["redundant_minutes"]) else np.nan)
         rows.append(totals)
