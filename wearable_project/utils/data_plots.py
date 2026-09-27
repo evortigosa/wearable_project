@@ -2009,6 +2009,10 @@ SLEEP_LABELS = {"INBED": "in bed", "AWAKE": "awake", "ASLEEP": "asleep (unstaged
 # The consensus targets for most adults with diabetes (Battelino et al., Diabetes Care 2019), and the coefficient of
 # variation at or below which glucose counts as stable (Danne et al., 2017).
 CV_STABILITY_THRESHOLD = 36.0
+# The column of figure.data saying whether each participant meets a target, by the metric the target reads.
+TARGET_COLUMNS = {"in_range_percent": "meets_in_range", "below_70_percent": "meets_below_70",
+                  "very_low_percent": "meets_below_54", "above_180_percent": "meets_above_180",
+                  "very_high_percent": "meets_above_250", "cv_percent": "meets_cv"}
 GLUCOSE_TARGETS = (("time in range 70-180 > 70%", "in_range_percent", ">", 70.0),
                    ("time below 70 < 4%", "below_70_percent", "<", 4.0),
                    ("time below 54 < 1%", "very_low_percent", "<", 1.0),
@@ -2272,6 +2276,7 @@ def plot_sleep_recording(metrics: "dm.DomainMetrics", *, show_ids: bool = False,
     total = int(counts.to_numpy().sum())
     _titles(ax, "What nights record", f"{only:,} of {total:,} nights ({only / total:.0%}) record time in bed only, not sleep")
     data = counts.add_suffix("_nights").join(shares.add_suffix("_share")).rename_axis("RegistrationCode").reset_index()
+    data.columns = [c.replace("sleep recorded", "sleep_recorded").replace("time in bed only", "in_bed_only") for c in data.columns]
     return _finish(fig, data, path, dpi, individual=True)
 
 
@@ -2401,7 +2406,7 @@ def plot_glycemic_cohort(metrics: "dm.DomainMetrics", *, sufficient_only: bool =
     table["above_180_percent"] = table["high_percent"] + table["very_high_percent"]
     compare = {">": np.greater, "<": np.less, "<=": np.less_equal}
     for name, column, op, limit in GLUCOSE_TARGETS:
-        table[name] = compare[op](table[column].to_numpy(dtype=float), limit)
+        table[TARGET_COLUMNS[column]] = compare[op](table[column].to_numpy(dtype=float), limit)
     frame, labels, excluded = _grouped(table, groups)
     fig, axes = _figure(14.0, 4.6, ncols=3)
     cv, mean, targets = axes[0, 0], axes[0, 1], axes[0, 2]
@@ -2418,8 +2423,8 @@ def plot_glycemic_cohort(metrics: "dm.DomainMetrics", *, sufficient_only: bool =
     rows = []
     for label in labels:
         part = frame[frame["group"] == label]
-        for name, *_ in GLUCOSE_TARGETS:
-            n, met = len(part), int(part[name].sum())
+        for name, column, *_ in GLUCOSE_TARGETS:
+            n, met = len(part), int(part[TARGET_COLUMNS[column]].sum())
             hide = 0 < n < k
             rows.append({"group": label, "target": name, "participants": np.nan if hide else float(n),
                          "meeting": np.nan if hide else float(met), "share": np.nan if hide else met / n, "suppressed": hide})
