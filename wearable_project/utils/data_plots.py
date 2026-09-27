@@ -3072,6 +3072,15 @@ def plot_clinical_thresholds(source, *, min_participants: int = 1, path=None, dp
     participants, cohort = sm.clinical_thresholds(source)
     _need(len(participants) > 0, "no participant has readings with a clinical threshold in its unit")
     names = list(dict.fromkeys(participants["threshold"]))
+    # A threshold resting on fewer than k participants shows no numbers at all; fewer than k beyond it hides that count.
+    cohort = cohort.copy()
+    small_total = (cohort["participants"] > 0) & (cohort["participants"] < k)
+    small_beyond = (cohort["participants_beyond"] > 0) & (cohort["participants_beyond"] < k)
+    cohort["suppressed"] = small_total | small_beyond
+    numbers = ["participants", "participants_beyond", "readings", "beyond", "days", "days_beyond", "share_beyond"]
+    cohort[numbers] = cohort[numbers].astype(float)
+    cohort.loc[small_total, numbers] = np.nan
+    cohort.loc[small_beyond, "participants_beyond"] = np.nan
     fig, axes = _figure(5.6 * len(names), 4.4, 1, len(names))
     hidden = 0
     for ax, name in zip(axes[0], names):
@@ -3081,9 +3090,13 @@ def plot_clinical_thresholds(source, *, min_participants: int = 1, path=None, dp
         hidden += _histogram_panel(ax, part.dropna(subset=["percent"]), "percent", np.linspace(0, top, 21), [ALL_PARTICIPANTS], k)
         ax.set_xlabel("% of the participant's readings beyond the threshold")
         c = cohort[cohort["threshold"] == name].iloc[0]
-        anyone = int(c["participants_beyond"])
-        told = f"{anyone:,} of {int(c['participants']):,} participants had any" if anyone == 0 or anyone >= k else f"fewer than {k} participants had any"
-        _titles(ax, str(THRESHOLD_LABELS.get(name, name)), f"{told} · {int(c['beyond']):,} of {int(c['readings']):,} readings ({c['share_beyond']:.1%})")
+        if pd.isna(c["participants"]):
+            caption = f"fewer than {k} participants"
+        else:
+            anyone = f"{int(c['participants_beyond']):,}" if pd.notna(c["participants_beyond"]) else f"fewer than {k}"
+            caption = (f"{anyone} of {int(c['participants']):,} participants had any · {int(c['beyond']):,} of "
+                       f"{int(c['readings']):,} readings ({c['share_beyond']:.1%})")
+        _titles(ax, str(THRESHOLD_LABELS.get(name, name)), caption)
     axes[0, 0].set_ylabel("participants")
     if hidden:
         fig.suptitle(_hidden(hidden, k, "bin"), x=0.99, ha="right", fontsize=8)
@@ -3280,4 +3293,6 @@ def plot_feature_correlations(summaries: "sm.Summaries", features: Iterable[str]
     data = r.rename_axis("feature_a").reset_index().melt(id_vars="feature_a", var_name="feature_b", value_name="r")
     data["participants"] = n.rename_axis("feature_a").reset_index().melt(id_vars="feature_a", var_name="feature_b", value_name="n")["n"].to_numpy()
     data["suppressed"] = data["participants"] < k
+    data["participants"] = data["participants"].astype(float)
+    data.loc[data["suppressed"], "participants"] = np.nan  # a hidden pair shows neither its correlation nor its count
     return _finish(fig, data, path, dpi)

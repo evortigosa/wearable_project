@@ -662,7 +662,9 @@ def quality_report(source) -> QualityReport:
         provenance = provenance.groupby(["feature", "acquisition_method"], sort=True)[["records", "records_user_entered"]].sum().reset_index()
         provenance["share"] = provenance["records"] / provenance.groupby("feature")["records"].transform("sum")
     curation = src.table("daily_curation")
-    if len(curation):
+    if not len(curation):  # the same columns whether there is curation or not, in memory or read from a run
+        curation = pd.DataFrame(columns=["feature", "kind", "name", "records", "share_of_records"])
+    else:
         curation = curation.groupby(["feature", "kind", "name"], sort=True)["records"].sum().reset_index()
         record_totals = features.set_index("feature")["records"]
         curation["share_of_records"] = curation["records"] / curation["feature"].map(record_totals)
