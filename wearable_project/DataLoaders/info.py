@@ -19,7 +19,9 @@ actually do on the representative samples. Typical notebook use:
 
 
 from __future__ import annotations
+import sys
 import textwrap
+import types
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from pathlib import Path
@@ -1033,3 +1035,11 @@ def _feature_report(loader: AppleHealthFeatureLoader, *, include_evidence: bool,
         payload=payload,
         text="\n".join(lines),
     )
+
+
+class _CallableModule(types.ModuleType):
+    def __call__(self, *args, **kwargs) -> InfoReport:
+        return info(*args, **kwargs)
+
+
+sys.modules[__name__].__class__ = _CallableModule
