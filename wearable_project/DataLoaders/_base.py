@@ -78,7 +78,7 @@ class DataLoaderSizeError(DataLoaderError):
 
 # Default ceiling on the rows one get_data call may return. Peak memory while loading is roughly 350-1,200
 # bytes per retained row depending on the feature's width (measured on the representative samples), so this
-# keeps a single call to the order of 10-30 GB at peak. It is a class attribute of AppleHealthFeatureLoader so
+# keeps a single call to the order of 20-60 GB at peak. It is a class attribute of AppleHealthFeatureLoader so
 # it can be raised, lowered, or disabled for a whole session in one assignment.
 DEFAULT_MAX_ROWS = 50_000_000
 _USE_DEFAULT_MAX_ROWS: Any = object()
