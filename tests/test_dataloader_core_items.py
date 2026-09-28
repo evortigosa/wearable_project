@@ -31,11 +31,11 @@ from wearable_project.processing.registry import SPECS  # noqa: E402
 
 CURATED_SAMPLE = Path(os.environ.get(
     "WEARABLE_CURATED_SAMPLE",
-    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_curated_apple_healthkit"
+    "/home/evortigosa/Desktop/postdoc/code/cluster/wearable_data/curated_apple_healthkit"
 ))
 NATIVE_SAMPLE = Path(os.environ.get(
     "WEARABLE_NATIVE_SAMPLE",
-    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_cleaned_apple_healthkit"
+    "/home/evortigosa/Desktop/postdoc/code/cluster/wearable_data/cleaned_apple_healthkit"
 ))
 needs_sample = pytest.mark.skipif(
     not CURATED_SAMPLE.is_dir() or not NATIVE_SAMPLE.is_dir(),

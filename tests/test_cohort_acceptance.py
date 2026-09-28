@@ -17,11 +17,11 @@ from wearable_project.utils import cohort_acceptance
 
 NATIVE = Path(os.environ.get(
     "WEARABLE_NATIVE_SAMPLE",
-    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_cleaned_apple_healthkit"
+    "/home/evortigosa/Desktop/postdoc/code/cluster/wearable_data/cleaned_apple_healthkit"
 ))
 CURATED = Path(os.environ.get(
     "WEARABLE_CURATED_SAMPLE",
-    "/home/evortigosa/Desktop/postdoc/code/PostdocProject/cluster_data/EV_curated_apple_healthkit"
+    "/home/evortigosa/Desktop/postdoc/code/cluster/wearable_data/curated_apple_healthkit"
 ))
 needs_samples = pytest.mark.skipif(not (NATIVE.is_dir() and CURATED.is_dir()), reason="sample roots required")
 
