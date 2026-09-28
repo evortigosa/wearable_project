@@ -80,7 +80,7 @@ GROUPS = (
     ("output", "Reports, files and safety", "Reports, the command line, and where outputs may and may not go."),
 )
 TIERS = ("entry point", "building block")
-# Options many figures share; a figure's card lists those its signature accepts.
+# Options many figures share; a figure's card lists its signature accepts.
 SHARED_OPTIONS = ("groups", "min_participants", "ci", "seed", "unit", "time_axis", "show_ids", "path", "dpi")
 
 # The names every example assumes. Each card shows the blocks its example needs; ``{phase}``, ``{root}`` and
@@ -863,6 +863,884 @@ TOOLS: dict[str, _Tool] = {
 }
 
 
+
+# --------------------------------------------------------------------------------------------- output tables
+@dataclass(frozen=True)
+class _Table:
+    """An output table: what a row is, its columns, and which tools return it."""
+
+    rows: str
+    columns: tuple[str, ...] = ()
+    returned_by: tuple[str, ...] = ()
+    derived_from: str = ""            # "module.CONSTANT" holding the column list, when the module declares one
+    extends: str = ""                 # another table whose columns come first
+    curated_only: tuple[str, ...] = ()
+    optional: tuple[tuple[str, str], ...] = ()   # (column, when it is present)
+    dynamic: str = ""                 # columns named at run time, explained
+    index: tuple[str, ...] = ()
+    notes: tuple[tuple[str, str], ...] = ()      # meanings specific to this table
+    read_back: str = ""               # the call reading it from a written run
+
+
+# The daily tables, one per feature, have columns that depend on the feature's measurement kind and the phase.
+DAILY_COMMON = ("RegistrationCode", "feature", "local_date", "day_basis", "records", "records_user_entered",
+                "records_without_offset", "redundant_minutes", "sources", "value_unit", "values_above_range",
+                "values_below_range")
+DAILY_CURATED_ONLY = ("records_included",)
+_DAILY_TIME = ("hours_with_data", "median_gap_minutes", "max_gap_minutes", "observed_minutes")
+_DAILY_LEVEL = _DAILY_TIME + ("value_mean", "value_median", "value_min", "value_max", "value_count", "values_unresolved")
+DAILY_BY_KIND = {
+    "categorical_state": _DAILY_TIME + ("minutes_asleep", "minutes_asleep_total", "minutes_awake", "minutes_core",
+                                        "minutes_deep", "minutes_inbed", "minutes_other_states", "minutes_rem"),
+    "duration": _DAILY_TIME + ("minutes", "sessions"),
+    "event_amount": _DAILY_TIME + ("value_sum", "value_count", "values_unresolved"),
+    "extensive_total": _DAILY_TIME + ("value_sum", "values_unresolved"),
+    "intensive_value": _DAILY_LEVEL,
+    "ratio": _DAILY_LEVEL,
+    "summary_statistic": _DAILY_LEVEL,
+    "multivariate_point": _DAILY_TIME,
+    "multivariate_summary": (),
+    "signal": _DAILY_TIME,
+}
+DAILY_BY_FEATURE = {
+    "BloodPressure": ("blood_pressure_systolic_value_mean", "blood_pressure_systolic_value_count",
+                      "blood_pressure_diastolic_value_mean", "blood_pressure_diastolic_value_count"),
+    "ActivitySummary": ("active_energy_burned_mean", "active_energy_burned_goal_mean", "apple_exercise_time_mean",
+                        "apple_exercise_time_goal_mean", "apple_stand_hours_mean", "apple_stand_hours_goal_mean"),
+    "Electrocardiogram": ("average_heart_rate_mean", "sampling_frequency_mean"),
+}
+
+
+def daily_columns(feature: str, phase: str = "curated") -> list[str]:
+    """The columns of a feature's daily table in a phase: shared ones, then its measurement kind's, then its own."""
+
+    from wearable_project.utils import data_statistics as ds
+    kind = ds.measurement_kind(feature)
+    thresholds = [name for name, *_ in ds.CLINICAL_THRESHOLDS.get(feature, ())]
+    return [*DAILY_COMMON, *(DAILY_CURATED_ONLY if phase == "curated" else ()), *DAILY_BY_KIND.get(kind, ()),
+            *DAILY_BY_FEATURE.get(feature, ()), *thresholds]
+
+
+_CI = (("ci_low", "with ci="), ("ci_high", "with ci="))
+_HOUR_STATS = tuple(f"{m}_{s}" for m in ("records_per_day", "value_per_day", "value_mean", "day_share")
+                    for s in ("median", "p25", "p75", "participants"))
+_COHORT_POINT = ("group", "participants", "median", "p25", "p75", "suppressed")
+
+TABLES: dict[str, _Table] = {
+    # ------------------------------------------------------------------------------------- the statistics run
+    "DailyStatistics.daily": _Table(
+        "one per participant and local day, in one table per feature (daily[feature])",
+        read_back='ds.read_daily(run_dir, "<feature>")', returned_by=(
+            "compute_daily_statistics", "read_daily", "iter_daily", "summarize_result"),
+        dynamic="Its columns depend on the feature and the phase: utils.info.daily_columns(feature, phase) lists them."),
+    "DailyStatistics.hourly": _Table(
+        "one per participant, feature and local hour of day, all 24 hours present",
+        read_back='ds.read_table(run_dir, "hourly_profile")', derived_from="data_statistics.HOURLY_COLUMNS",
+        returned_by=("compute_daily_statistics", "read_table", "summarize_result"),
+        notes=(("records", "Records starting in the hour, over all the participant's days."),
+               ("days", "Days on which the hour holds data: an event in it, or an interval overlapping it."),
+               ("value_sum", "The amount recorded in the hour over all days, for totals and event amounts (0 where "
+                             "none was recorded); NaN for levels."),
+               ("value_mean", "The mean value of the readings starting in the hour, for levels."),
+               ("value_count", "Values recorded in the hour."))),
+    "DailyStatistics.participant_feature": _Table(
+        "one per participant and feature", ("RegistrationCode", "feature", "days_with_data", "first_day", "last_day",
+                                            "records", "typical_gap_minutes", "regular_share"),
+        returned_by=("compute_daily_statistics", "read_table"), read_back='ds.read_table(run_dir, "participant_feature")',
+        notes=(("records", "The participant's records of the feature."),)),
+    "DailyStatistics.participant_days": _Table(
+        "one per participant and local day with any data", read_back='ds.read_table(run_dir, "participant_days")',
+        columns=("RegistrationCode", "local_date", "features", "utc_offsets"),
+        returned_by=("compute_daily_statistics", "read_table"),
+        notes=(("features", "The features with data that day, separated by semicolons."),)),
+    "DailyStatistics.cohort_daily": _Table(
+        "one per feature and local day, across participants", ("feature", "local_date", "participants", "records",
+                                                               "value_sum", "value_sum_per_participant"),
+        returned_by=("compute_daily_statistics", "read_table"), read_back='ds.read_table(run_dir, "cohort_daily")',
+        notes=(("value_sum", "The day's total across participants, for totals and event amounts."),)),
+    "DailyStatistics.active_participants": _Table(
+        "one per local day", ("local_date", "participants"), returned_by=("compute_daily_statistics", "read_table"),
+        read_back='ds.read_table(run_dir, "active_participants")',
+        notes=(("participants", "Participants with any data that day."),)),
+    "DailyStatistics.provenance": _Table(
+        "one per participant, feature, local day and acquisition method",
+        read_back='ds.read_table(run_dir, "daily_provenance")', derived_from="data_statistics.PROVENANCE_COLUMNS",
+        returned_by=("compute_daily_statistics", "read_table", "provenance_tables")),
+    "DailyStatistics.curation": _Table(
+        "one per participant, feature, local day and curation status or flag (curated phase; empty in native)",
+        read_back='ds.read_table(run_dir, "daily_curation")',
+        derived_from="data_statistics.CURATION_COLUMNS", returned_by=("compute_daily_statistics", "read_table",
+                                                                     "provenance_tables")),
+    # ------------------------------------------------------------------------------------------------ coverage
+    "Coverage.participant_feature": _Table(
+        "one per participant and feature with a file", ("RegistrationCode", "feature", "rows", "bytes_on_disk", "verifiable"),
+        returned_by=("compute_coverage",), notes=(("rows", "Rows in the participant's file for the feature."),),
+        curated_only=("pass_rows", "review_rows", "exclude_default_rows", "included_by_default_rows",
+                      "excluded_by_default_rows", "canonical_value_rows", "ambiguous_unit_rows",
+                      "acquisition_classified_fraction")),
+    "Coverage.features": _Table(
+        "one per feature", ("participants", "rows", "bytes_on_disk", "median_rows_per_participant",
+                                                "max_rows_per_participant"), returned_by=("compute_coverage",),
+        index=("feature",), notes=(("participants", "Participants with a file for the feature."),
+                                   ("rows", "Rows across participants' files."),
+                                   ("bytes_on_disk", "Bytes the feature's files take on disk.")), curated_only=("pass_rows", "review_rows", "exclude_default_rows", "included_by_default_rows",
+                                          "excluded_by_default_rows", "canonical_value_rows", "ambiguous_unit_rows")),
+    "Coverage.participants": _Table(
+        "one per participant", ("features", "rows", "bytes_on_disk"),
+        returned_by=("compute_coverage",), index=("RegistrationCode",),
+        notes=(("features", "The number of features the participant has."),
+               ("rows", "Rows across the participant's files."),
+               ("bytes_on_disk", "Bytes the participant's files take on disk."))),
+    "Coverage.presence": _Table(
+        "one per participant: Coverage.presence()", returned_by=("Coverage",),
+        index=("RegistrationCode",), dynamic="One column per feature: True where the participant has a file for it."),
+    # ---------------------------------------------------------------------------------------------- summaries
+    "Summaries.participant_metrics": _Table(
+        "one per participant, feature and metric, over valid days", ("RegistrationCode", "feature", "metric", "unit",
+        "n_days", "mean", "sd", "median", "p10", "p25", "p75", "p90", "min", "max"), returned_by=("summarize",),
+        notes=(("mean", "The mean of the participant's valid days."), ("sd", "The standard deviation over valid days."),
+               ("median", "The participant's median valid day."), ("min", "The lowest valid day."),
+               ("max", "The highest valid day."))),
+    "Summaries.adherence": _Table(
+        "one per participant and feature", ("RegistrationCode", "feature", "rule", "first_day", "last_day", "span_days",
+        "days_with_data", "valid_days", "adherence", "first_valid_day", "last_valid_day", "longest_valid_run", "gaps",
+        "longest_gap_days", "median_gap_days", "typical_gap_minutes", "regular_share", "expected_records_per_day",
+        "median_completeness"), returned_by=("summarize",)),
+    "Summaries.cohort": _Table(
+        "Table 1: one per feature and metric, across participants' medians", ("feature", "metric", "unit",
+        "participants", "mean", "sd", "p5", "p25", "median", "p75", "p95", "min", "max"),
+        returned_by=("summarize", "cohort_table"),
+        notes=(("mean", "The mean of participants' medians."), ("sd", "The standard deviation of participants' medians."),
+               ("median", "The median of participants' medians."), ("min", "The lowest participant median."),
+               ("max", "The highest participant median."))),
+    "Summaries.retention": _Table(
+        "one per feature and day since the first valid day", ("feature", "days_since_first_valid", "participants",
+                                                              "fraction"), returned_by=("summarize", "retention"),
+        notes=(("participants", "Participants still contributing valid days that many days after their first."),)),
+    "summarize_domain.participant_metrics": _Table(
+        "one per participant and night or CGM metric", extends="Summaries.participant_metrics",
+        returned_by=("summarize_domain",)),
+    "summarize_domain.cohort": _Table(
+        "Table 1 for nights and CGM days: one per domain metric, across participants' medians",
+        extends="Summaries.cohort", returned_by=("summarize_domain",)),
+    "summarize_domain.retention": _Table(
+        "one per domain and day since the first valid night or CGM day", extends="Summaries.retention",
+        returned_by=("summarize_domain",)),
+    "summarize_domain.adherence": _Table(
+        "one per participant and domain (nights, CGM days)", ("RegistrationCode", "feature", "rule", "first_day",
+        "last_day", "span_days", "days_with_data", "valid_days", "adherence", "first_valid_day", "last_valid_day",
+        "longest_valid_run", "gaps", "longest_gap_days", "median_gap_days", "nights_in_bed_only"),
+        returned_by=("summarize_domain",)),
+    # ----------------------------------------------------------------------------------------------- patterns
+    "TemporalPatterns.day_of_week": _Table(
+        "one per participant, feature, metric and weekday", ("RegistrationCode", "feature", "metric", "weekday",
+                                                            "n_days", "median"), returned_by=("temporal_patterns",),
+        notes=(("median", "The participant's median valid day on that weekday."),)),
+    "TemporalPatterns.weekday_weekend": _Table(
+        "one per participant, feature and metric", ("RegistrationCode", "feature", "metric", "weekday_days",
+        "weekday_median", "weekend_days", "weekend_median", "weekend_minus_weekday"), returned_by=("temporal_patterns",)),
+    "TemporalPatterns.month_of_year": _Table(
+        "one per participant, feature, metric and month of year", ("RegistrationCode", "feature", "metric", "month",
+                                                                   "n_days", "median"), returned_by=("temporal_patterns",),
+        notes=(("month", "The month of year, 1 to 12."), ("median", "The participant's median valid day in that month."))),
+    "TemporalPatterns.cohort_day_of_week": _Table(
+        "one per feature, metric and weekday, across participants' medians", ("feature", "metric", "weekday",
+        "participants", "median", "p25", "p75"), returned_by=("temporal_patterns",)),
+    "TemporalPatterns.cohort_weekday_weekend": _Table(
+        "one per feature and metric: participants' weekend-minus-weekday differences", ("feature", "metric",
+        "participants", "median", "p25", "p75"), returned_by=("temporal_patterns",)),
+    "TemporalPatterns.cohort_month_of_year": _Table(
+        "one per feature, metric and month of year, across participants' medians", ("feature", "metric", "month",
+        "participants", "median", "p25", "p75"), returned_by=("temporal_patterns",),
+        notes=(("month", "The month of year, 1 to 12."),)),
+    # ------------------------------------------------------------------------------------------------ quality
+    "QualityReport.features": _Table(
+        "one per feature", ("feature", "participants", "participant_days", "records", "records_user_entered",
+        "observed_minutes", "redundant_minutes", "values_below_range", "values_above_range", "days_assessed",
+        "records_without_offset", "without_offset_share", "redundant_share"), returned_by=("quality_report",)),
+    "QualityReport.provenance": _Table(
+        "one per feature and acquisition method", ("feature", "acquisition_method", "records", "records_user_entered",
+                                                   "share"), returned_by=("quality_report",),
+        notes=(("share", "The method's share of the feature's records."),)),
+    "QualityReport.curation": _Table(
+        "one per feature and curation status or flag (curated phase; empty in native)", ("feature", "kind", "name",
+        "records", "share_of_records"), returned_by=("quality_report",)),
+    "hour_of_day.participants": _Table(
+        "one per participant, feature and local hour", ("RegistrationCode", "feature", "hour", "records_per_day",
+        "value_per_day", "value_mean", "day_share"), returned_by=("hour_of_day",)),
+    "hour_of_day.cohort": _Table(
+        "one per feature and local hour, across participants", ("feature", "hour", *_HOUR_STATS),
+        returned_by=("hour_of_day",)),
+    "clinical_thresholds.participants": _Table(
+        "one per participant, feature and threshold", derived_from="data_summaries.CLINICAL_COLUMNS",
+        returned_by=("clinical_thresholds",)),
+    "clinical_thresholds.cohort": _Table(
+        "one per feature and threshold, across participants", ("feature", "threshold", "participants",
+        "participants_beyond", "readings", "beyond", "days", "days_beyond", "share_beyond"),
+        returned_by=("clinical_thresholds",)),
+    "time_zones": _Table(
+        "one per participant with UTC offsets", ("RegistrationCode", "days_with_offsets", "home_offsets",
+        "distinct_offsets", "days_away", "trips", "longest_trip_days", "max_offset_difference_hours"),
+        returned_by=("time_zones",)),
+    "day_overlap": _Table(
+        "one per pair of features", ("feature_a", "feature_b", "days_both", "days_a", "days_b", "jaccard"),
+        returned_by=("day_overlap",)),
+    "days_with": _Table(
+        "one per participant with at least one day holding every feature", ("RegistrationCode", "days", "first_day",
+                                                                             "last_day"), returned_by=("days_with",),
+        notes=(("days", "Days on which every one of the features has data."),
+               ("first_day", "The first such day."), ("last_day", "The last such day."))),
+    "mark_valid_days": _Table(
+        "the participant's daily rows, with two columns added", extends="DailyStatistics.daily",
+        columns=("completeness", "valid"), returned_by=("mark_valid_days",)),
+    # ------------------------------------------------------------------------------------------ domain metrics
+    "DomainMetrics.sleep_nights": _Table(
+        "one per participant and night, from noon to the next noon", derived_from="domain_metrics.NIGHT_COLUMNS",
+        read_back='dm.read_domain_table(domain_dir, "sleep_nights")',
+        returned_by=("compute_domain_metrics", "sleep_nights", "read_domain_table"),
+        notes=(("records", "Sleep records in the night."),)),
+    "DomainMetrics.cgm_days": _Table(
+        "one per CGM participant and local day", derived_from="domain_metrics.CGM_DAY_COLUMNS",
+        read_back='dm.read_domain_table(domain_dir, "cgm_days")',
+        returned_by=("compute_domain_metrics", "cgm_metrics", "read_domain_table"),
+        notes=(("readings", "Readings that day."),)),
+    "DomainMetrics.cgm_periods": _Table(
+        "one per participant with BloodGlucose", derived_from="domain_metrics.CGM_PERIOD_COLUMNS",
+        read_back='dm.read_domain_table(domain_dir, "cgm_periods")',
+        returned_by=("compute_domain_metrics", "cgm_metrics", "read_domain_table"),
+        notes=(("readings", "Readings on valid days."),)),
+    "DomainMetrics.cgm_profile": _Table(
+        "one per CGM participant and time-of-day bin", derived_from="domain_metrics.CGM_PROFILE_COLUMNS",
+        read_back='dm.read_domain_table(domain_dir, "cgm_profile")',
+        returned_by=("compute_domain_metrics", "cgm_profile", "read_domain_table"),
+        notes=(("readings", "Readings in the bin over valid days."), ("days", "Valid days with readings in the bin."))),
+    "load_sleep_segments": _Table(
+        "one per piece of a sleep record, split at local noon", derived_from="domain_metrics.SEGMENT_COLUMNS",
+        returned_by=("load_sleep_segments", "sleep_segments"),
+        notes=(("minutes", "The piece's length."),)),
+    "load_cgm_readings": _Table(
+        "one per CGM reading with a usable unit", derived_from="domain_metrics.CGM_READING_COLUMNS",
+        returned_by=("load_cgm_readings", "cgm_readings")),
+    "sleep_regularity": _Table(
+        "one per participant with valid nights", derived_from="domain_metrics.REGULARITY_COLUMNS",
+        returned_by=("sleep_regularity",), notes=(("nights", "Valid nights."),)),
+    # ------------------------------------------------------------------------------- tables figure helpers return
+    "activity_goals.participants": _Table(
+        "one per participant with ActivitySummary", ("RegistrationCode", "days", "complete_weeks",
+        "weekly_exercise_minutes", "weeks_meeting_who", "move_goal_days", "move_goal_met", "exercise_goal_days",
+        "exercise_goal_met", "stand_goal_days", "stand_goal_met"), returned_by=("activity_goals",),
+        notes=(("days", "Days with ActivitySummary."),)),
+    "activity_goals.weeks": _Table(
+        "one per participant and week", ("week_start", "days", "known", "exercise_minutes", "complete",
+                                         "RegistrationCode"), returned_by=("activity_goals",),
+        notes=(("days", "Days of the week with ActivitySummary."),)),
+    "blood_pressure": _Table(
+        "one per participant with blood pressure", ("RegistrationCode", "systolic", "diastolic", "days", "category"),
+        returned_by=("blood_pressure",), notes=(("days", "Valid days with blood pressure."),)),
+    "bmi_categories": _Table(
+        "one per group and WHO adult BMI class", ("group", "category", "lower", "upper", "participants", "share"),
+        returned_by=("bmi_categories",), notes=(("category", "The BMI class."),)),
+    "step_categories": _Table(
+        "one per group and daily-step category", ("group", "category", "lower", "upper", "participants", "share"),
+        returned_by=("step_categories",), notes=(("category", "The daily-step category."),)),
+    "report": _Table(
+        "one per page the report considered", ("section", "feature", "figure", "status", "reason"),
+        returned_by=("report",)),
+    # ---------------------------------------------------------------------------------------- figures: data
+    "plot_feature_presence.data": _Table("one per participant and feature", ("RegistrationCode", "feature", "present"),
+                                         returned_by=("plot_feature_presence",)),
+    "plot_participants_per_feature.data": _Table(
+        "one per feature with participants", ("feature", "participants", "category", "share", "suppressed"),
+        returned_by=("plot_participants_per_feature",), notes=(("category", "The feature's category."),
+                                                               ("share", "The feature's participants as a share of the cohort."))),
+    "plot_features_per_participant.data": _Table(
+        "one per group and number of features", ("features", "participants", "group", "suppressed"),
+        returned_by=("plot_features_per_participant",), notes=(("features", "A number of features."),
+                                                               ("participants", "Participants with that many features."))),
+    "plot_data_volume.data": _Table(
+        "one per feature or per participant", returned_by=("plot_data_volume",),
+        optional=(("feature", "by='feature'"), ("bytes_on_disk", "by='feature'"), ("RegistrationCode", "by='participant'"),
+                  ("bytes", "by='participant'"), ("band", "by='participant'"))),
+    "plot_feature_combinations.data": _Table(
+        "one per drawn combination of features", ("participants", "size", "combination", "suppressed"),
+        returned_by=("plot_feature_combinations",), dynamic="One column per chosen feature: whether the combination "
+                                                            "includes it."),
+    "plot_availability_raster.data": _Table(
+        "one per participant and month", ("RegistrationCode", "days"), returned_by=("plot_availability_raster",),
+        optional=(("month", "time_axis='calendar', the default"), ("study_month", "time_axis='study'")),
+        notes=(("days", "Days with data in the month."), ("month", "The calendar month."))),
+    "plot_follow_up.data": _Table(
+        "one per participant", ("RegistrationCode", "first_day", "last_day", "span_days", "days_with_data", "density"),
+        returned_by=("plot_follow_up",)),
+    "plot_valid_day_rule.data": _Table(
+        "one per threshold and measure", ("threshold", "measure", "k", "count", "share", "suppressed", "feature",
+                                          "criterion"), returned_by=("plot_valid_day_rule",),
+        notes=(("measure", "Either participant-days kept, or participants with at least k valid days."),
+               ("count", "The participant-days kept, or the participants with at least k valid days."),
+               ("share", "count as a share of all participant-days, or of all participants."),
+               ("criterion", "The rule's criterion: hours_with_data, completeness or records."),
+               ("k", "The k of 'participants with at least k valid days'; empty for days kept."))),
+    "plot_sampling_cadence.data": _Table(
+        "one per participant and feature with a cadence", ("RegistrationCode", "feature", "typical_gap_minutes",
+        "regular_share", "days_with_data", "records"), returned_by=("plot_sampling_cadence",)),
+    "plot_hourly_coverage.data": _Table("one per participant and local hour", ("RegistrationCode", "hour", "day_share"),
+                                        returned_by=("plot_hourly_coverage",)),
+    "plot_quality.data": _Table(
+        "one per feature", ("feature", "category", "records", "below_per_1000", "above_per_1000", "redundant_share",
+                            "user_entered_share", "without_offset_share"), returned_by=("plot_quality",),
+        notes=(("category", "The feature's category."),)),
+    "plot_curation_flags.data": _Table("one per feature and flag present", ("feature", "flag", "share_of_records"),
+                                       returned_by=("plot_curation_flags",)),
+    "plot_acquisition.data": _Table("one per feature and acquisition method", ("feature", "acquisition_method", "share"),
+                                    returned_by=("plot_acquisition",),
+                                    notes=(("share", "The method's share of the feature's records."),)),
+    "plot_acquisition_over_time.data": _Table(
+        "one per calendar month and acquisition method", ("month", "acquisition_method", "records", "share"),
+        returned_by=("plot_acquisition_over_time",),
+        notes=(("month", "The calendar month."), ("share", "The method's share of the month's records."))),
+    "plot_curation.data": _Table("one per feature and curation status", ("feature", "status", "share"),
+                                 returned_by=("plot_curation",),
+                                 notes=(("share", "The status's share of the feature's records."),)),
+    "plot_active_participants.data": _Table(
+        "one per local day with data", ("local_date", "participants", "suppressed"), returned_by=("plot_active_participants",),
+        optional=(("rolling_mean", "with rolling="),), notes=(("participants", "Participants with any data that day."),)),
+    "plot_feature_activity.data": _Table(
+        "one per feature and calendar month", ("feature", "month", "suppressed"), returned_by=("plot_feature_activity",),
+        optional=(("participants", "measure='participants'"), ("participant_days", "measure='participant_days'")),
+        notes=(("month", "The calendar month."), ("participants", "Participants with the feature that month."))),
+    "plot_daily_values.data": _Table(
+        "one per day drawn: the participant's days, or the cohort's days", returned_by=("plot_daily_values",),
+        optional=(("RegistrationCode", "with a participant"), ("value", "with a participant"),
+                  ("valid", "with a participant"), ("group", "for the cohort"), ("participants", "for the cohort"),
+                  ("median", "for the cohort"), ("p25", "for the cohort"), ("p75", "for the cohort"),
+                  ("suppressed", "for the cohort"), ("feature", "for the cohort"), ("metric", "for the cohort"),
+                  ("study_day", "with a participant"),
+                  ("local_date", "for the cohort, or with a participant and time_axis='calendar'")),
+        notes=(("value", "The participant's value that day."),)),
+    "plot_monthly_distribution.data": _Table(
+        "one per group and period", ("group", "period", "participants", "values", "n_days", "median", "p25", "p75",
+                                     "suppressed"), returned_by=("plot_monthly_distribution",),
+        notes=(("period", "The calendar month or quarter."), ("values", "The values drawn in the box."),
+               ("n_days", "Participant-days in the period."))),
+    "plot_hour_of_day.data": _Table(
+        "one per group and local hour", ("group", "hour", "participants", "median", "p25", "p75", "suppressed",
+                                         "feature", "measure"), returned_by=("plot_hour_of_day",), optional=_CI,
+        notes=(("measure", "What was drawn: value, records or coverage."),)),
+    "plot_weekly_pattern.data": _Table(
+        "one per group and weekday", ("group", "weekday", "participants", "median", "p25", "p75", "suppressed",
+                                      "feature", "metric"), returned_by=("plot_weekly_pattern",), optional=_CI),
+    "plot_monthly_pattern.data": _Table(
+        "one per group and month of year", ("group", "month", "participants", "median", "p25", "p75", "suppressed",
+                                            "feature", "metric"), returned_by=("plot_monthly_pattern",), optional=_CI,
+        notes=(("month", "The month of year, 1 to 12."),)),
+    "plot_weekday_weekend.data": _Table("one per participant drawn", extends="TemporalPatterns.weekday_weekend",
+                                        columns=("group",), returned_by=("plot_weekday_weekend",)),
+    "plot_hour_profiles.data": _Table(
+        "one per participant and local hour", ("RegistrationCode", "hour"), returned_by=("plot_hour_profiles",),
+        optional=(("relative", "relative=True"), ("value_mean", "relative=False, measure='value' for levels"),
+                  ("value_per_day", "relative=False, measure='value' for totals"),
+                  ("records_per_day", "relative=False, measure='records'"), ("day_share", "relative=False, measure='coverage'"))),
+    "plot_daily_rhythms.data": _Table("one per feature, group and local hour", (*_COHORT_POINT[:1], "hour",
+                                      *_COHORT_POINT[1:], "feature"), returned_by=("plot_daily_rhythms",),
+                                      notes=(("median", "The median across participants of their relative value."),)),
+    "plot_time_zones.data": _Table(
+        "one per participant, or one per day of one participant", returned_by=("plot_time_zones",),
+        optional=(*((c, "for the cohort") for c in ("RegistrationCode", "days_with_offsets", "home_offsets",
+                  "distinct_offsets", "days_away", "trips", "longest_trip_days", "max_offset_difference_hours",
+                  "home_zone")), ("offsets", "with a participant"), ("offset_hours", "with a participant"),
+                  ("home", "with a participant"), ("study_day", "with a participant"),
+                  ("local_date", "with a participant, time_axis='calendar'"))),
+    "plot_metric_distributions.data": _Table(
+        "one per participant and feature", ("RegistrationCode", "median", "feature", "metric", "unit", "group"),
+        returned_by=("plot_metric_distributions",), notes=(("median", "The participant's median valid day."),)),
+    "plot_caterpillar.data": _Table(
+        "one per participant drawn", ("RegistrationCode", "feature", "metric", "unit", "n_days", "median", "p25", "p75"),
+        returned_by=("plot_caterpillar",), notes=(("median", "The participant's median valid day."),
+                                                  ("p25", "The participant's 25th-percentile valid day."),
+                                                  ("p75", "The participant's 75th-percentile valid day."))),
+    "plot_adherence.data": _Table("one per participant", extends="Summaries.adherence", columns=("group",),
+                                  returned_by=("plot_adherence",)),
+    "plot_retention.data": _Table("one per feature or group and day", extends="Summaries.retention",
+                                  columns=("group", "suppressed"), returned_by=("plot_retention",)),
+    "plot_sleep.data": _Table(
+        "one per participant (their median night) or per night", ("RegistrationCode", "asleep_minutes",
+        "midpoint_hours_after_noon", "efficiency", "group"), returned_by=("plot_sleep",),
+        optional=(("nights", "unit='participant'"), ("night_date", "unit='night'"))),
+    "plot_sleep_raster.data": _Table(
+        "one per segment drawn", ("night_index", "state", "source", "start_hours_after_noon", "end_hours_after_noon",
+                                  "minutes", "main_period", "counted"), returned_by=("plot_sleep_raster",),
+        optional=(("night_date", "time_axis='calendar'"), ("start_local", "time_axis='calendar'"),
+                  ("end_local", "time_axis='calendar'")), notes=(("minutes", "The segment's length."),)),
+    "plot_sleep_regularity.data": _Table("one per participant", extends="sleep_regularity",
+                                         columns=("extra_sleep_free_minutes", "group"), returned_by=("plot_sleep_regularity",)),
+    "plot_sleep_timing.data": _Table(
+        "one per participant (their median night) or per night", ("RegistrationCode", "midpoint_hours_after_noon",
+        "asleep_minutes", "group"), returned_by=("plot_sleep_timing",), optional=(("night_date", "unit='night'"),)),
+    "plot_sleep_architecture.data": _Table(
+        "one per participant", ("RegistrationCode", "nights", "waso_minutes", "nap_share", "core_share", "deep_share",
+                                "rem_share", "staged_nights", "group"), returned_by=("plot_sleep_architecture",),
+        notes=(("nights", "Valid nights."), ("waso_minutes", "The participant's median wake after sleep onset."),
+               ("core_share", "The median core share over staged nights."),
+               ("deep_share", "The median deep share over staged nights."),
+               ("rem_share", "The median REM share over staged nights."))),
+    "plot_sleep_recording.data": _Table(
+        "one per participant with nights", ("RegistrationCode", "sleep_recorded_nights", "in_bed_only_nights",
+        "neither_nights", "sleep_recorded_share", "in_bed_only_share", "neither_share"),
+        returned_by=("plot_sleep_recording",)),
+    "plot_cgm_ranges.data": _Table(
+        "one per CGM participant drawn", ("RegistrationCode", "valid_days", "readings", "very_low_percent",
+        "low_percent", "in_range_percent", "high_percent", "very_high_percent"), returned_by=("plot_cgm_ranges",),
+        notes=(("readings", "Readings on valid days."),)),
+    "plot_agp.data": _Table(
+        "one per time-of-day bin: the participant's percentiles, or the cohort's", returned_by=("plot_agp",),
+        optional=(*((c, "with a participant") for c in ("RegistrationCode", "minute", "readings", "days", "p5", "p50",
+                                                         "p95")),
+                  *((c, "for the cohort") for c in ("group", "hour", "participants", "median", "suppressed")),
+                  ("p25", "with a participant, or for the cohort"), ("p75", "with a participant, or for the cohort")),
+        notes=(("hour", "The bin's centre, in hours after midnight."),
+               ("median", "The median across participants of their median in the bin."),
+               ("readings", "Readings in the bin over valid days."), ("days", "Valid days with readings in the bin."))),
+    "plot_glucose_days.data": _Table("one per reading drawn", ("day_index", "minute_of_day", "mgdl", "valid_day"),
+                                     returned_by=("plot_glucose_days",)),
+    "plot_glycemic_cohort.data": _Table(
+        "one per CGM participant drawn", ("RegistrationCode", "valid_days", "mean_mgdl", "gmi_percent", "cv_percent",
+        "very_low_percent", "low_percent", "in_range_percent", "high_percent", "very_high_percent", "below_70_percent",
+        "above_180_percent", "meets_in_range", "meets_below_70", "meets_below_54", "meets_above_180",
+        "meets_above_250", "meets_cv", "group"), returned_by=("plot_glycemic_cohort",)),
+    "plot_cgm_wear.data": _Table(
+        "one per CGM participant and day", ("RegistrationCode", "study_day", "readings", "completeness", "valid"),
+        returned_by=("plot_cgm_wear",), optional=(("local_date", "time_axis='calendar'"),),
+        notes=(("readings", "Readings that day."),)),
+    "plot_bmi_categories.data": _Table("one per group and class", extends="bmi_categories", columns=("suppressed",),
+                                       returned_by=("plot_bmi_categories",)),
+    "plot_step_categories.data": _Table("one per group and category", extends="step_categories", columns=("suppressed",),
+                                        returned_by=("plot_step_categories",)),
+    "plot_activity_goals.data": _Table("one per participant", extends="activity_goals.participants", columns=("group",),
+                                       returned_by=("plot_activity_goals",)),
+    "plot_blood_pressure.data": _Table("one per participant", extends="blood_pressure", columns=("group",),
+                                       returned_by=("plot_blood_pressure",)),
+    "plot_weight_trajectories.data": _Table(
+        "one per participant and valid day", ("RegistrationCode", "study_day", "value", "percent_change"),
+        returned_by=("plot_weight_trajectories",), optional=(("local_date", "time_axis='calendar'"),),
+        notes=(("value", "The day's weight."),)),
+    "plot_clinical_thresholds.data": _Table("one per participant, feature and threshold",
+                                            extends="clinical_thresholds.participants",
+                                            returned_by=("plot_clinical_thresholds",)),
+    "plot_co_availability.data": _Table("one per ordered pair of features drawn", ("feature_a", "feature_b", "jaccard"),
+                                        returned_by=("plot_co_availability",)),
+    "plot_multimodal_days.data": _Table("one per participant with any of the features",
+                                        ("RegistrationCode", "complete_days", "group"), returned_by=("plot_multimodal_days",)),
+    "plot_participant_overview.data": _Table(
+        "one per point drawn in the value panels", ("x", "value", "valid", "feature", "label"),
+        returned_by=("plot_participant_overview",),
+        notes=(("x", "The day's position: days since the first day with data, or the date."),
+               ("value", "The day's headline value (total sleep per night, mean glucose per CGM day with domain "
+                         "metrics)."))),
+    "plot_lagged_association.data": _Table(
+        "one per paired day", ("RegistrationCode", "x", "y", "x_dev", "y_dev"), returned_by=("plot_lagged_association",),
+        notes=(("x", "The first series' value on day d."), ("y", "The second series' value on day d + lag_days."))),
+    "plot_feature_correlations.data": _Table("one per ordered pair of features", ("feature_a", "feature_b", "r",
+                                             "participants", "suppressed"), returned_by=("plot_feature_correlations",),
+                                             notes=(("participants", "Participants with both features."),)),
+    # -------------------------------------------------------------------------------------- figures: panels
+    "plot_feature_combinations.panels.sets": _Table("one per chosen feature", ("feature", "participants"),
+                                                    returned_by=("plot_feature_combinations",)),
+    "plot_feature_combinations.panels.all_combinations": _Table(
+        "one per combination, drawn or not", ("participants", "size", "combination", "suppressed"),
+        returned_by=("plot_feature_combinations",), dynamic="One column per chosen feature: whether the combination "
+                                                            "includes it."),
+    "plot_valid_day_rule.panels.distribution": _Table(
+        "one per participant-day the criterion governs", ("RegistrationCode", "local_date", "criterion", "valid"),
+        returned_by=("plot_valid_day_rule",), notes=(("criterion", "The day's value of the rule's criterion."),)),
+    "plot_valid_day_rule.panels.sensitivity": _Table(
+        "one per threshold and measure", ("threshold", "measure", "k", "count", "share", "suppressed"),
+        returned_by=("plot_valid_day_rule",),
+        notes=(("measure", "Either participant-days kept, or participants with at least k valid days."),
+               ("count", "The participant-days kept, or the participants with at least k valid days."),
+               ("share", "count as a share of all participant-days, or of all participants."),
+               ("k", "The k of 'participants with at least k valid days'; empty for days kept."))),
+    "plot_hourly_coverage.panels.cohort": _Table(
+        "one per local hour", ("hour", "day_share_median", "day_share_p25", "day_share_p75", "day_share_participants"),
+        returned_by=("plot_hourly_coverage",)),
+    "plot_hour_profiles.panels.order": _Table(
+        "one per participant drawn", ("RegistrationCode",), returned_by=("plot_hour_profiles",),
+        optional=(("trough_hour", "order_by='trough'"), ("peak_hour", "order_by='peak'"))),
+    "plot_time_zones.panels.home_zones": _Table("one per home zone", ("home_zone", "participants", "suppressed"),
+                                                returned_by=("plot_time_zones",)),
+    "plot_time_zones.panels.days_away": _Table("one per number of days away", ("days_away", "participants", "suppressed"),
+                                               returned_by=("plot_time_zones",),
+                                               notes=(("days_away", "A number of days away."),)),
+    "plot_time_zones.panels.trips": _Table("one per number of trips", ("trips", "participants", "suppressed"),
+                                           returned_by=("plot_time_zones",), notes=(("trips", "A number of trips."),)),
+    "plot_metric_distributions.panels.table1": _Table(
+        "one per feature and group: Table 1", ("feature", "metric", "unit", "group", "participants", "median", "p25",
+                                               "p75", "suppressed"), returned_by=("plot_metric_distributions",),
+        notes=(("median", "The median of participants' medians."),)),
+    "plot_agp.panels.metrics": _Table("the participant's consensus metrics", extends="DomainMetrics.cgm_periods",
+                                      returned_by=("plot_agp",)),
+    "plot_glucose_days.panels.median": _Table("one per 15-minute bin", extends="DomainMetrics.cgm_profile",
+                                              returned_by=("plot_glucose_days",)),
+    "plot_glycemic_cohort.panels.targets": _Table(
+        "one per group and consensus target", ("group", "target", "participants", "meeting", "share", "suppressed"),
+        returned_by=("plot_glycemic_cohort",), notes=(("share", "The share of participants meeting the target."),)),
+    "plot_activity_goals.panels.weeks": _Table("one per participant and week", extends="activity_goals.weeks",
+                                               returned_by=("plot_activity_goals",)),
+    "plot_blood_pressure.panels.categories": _Table(
+        "one per group and category", ("group", "category", "participants", "share", "suppressed"),
+        returned_by=("plot_blood_pressure",), notes=(("category", "The blood-pressure category."),)),
+    "plot_weight_trajectories.panels.cohort": _Table(
+        "one per 30-day period since the first measurement", ("period", "participants", "median"),
+        returned_by=("plot_weight_trajectories",),
+        notes=(("period", "The 30-day period since each participant's first valid measurement, from 0."),
+               ("median", "The median change from the first measurement, in percent."))),
+    "plot_clinical_thresholds.panels.cohort": _Table("one per feature and threshold", extends="clinical_thresholds.cohort",
+                                                     columns=("suppressed",), returned_by=("plot_clinical_thresholds",)),
+    "plot_multimodal_days.panels.curve": _Table(
+        "one per group and required number of complete days", ("group", "k", "participants", "share", "suppressed"),
+        returned_by=("plot_multimodal_days",),
+        notes=(("k", "A required number of complete days."), ("participants", "Participants with at least k complete days."),
+               ("share", "Those participants as a share of the group."))),
+    "plot_participant_overview.panels.availability": _Table(
+        "one per day with any data", ("x", "features"), returned_by=("plot_participant_overview",),
+        notes=(("x", "The day's position: days since the first day with data, or the date."),
+               ("features", "The features with data that day, separated by semicolons."))),
+    "plot_lagged_association.panels.participants": _Table(
+        "one per participant included", ("RegistrationCode", "days", "r"), returned_by=("plot_lagged_association",),
+        notes=(("days", "Paired days."), ("r", "The participant's own correlation between the two series."))),
+    "plot_lagged_association.panels.summary": _Table(
+        "one row", ("x", "y", "lag_days", "participants", "paired_days", "within_slope", "within_r"),
+        returned_by=("plot_lagged_association",), notes=(("x", "The first series' name."), ("y", "The second series' name."))),
+}
+
+
+# A meaning for every column name. A table can override one with its own notes, where a name means something more
+# specific there; utils.info("<table>") shows the meaning that applies.
+COLUMNS = {
+    # who, what, when
+    "RegistrationCode": "The participant's registration code.",
+    "feature": "The feature (data type), such as StepCount or HeartRate.",
+    "feature_a": "The first feature of the pair.",
+    "feature_b": "The second feature of the pair.",
+    "local_date": "The participant's local calendar day.",
+    "night_date": "The night, named by the local date of the noon it starts at.",
+    "hour": "The local hour of day, 0 to 23.",
+    "weekday": "The day of the week.",
+    "month": "The month.",
+    "period": "The period the row summarizes.",
+    "study_day": "Days since the participant's first day with data, from 0.",
+    "study_month": "Months since the participant's first day with data, from 0.",
+    "day_index": "The day's position among the days drawn, from 0.",
+    "night_index": "The night's position among the nights drawn, from 0.",
+    "week_start": "The Monday the week starts on.",
+    "local_time": "The reading's local date and time.",
+    "minute": "The start of the time-of-day bin, in minutes after local midnight.",
+    "minute_of_day": "The reading's local time of day, in minutes after midnight.",
+    "start_local": "The segment's local start time.",
+    "end_local": "The segment's local end time.",
+    "first_day": "The first local day with data.",
+    "last_day": "The last local day with data.",
+    "first_valid_day": "The first valid day.",
+    "last_valid_day": "The last valid day.",
+    "x": "The value on the horizontal axis.",
+    "y": "The value on the vertical axis.",
+    # what a row describes
+    "metric": "The daily quantity summarized: a column of the daily table (such as value_sum), or a domain metric.",
+    "unit": "The unit of the metric.",
+    "value_unit": "The unit the day's values are in, after harmonization.",
+    "rule": "The valid-day rule applied, as text.",
+    "group": "The group from groups=, or 'all participants'.",
+    "category": "The category the row counts.",
+    "threshold": "The threshold: a valid-day threshold, or a clinical threshold named after its column.",
+    "kind": "Whether the row counts a curation status or a curation flag.",
+    "name": "The curation status or flag.",
+    "status": "The record's curation status: pass, review or exclude_default.",
+    "flag": "The curation flag.",
+    "acquisition_method": "How the records were acquired, such as automatic device recording or manual entry.",
+    "state": "The sleep state recorded, such as ASLEEP, AWAKE, INBED or a sleep stage.",
+    "source": "The source (device or app) that recorded it.",
+    "criterion": "The valid-day rule's criterion.",
+    "measure": "What the row measures.",
+    "label": "The label drawn.",
+    "target": "The consensus target, as text.",
+    "combination": "The features in the combination, as text.",
+    "section": "The report section.",
+    "figure": "The figure function.",
+    "reason": "Why the page was not drawn; empty when it was.",
+    "band": "The participant's data-volume band, such as 1-10 MB.",
+    "day_basis": "How the row's day was assigned: local (from the participant's local time) or export_day_key (the "
+                 "export's own day, for ActivitySummary).",
+    "efficiency_basis": "What efficiency divides by: in_bed (recorded time in bed overlapping the sleep) or "
+                        "sleep_period; empty without asleep time.",
+    "cgm": "Whether the BloodGlucose readings have the regular cadence of a continuous glucose monitor.",
+    "home": "Whether the day's UTC offset is the participant's home offset.",
+    "home_zone": "The participant's home UTC offsets, as a label.",
+    "features": "The features, as text or as a number.",
+    "utc_offsets": "The day's UTC offsets in minutes, separated by semicolons.",
+    "offsets": "The day's UTC offsets in minutes, separated by semicolons.",
+    "home_offsets": "The UTC offsets counted as the participant's home, in minutes, separated by semicolons (such as "
+                    "standard and daylight-saving time).",
+    # counts
+    "records": "The number of stored records the row counts.",
+    "records_user_entered": "Records the participant entered by hand.",
+    "records_without_offset": "Records without a UTC offset, placed on a day by their UTC time.",
+    "records_included": "Records the curation includes by default.",
+    "value_count": "The number of values recorded.",
+    "values_unresolved": "Values left out of the value statistics because their unit could not be established.",
+    "values_below_range": "Values below the feature's plausible range.",
+    "values_above_range": "Values above the feature's plausible range.",
+    "readings": "The number of readings the row counts.",
+    "unresolved_readings": "Readings left out because their unit could not be established.",
+    "days": "The number of days the row counts.",
+    "days_with_data": "Days with data.",
+    "valid_days": "Days meeting the valid-day rule.",
+    "days_assessed": "Participant-days whose values could be checked against the plausible range.",
+    "days_with_offsets": "Days with a known UTC offset.",
+    "days_away": "Days spent away from the home UTC offset.",
+    "days_beyond": "Days with at least one reading beyond the threshold.",
+    "days_both": "Participant-days with both features.",
+    "days_a": "Participant-days with the first feature.",
+    "days_b": "Participant-days with the second feature.",
+    "n_days": "Valid days behind the value.",
+    "nights": "The number of nights the row counts.",
+    "free_nights": "Valid nights before a free day (Friday and Saturday nights).",
+    "work_nights": "Valid nights before a workday (Sunday to Thursday nights).",
+    "staged_nights": "Valid nights with sleep stages.",
+    "participants": "The number of participants the row counts.",
+    "participants_beyond": "Participants with at least one reading beyond the threshold.",
+    "participant_days": "Participant-days.",
+    "sessions": "Sessions recorded.",
+    "episodes": "Separate sleep episodes in the night.",
+    "trips": "Stays away from the home offset.",
+    "gaps": "Runs of days without a valid day, between the first and last valid day.",
+    "complete_weeks": "Weeks with all seven days recorded.",
+    "complete_days": "Days on which every one of the features has a valid day.",
+    "weeks_meeting_who": "Complete weeks with at least 150 minutes of exercise.",
+    "move_goal_days": "Days with a move goal and a value.",
+    "exercise_goal_days": "Days with an exercise goal and a value.",
+    "stand_goal_days": "Days with a stand goal and a value.",
+    "known": "Days of the week with the exercise value known.",
+    "beyond": "Readings beyond the threshold.",
+    "count": "The count the row reports.",
+    "k": "A number of days.",
+    "size": "The number of features in the combination.",
+    "values": "The number of values the row counts.",
+    "meeting": "Participants meeting the target.",
+    "paired_days": "Days with both series paired at the lag.",
+    "rows": "The number of rows stored.",
+    "pass_rows": "Rows the curation passed.",
+    "review_rows": "Rows the curation marked for review.",
+    "exclude_default_rows": "Rows the curation excludes by default.",
+    "included_by_default_rows": "Rows included by default.",
+    "excluded_by_default_rows": "Rows excluded by default.",
+    "canonical_value_rows": "Rows whose value is in the feature's canonical unit.",
+    "ambiguous_unit_rows": "Rows whose unit is ambiguous.",
+    "bytes_on_disk": "Bytes the files take on disk.",
+    "bytes": "Bytes the participant's files take on disk.",
+    "median_rows_per_participant": "The median participant's rows.",
+    "max_rows_per_participant": "The largest participant's rows.",
+    "distinct_offsets": "Distinct UTC offsets seen.",
+    "sources": "Distinct sources (devices or apps) that recorded that day, where known.",
+    "staging_sources": "Sources that recorded sleep stages that night.",
+    "sleep_recorded_nights": "Nights with asleep time recorded.",
+    "in_bed_only_nights": "Nights with time in bed but no asleep time.",
+    "neither_nights": "Nights in the participant's span with neither asleep time nor time in bed.",
+    "readings_below_90_percent": "Oxygen saturation readings below 90% that day.",
+    "readings_at_least_38_celsius": "Body temperature readings of at least 38 °C that day.",
+    "blood_pressure_systolic_value_count": "Systolic readings that day.",
+    "blood_pressure_diastolic_value_count": "Diastolic readings that day.",
+    "nights_in_bed_only": "Nights with time in bed but no asleep time.",
+    # durations
+    "hours_with_data": "Local hours of the day holding data: an event in the hour, or an interval overlapping it.",
+    "median_gap_minutes": "The median gap between consecutive records that day, in minutes.",
+    "max_gap_minutes": "The longest gap between consecutive records that day, in minutes.",
+    "observed_minutes": "Minutes of the day covered by at least one record.",
+    "redundant_minutes": "Minutes covered by records from two or more sources at once.",
+    "typical_gap_minutes": "The most common gap between consecutive records, in minutes: the sampling cadence.",
+    "span_days": "Days from the first to the last day, inclusive.",
+    "longest_valid_run": "The longest run of consecutive valid days.",
+    "longest_gap_days": "The longest run of days without a valid day.",
+    "median_gap_days": "The median run of days without a valid day.",
+    "days_since_first_valid": "Days since the participant's first valid day.",
+    "longest_trip_days": "The longest stay away from the home offset, in days.",
+    "max_offset_difference_hours": "The largest difference from the home offset, in hours.",
+    "offset_hours": "The day's UTC offset, in hours.",
+    "minutes": "The row's duration, in minutes.",
+    "minutes_asleep": "Minutes recorded as asleep without a stage (HealthKit's asleep state).",
+    "minutes_asleep_total": "Minutes asleep in any asleep state: unspecified, core, deep or REM.",
+    "minutes_awake": "Minutes recorded as awake.",
+    "minutes_core": "Minutes of core (light) sleep.",
+    "minutes_deep": "Minutes of deep sleep.",
+    "minutes_inbed": "Minutes recorded as in bed.",
+    "minutes_other_states": "Minutes in states other than these.",
+    "minutes_rem": "Minutes of REM sleep.",
+    "sleep_period_minutes": "The main sleep period, from sleep onset to final waking, in minutes.",
+    "asleep_minutes": "Minutes asleep within the main sleep period.",
+    "waso_minutes": "Wake after sleep onset: the sleep period minus the minutes asleep.",
+    "awake_recorded_minutes": "Minutes recorded as awake within the sleep period.",
+    "in_bed_minutes": "Minutes recorded as in bed.",
+    "core_minutes": "Minutes of core sleep in the sleep period.",
+    "deep_minutes": "Minutes of deep sleep in the sleep period.",
+    "rem_minutes": "Minutes of REM sleep in the sleep period.",
+    "asleep_unspecified_minutes": "Minutes asleep without a stage in the sleep period.",
+    "staged_minutes": "Minutes asleep with a stage in the sleep period.",
+    "nap_minutes": "Minutes asleep outside the main sleep period.",
+    "asleep_sd_minutes": "The standard deviation of minutes asleep across valid nights.",
+    "asleep_free_minutes": "The mean minutes asleep on free nights.",
+    "asleep_work_minutes": "The mean minutes asleep on work nights.",
+    "extra_sleep_free_minutes": "Mean minutes asleep on free nights minus work nights.",
+    "weekly_exercise_minutes": "The median exercise minutes per complete week.",
+    "exercise_minutes": "Exercise minutes that week.",
+    "lag_days": "The lag: the second series is taken this many days after the first.",
+    # clock times
+    "onset_local": "Sleep onset: the local start of the main sleep period.",
+    "offset_local": "Final waking: the local end of the main sleep period.",
+    "midpoint_local": "The local midpoint of the main sleep period.",
+    "onset_hours_after_noon": "Sleep onset, in hours after the night's noon.",
+    "offset_hours_after_noon": "Final waking, in hours after the night's noon.",
+    "midpoint_hours_after_noon": "The sleep midpoint, in hours after the night's noon.",
+    "start_hours_after_noon": "The segment's start, in hours after the night's noon.",
+    "end_hours_after_noon": "The segment's end, in hours after the night's noon.",
+    "midpoint_sd_hours": "The standard deviation of the sleep midpoint across valid nights, in hours.",
+    "onset_sd_hours": "The standard deviation of sleep onset across valid nights, in hours.",
+    "offset_sd_hours": "The standard deviation of final waking across valid nights, in hours.",
+    "midpoint_free": "The mean sleep midpoint on free nights, in hours after noon.",
+    "midpoint_work": "The mean sleep midpoint on work nights, in hours after noon.",
+    "social_jetlag_hours": "The free-night minus the work-night sleep midpoint, in hours.",
+    "trough_hour": "The hour of the participant's lowest value.",
+    "peak_hour": "The hour of the participant's highest value.",
+    # values and statistics
+    "value": "The value drawn.",
+    "value_sum": "The total amount recorded, for totals and event amounts.",
+    "value_mean": "The mean value, for levels.",
+    "value_median": "The median value that day.",
+    "value_min": "The lowest value that day.",
+    "value_max": "The highest value that day.",
+    "value_per_day": "The amount per day recorded in the hour, over the participant's days.",
+    "records_per_day": "Records per day starting in the hour, over the participant's days.",
+    "value_sum_per_participant": "value_sum divided by the participants contributing that day.",
+    "mean": "The mean.",
+    "sd": "The standard deviation.",
+    "median": "The median.",
+    "p5": "The 5th percentile.",
+    "p10": "The 10th percentile.",
+    "p25": "The 25th percentile.",
+    "p50": "The 50th percentile (the median).",
+    "p75": "The 75th percentile.",
+    "p90": "The 90th percentile.",
+    "p95": "The 95th percentile.",
+    "min": "The lowest value.",
+    "max": "The highest value.",
+    "ci_low": "The lower bound of the bootstrap confidence interval of the median.",
+    "ci_high": "The upper bound of the bootstrap confidence interval of the median.",
+    "rolling_mean": "The centred rolling mean over the chosen number of days.",
+    "relative": "The value relative to the participant's own mean over the 24 hours (1 is their average).",
+    "r": "The Pearson correlation.",
+    "within_slope": "The pooled within-participant slope of y on x.",
+    "within_r": "The pooled within-participant correlation.",
+    "x_dev": "x minus the participant's own mean.",
+    "y_dev": "y minus the participant's own mean.",
+    "jaccard": "Days with both, as a share of days with either (Jaccard index).",
+    "density": "Days with data as a share of the span.",
+    "percent_change": "The change from the participant's first valid measurement, in percent.",
+    "systolic": "The participant's median systolic pressure over valid days, in mmHg.",
+    "diastolic": "The participant's median diastolic pressure over valid days, in mmHg.",
+    "blood_pressure_systolic_value_mean": "The day's mean systolic pressure, in mmHg.",
+    "blood_pressure_diastolic_value_mean": "The day's mean diastolic pressure, in mmHg.",
+    "active_energy_burned_mean": "The day's active energy (Move ring), in kcal.",
+    "active_energy_burned_goal_mean": "The day's Move goal, in kcal.",
+    "apple_exercise_time_mean": "The day's exercise minutes (Exercise ring).",
+    "apple_exercise_time_goal_mean": "The day's Exercise goal, in minutes.",
+    "apple_stand_hours_mean": "The day's stand hours (Stand ring).",
+    "apple_stand_hours_goal_mean": "The day's Stand goal, in hours.",
+    "average_heart_rate_mean": "The mean heart rate the day's recordings report, in beats per minute.",
+    "sampling_frequency_mean": "The mean sampling frequency of the day's recordings, in Hz.",
+    "lower": "The category's lower bound (inclusive).",
+    "upper": "The category's upper bound (exclusive).",
+    "weekday_median": "The participant's median valid weekday.",
+    "weekend_median": "The participant's median valid weekend day.",
+    "weekend_minus_weekday": "weekend_median minus weekday_median.",
+    "weekday_days": "Valid weekdays.",
+    "weekend_days": "Valid weekend days.",
+    # shares, between 0 and 1 unless the name says percent
+    "share": "A share, between 0 and 1.",
+    "fraction": "The participants as a share of those who started.",
+    "day_share": "The share of the participant's days on which the hour holds data.",
+    "regular_share": "The share of gaps within 10% of the typical gap: how regular the cadence is.",
+    "completeness": "The day's completeness: the valid-day criterion's value relative to its expected level.",
+    "adherence": "Valid days as a share of the span.",
+    "median_completeness": "The median day's completeness.",
+    "share_of_records": "The status or flag's share of the feature's records.",
+    "share_beyond": "Readings beyond the threshold, as a share of readings.",
+    "redundant_share": "Redundant minutes as a share of observed minutes.",
+    "without_offset_share": "Records without a UTC offset, as a share of records.",
+    "user_entered_share": "Records entered by hand, as a share of records.",
+    "below_per_1000": "Values below the plausible range per 1,000 values assessed.",
+    "above_per_1000": "Values above the plausible range per 1,000 values assessed.",
+    "acquisition_classified_fraction": "The share of rows whose acquisition method is classified.",
+    "expected_records_per_day": "The records a complete day would hold, from the typical gap.",
+    "expected_readings_per_day": "The readings a complete day would hold, from the typical gap.",
+    "efficiency": "Minutes asleep as a share of the efficiency basis.",
+    "core_share": "Core sleep as a share of staged sleep.",
+    "deep_share": "Deep sleep as a share of staged sleep.",
+    "rem_share": "REM sleep as a share of staged sleep.",
+    "nap_share": "The share of valid nights with a nap.",
+    "active_percent": "Readings on valid days as a percent of the readings expected on them.",
+    "span_active_percent": "Readings over the whole span as a percent of the readings expected over it.",
+    "sleep_recorded_share": "Nights with asleep time recorded, as a share of the participant's span.",
+    "in_bed_only_share": "Nights with time in bed only, as a share of the participant's span.",
+    "neither_share": "Nights with neither, as a share of the participant's span.",
+    # true or false
+    "present": "Whether the participant has a file for the feature.",
+    "valid": "Whether the day meets the valid-day rule.",
+    "valid_day": "Whether the reading's day meets the valid CGM day rule.",
+    "suppressed": "Whether the row's participant count is below min_participants, so its values are hidden.",
+    "counted": "Whether the segment counts toward the night's metrics.",
+    "main_period": "Whether the segment lies within the main sleep period.",
+    "complete": "Whether all seven days of the week are recorded.",
+    "sufficient": "Whether the participant has at least the consensus minimum of valid CGM days.",
+    "staged": "Whether the night has sleep stages.",
+    "asleep_recorded": "Whether the night has asleep time recorded.",
+    "in_bed_recorded": "Whether the night has time in bed recorded.",
+    "verifiable": "Whether the file carries the state needed to verify it against the manifest.",
+    "move_goal_met": "The share of days meeting the Move goal.",
+    "exercise_goal_met": "The share of days meeting the Exercise goal.",
+    "stand_goal_met": "The share of days meeting the Stand goal.",
+    "meets_in_range": "Whether time in range (70–180 mg/dL) is above 70%.",
+    "meets_below_70": "Whether time below 70 mg/dL is under 4%.",
+    "meets_below_54": "Whether time below 54 mg/dL is under 1%.",
+    "meets_above_180": "Whether time above 180 mg/dL is under 25%.",
+    "meets_above_250": "Whether time above 250 mg/dL is under 5%.",
+    "meets_cv": "Whether glucose variability (CV) is at most 36%.",
+    # glucose
+    "mgdl": "The glucose reading, in mg/dL.",
+    "mean_mgdl": "Mean glucose, in mg/dL.",
+    "mean_mmol": "Mean glucose, in mmol/L.",
+    "sd_mgdl": "The standard deviation of glucose, in mg/dL.",
+    "cv_percent": "Glucose variability: the coefficient of variation, in percent.",
+    "gmi_percent": "The glucose management indicator, in percent (an estimate of HbA1c).",
+    "very_low_percent": "Time below 54 mg/dL, in percent.",
+    "low_percent": "Time from 54 to below 70 mg/dL, in percent.",
+    "in_range_percent": "Time from 70 to 180 mg/dL, in percent.",
+    "high_percent": "Time above 180 up to 250 mg/dL, in percent.",
+    "very_high_percent": "Time above 250 mg/dL, in percent.",
+    "below_70_percent": "Time below 70 mg/dL, in percent (very low plus low).",
+    "above_180_percent": "Time above 180 mg/dL, in percent (high plus very high).",
+}
+
+# Families of columns named by a pattern: the cohort statistics of hour_of_day's per-participant measures.
+_MEASURES = {"records_per_day": "records per day", "value_per_day": "amount per day", "value_mean": "mean value",
+             "day_share": "share of days with data"}
+_STATS = {"median": "The median across participants of their {m} in the hour.",
+          "p25": "The 25th percentile across participants of their {m} in the hour.",
+          "p75": "The 75th percentile across participants of their {m} in the hour.",
+          "participants": "Participants with a {m} in the hour."}
+_HOUR_STATISTIC = re.compile(rf"^({'|'.join(_MEASURES)})_({'|'.join(_STATS)})$")
+
+
+def _pattern_meaning(column: str) -> str:
+    match = _HOUR_STATISTIC.match(column)
+    return _STATS[match.group(2)].format(m=_MEASURES[match.group(1)]) if match else ""
+
 # ------------------------------------------------------------------------------------------------ discovery
 def _module(name: str) -> types.ModuleType:
     return importlib.import_module(f"wearable_project.utils.{name}")
@@ -1026,6 +1904,7 @@ def _tool_payload(name: str, phase: str, root, out) -> dict[str, Any]:
         payload.update({"fields": [{"name": f, "meaning": FIELDS.get((name, f), "")} for f in _fields(obj)],
                         "methods": [{"name": m, "does": _first_sentence(inspect.getdoc(getattr(obj, m)) or "")}
                                     for m in _methods(obj)]})
+    payload["tables"] = _tool_tables(name)
     if name == "main":
         payload["cli_help"] = _cli_help()
     return payload
@@ -1072,12 +1951,19 @@ def _tool_text(p: dict[str, Any]) -> str:
         if example["needs_pyarrow"]:
             body.extend(_wrap("Needs pyarrow (or fastparquet), which the package does not require."))
         sections.append(("Example", body))
+    if p["tables"]:
+        title = {"figure": "Data and panels", "class": "Tables it holds"}.get(p["kind"], "Tables it returns")
+        sections.append((title, _tool_tables_lines(p)))
     if p["related"]:
         sections.append(("Related", _wrap(", ".join(p["related"]))))
     if p["docstring"]:
         sections.append(("Documentation", _paragraphs(p["docstring"])))
     subtitle = f"{p['group_title']} · {kind_label} · {p['tier']}"
     return _document(f"{p['name']} — {p['module']}", subtitle, sections)
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
 def _parameter_report(name: str) -> InfoReport:
@@ -1089,11 +1975,16 @@ def _parameter_report(name: str) -> InfoReport:
     figures = [t["tool"] for t in takers if _is_figure(t["tool"])]
     payload = {"name": name, "meaning": PARAMETERS[name], "tools": takers, "figures": figures}
     sections = [("Meaning", _wrap(PARAMETERS[name])),
-                ("Taken by", _wrap(", ".join(t["tool"] for t in takers) + f" ({len(takers)} tools, {len(figures)} "
-                                                                         f"figures)."))]
+                ("Taken by", _wrap(", ".join(t["tool"] for t in takers) + f" ({_count(len(takers), 'tool')}, "
+                                                                         f"{_count(len(figures), 'figure')})."))]
     specific = [line for t in takers if t["meaning"] for line in _wrap(f"{t['tool']}: {t['meaning']}")]
     if specific:
         sections.append(("Where it means something more specific", specific))
+    if name in _all_columns():
+        tables = _column_tables(name)
+        payload["column"] = {"meaning": COLUMNS.get(name) or _pattern_meaning(name), "tables": tables}
+        sections.append(("Also a column", _wrap(f"{payload['column']['meaning']} In {len(tables)} tables: "
+                                                  f"{', '.join(tables)}.")))
     return _report("parameter", name, payload, _document(f"{name} — parameter", "shared by the statistics and figure "
                                                                                 "tools", sections))
 
@@ -1141,6 +2032,10 @@ def _resolve_module(module: str | None) -> str | None:
 
 
 def _section_report(section: str, question: str | None, module: str | None) -> InfoReport:
+    if section == "tables":
+        return _tables_section_report(question, module)
+    if section == "columns":
+        return _columns_section_report()
     group, module_name = _resolve_group(question), _resolve_module(module)
     names = [n for n in TOOLS if (group is None or TOOLS[n].group == group)
              and (module_name is None or TOOLS[n].module == module_name)]
@@ -1218,11 +2113,16 @@ def _overview(phase: str, root, out) -> InfoReport:
         ("Written runs", _wrap(f"Statistics runs record output schema {schemas['statistics']} and domain runs "
                                f"{schemas['domain']}. A run written with another schema cannot be resumed: compute "
                                f"it again. Outputs are never written inside a data root.")),
+        ("Output tables", _wrap(f"The tools return {len(TABLES)} tables, from the statistics run to each figure's data and "
+                                 f"panels. utils.info(\"tables\") lists them, utils.info(\"<table>\") explains every column "
+                                 f"(such as utils.info(\"DomainMetrics.sleep_nights\")), and utils.info.table_columns() "
+                                 f"gives a table's columns in a phase. A function's or figure's card lists the columns of "
+                                 f"the tables it returns.")),
         ("Conventions of the examples", _wrap(f"Every example assumes {SETUP_NOTES['base']}") + _code(payload["setup"], 4)),
-        ("Asking", _wrap('utils.info("name") for a function, class, figure, parameter or question (such as "sleep"); '
-                         'utils.info("tools"), utils.info("figures") and utils.info("parameters") for the catalogues, '
-                         'which question= and module= filter; anything else searches. .as_dict() gives each report '
-                         'structured.')),
+        ("Asking", _wrap('utils.info("name") for a function, class, figure, parameter, question (such as "sleep"), '
+                         'output table or column; utils.info("tools"), utils.info("figures"), utils.info("parameters"), '
+                         'utils.info("tables") and utils.info("columns") for the catalogues, which question= and module= '
+                         'filter; anything else searches. .as_dict() gives each report structured.')),
     ]
     subtitle = (f"{len(MODULES)} modules · {len(functions)} functions, {len(figures)} of them figures · "
                 f"{len(classes)} classes · version {__version__}")
@@ -1230,9 +2130,235 @@ def _overview(phase: str, root, out) -> InfoReport:
                    _document("wearable_project.utils — statistics and figures", subtitle, sections))
 
 
+
+# ------------------------------------------------------------------------------------------ tables: machinery
+def _daily_universe() -> list[str]:
+    from wearable_project.utils import data_statistics as ds
+    names = [*DAILY_COMMON, *DAILY_CURATED_ONLY]
+    for extra in (*DAILY_BY_KIND.values(), *DAILY_BY_FEATURE.values(),
+                  *([n for n, *_ in entries] for entries in ds.CLINICAL_THRESHOLDS.values())):
+        names += [c for c in extra if c not in names]
+    return names
+
+
+def table_columns(table: str, phase: str = "curated", *, feature: str | None = None,
+                  optional: bool = False) -> list[str]:
+    """
+    The documented columns of an output table in a phase.
+    Parameters
+    ----------
+    table:
+        A table, such as ``"DomainMetrics.sleep_nights"``; ``utils.info("tables")`` lists them.
+    phase:
+        ``"curated"`` or ``"native"``: some columns exist only in the curated phase.
+    feature:
+        For the daily tables, whose columns depend on the feature. Without it, only the columns every feature has.
+    optional:
+        Also the columns present only under a condition, such as ``ci_low`` with ``ci=``.
+    """
+
+    if table not in TABLES:
+        close = difflib.get_close_matches(table, list(TABLES), n=3, cutoff=0.6)
+        raise DataLoaderConfigurationError(f"no output table {table!r}" + (f"; did you mean {', '.join(close)}?" if close else ""))
+    if phase not in ("curated", "native"):
+        raise DataLoaderConfigurationError("phase must be 'curated' or 'native'")
+    spec = TABLES[table]
+    if table == "DailyStatistics.daily":
+        columns = daily_columns(feature, phase) if feature else [*DAILY_COMMON, *(DAILY_CURATED_ONLY if phase == "curated" else ())]
+    else:
+        columns = table_columns(spec.extends, phase, feature=feature) if spec.extends else []
+        if spec.derived_from:
+            module, constant = spec.derived_from.split(".")
+            columns += [c for c in getattr(_module(module), constant) if c not in columns]
+        columns += [c for c in spec.columns if c not in columns]
+        if phase == "curated":
+            columns += [c for c in spec.curated_only if c not in columns]
+    if optional:
+        columns += [c for c, _ in spec.optional if c not in columns]
+    return columns
+
+
+def _column_meaning(table: str | None, column: str) -> str:
+    key = table
+    while key:
+        notes = dict(TABLES[key].notes)
+        if column in notes:
+            return notes[column]
+        key = TABLES[key].extends or None
+    return COLUMNS.get(column) or _pattern_meaning(column)
+
+
+def _tables_of(tool: str) -> list[str]:
+    return [key for key, spec in TABLES.items() if tool in spec.returned_by]
+
+
+def _table_group(key: str) -> str:
+    """The question a table answers: that of the first tool returning it outside runs and inputs."""
+
+    groups = [TOOLS[tool].group for tool in TABLES[key].returned_by]
+    return next((g for g in groups if g != "runs"), groups[0])
+
+
+def _column_rows(key: str) -> list[dict[str, str]]:
+    spec, native = TABLES[key], set(table_columns(key, "native"))
+    rows = [{"name": c, "meaning": _column_meaning(key, c), "when": "" if c in native else "curated phase only"}
+            for c in table_columns(key, "curated")]
+    whens: dict[str, list[str]] = {}
+    for column, when in spec.optional:
+        whens.setdefault(column, []).append(when)
+    listed = {r["name"] for r in rows}
+    rows += [{"name": c, "meaning": _column_meaning(key, c), "when": "; ".join(w)} for c, w in whens.items()
+             if c not in listed]
+    return rows
+
+
+def _table_payload(key: str) -> dict[str, Any]:
+    spec = TABLES[key]
+    payload: dict[str, Any] = {
+        "table": key, "rows": spec.rows, "returned_by": list(spec.returned_by), "group": _table_group(key),
+        "group_title": _group_title(_table_group(key)), "derived_from": spec.derived_from, "extends": spec.extends,
+        "index": list(spec.index), "columns": _column_rows(key), "dynamic": spec.dynamic, "read_back": spec.read_back,
+    }
+    if key == "DailyStatistics.daily":
+        from wearable_project.utils import data_statistics as ds
+        extras = {f: list(c) for f, c in DAILY_BY_FEATURE.items()}
+        for feature, entries in ds.CLINICAL_THRESHOLDS.items():
+            extras.setdefault(feature, []).extend(n for n, *_ in entries)
+        payload["by_kind"] = {k: list(c) for k, c in DAILY_BY_KIND.items()}
+        payload["by_feature"] = extras
+        payload["kind_columns"] = [{"name": c, "meaning": _column_meaning(key, c)} for c in _daily_universe()
+                                   if c not in DAILY_COMMON and c not in DAILY_CURATED_ONLY]
+    return payload
+
+
+def _column_lines(rows: list[dict[str, str]], indent: int = 2) -> list[str]:
+    lines = []
+    for r in rows:
+        when = f" [{r['when']}]" if r.get("when") else ""
+        lines.extend(_wrap(f"{r['name']}{when} — {r['meaning']}", indent))
+    return lines
+
+
+def _table_text(p: dict[str, Any]) -> str:
+    sections: list[tuple[str, list[str]]] = [("Rows", _wrap(p["rows"][0].upper() + p["rows"][1:] + "."))]
+    sections.append(("Returned by", _wrap(", ".join(p["returned_by"]))))
+    if p["index"]:
+        sections.append(("Index", _wrap(", ".join(p["index"]))))
+    source = f" (from {p['derived_from']})" if p["derived_from"] else ""
+    if p["extends"]:
+        source = f" (those of {p['extends']}" + (", then these)" if TABLES[p["table"]].columns else ")")
+    if p["table"] == "DailyStatistics.daily":
+        sections.append(("Every feature, both phases", _column_lines([r for r in p["columns"] if not r["when"]])))
+        sections.append(("Curated phase only", _column_lines([{**r, "when": ""} for r in p["columns"] if r["when"]])))
+        sections.append(("By measurement kind", [line for k, c in p["by_kind"].items()
+                                                  for line in _wrap(f"{k}: {', '.join(c) or 'none beyond the above'}")]))
+        sections.append(("Only some features", [line for f, c in p["by_feature"].items() for line in _wrap(f"{f}: {', '.join(c)}")]))
+        sections.append(("What those columns mean", _column_lines(p["kind_columns"])))
+    else:
+        sections.append((f"Columns{source}", _column_lines(p["columns"])))
+    if p["dynamic"]:
+        title = "A given feature's columns" if p["table"] == "DailyStatistics.daily" else "Columns named at run time"
+        sections.append((title, _wrap(p["dynamic"])))
+    if p["read_back"]:
+        directory = ("domain_dir, the out= directory of compute_domain_metrics" if "domain_dir" in p["read_back"]
+                     else "run_dir, the out= directory of compute_daily_statistics")
+        sections.append(("In a written run", _wrap(f"{p['read_back']}, with {directory}.")))
+    if p["table"] == "DailyStatistics.daily":
+        count = "columns by feature"
+    elif p["dynamic"]:
+        count = f"{len(p['columns'])} columns and more named at run time" if p["columns"] else "columns named at run time"
+    else:
+        count = f"{len(p['columns'])} columns"
+    return _document(f"{p['table']} — output table", f"{p['group_title']} · {count}", sections)
+
+
+def _table_report(key: str) -> InfoReport:
+    payload = _table_payload(key)
+    return _report("table", key, payload, _table_text(payload))
+
+
+def _column_tables(name: str) -> list[str]:
+    found = []
+    for key in TABLES:
+        names = _daily_universe() if key == "DailyStatistics.daily" else table_columns(key, "curated", optional=True)
+        if name in names:
+            found.append(key)
+    return found
+
+
+def _all_columns() -> list[str]:
+    names: list[str] = []
+    for key in TABLES:
+        for c in (_daily_universe() if key == "DailyStatistics.daily" else table_columns(key, "curated", optional=True)):
+            if c not in names:
+                names.append(c)
+    return names
+
+
+def _column_report(name: str) -> InfoReport:
+    tables = _column_tables(name)
+    general = COLUMNS.get(name) or _pattern_meaning(name)
+    specific = [{"table": t, "meaning": _column_meaning(t, name)} for t in tables if _column_meaning(t, name) != general]
+    body = _wrap(general)
+    if specific:
+        body += [""] + [line for s in specific for line in _wrap(f"In {s['table']}: {s['meaning']}")]
+    payload = {"column": name, "meaning": general, "tables": tables, "specific": specific}
+    text = _document(f"{name} — column", f"in {len(tables)} tables",
+                     [("Meaning", body), ("Tables", _wrap(", ".join(tables)))])
+    return _report("column", name, payload, text)
+
+
+def _tool_tables(name: str) -> list[dict[str, Any]]:
+    keys = _tables_of(name) + [k for k in TABLES if k.startswith(f"{name}.") and name not in TABLES[k].returned_by]
+    return [{"table": k, "rows": TABLES[k].rows, "columns": _column_rows(k), "dynamic": TABLES[k].dynamic,
+             "index": list(TABLES[k].index)} for k in keys]
+
+
+def _tool_tables_lines(p: dict[str, Any]) -> list[str]:
+    body: list[str] = []
+    detailed = p["kind"] == "figure" or len(p["tables"]) <= 2
+    for t in p["tables"]:
+        body.extend(_wrap(f"{t['table']} — {t['rows']}"))
+        if t["table"] == "DailyStatistics.daily":
+            body.extend(_wrap("Columns depend on the feature and the phase: utils.info.daily_columns(feature, phase) "
+                              "lists them.", 4))
+        elif detailed:
+            body.extend(_column_lines(t["columns"], 4))
+        else:
+            body.extend(_wrap(f"Columns: {', '.join(r['name'] for r in t['columns'])}", 4))
+        if t["dynamic"]:
+            body.extend(_wrap(t["dynamic"], 4))
+    if p["tables"] and not detailed:
+        body.extend(_wrap("utils.info('<table>') explains every column of a table, such as "
+                          f"utils.info({p['tables'][0]['table']!r})."))
+    return body
+
+
+def _tables_section_report(question: str | None, module: str | None) -> InfoReport:
+    group, module_name = _resolve_group(question), _resolve_module(module)
+    keys = [k for k in TABLES if (group is None or _table_group(k) == group)
+            and (module_name is None or any(TOOLS[t].module == module_name for t in TABLES[k].returned_by))]
+    sections = []
+    for g, title, _ in GROUPS:
+        chosen = [k for k in keys if _table_group(k) == g]
+        if chosen:
+            sections.append((title, [line for k in chosen for line in _wrap(f"{k} — {TABLES[k].rows}")]))
+    rows = [{"table": k, "rows": TABLES[k].rows, "group": _table_group(k), "returned_by": list(TABLES[k].returned_by)}
+            for k in keys]
+    return _report("tables", "Tables", {"tables": rows},
+                   _document("Output tables", f"{len(keys)} tables; utils.info('<table>') explains its columns", sections))
+
+
+def _columns_section_report() -> InfoReport:
+    names = sorted(_all_columns(), key=str.casefold)
+    rows = [{"column": n, "meaning": COLUMNS.get(n) or _pattern_meaning(n), "tables": len(_column_tables(n))} for n in names]
+    body = [line for r in rows for line in _wrap(f"{r['column']} ({r['tables']} tables) — {r['meaning']}")]
+    return _report("columns", "Columns", {"columns": rows},
+                   _document("Columns", f"{len(rows)} column names across the output tables", [("Columns", body)]))
+
 # ---------------------------------------------------------------------------------------------------- search
 def search(term: str, limit: int = 15) -> list[dict[str, Any]]:
-    """Topics matching ``term``, best first: tools, parameters and questions."""
+    """Topics matching ``term``, best first: tools, parameters, questions, output tables and columns."""
 
     words = [w for w in re.findall(r"[a-z0-9]+", term.casefold()) if len(w) > 1]
     phrase = " ".join(words)
@@ -1245,6 +2371,10 @@ def search(term: str, limit: int = 15) -> list[dict[str, Any]]:
                         inspect.getdoc(obj) or ""))
     entries += [("parameter", n, m, "") for n, m in PARAMETERS.items()]
     entries += [("question", k, f"{t} {d}", "") for k, t, d in GROUPS]
+    entries += [("table", k, " ".join([s.rows, *(_daily_universe() if k == "DailyStatistics.daily"
+                                                 else table_columns(k, "curated", optional=True))]), "")
+                for k, s in TABLES.items()]
+    entries += [("column", c, COLUMNS.get(c) or _pattern_meaning(c), "") for c in _all_columns()]
     results = []
     for kind, name, text, doc in entries:
         label, body, extra = name.casefold().replace("_", " "), text.casefold(), doc.casefold()
@@ -1259,7 +2389,7 @@ def search(term: str, limit: int = 15) -> list[dict[str, Any]]:
             score += 15 * (w in label.split()) + 6 * body.count(w) + 1 * extra.count(w)
         if score:
             results.append({"topic": name, "kind": kind, "score": score,
-                            "summary": TOOLS[name].does if kind == "tool" else text})
+                            "summary": TOOLS[name].does if kind == "tool" else TABLES[name].rows if kind == "table" else text})
     return sorted(results, key=lambda r: (-r["score"], r["topic"]))[:limit]
 
 
@@ -1271,7 +2401,7 @@ def _search_report(term: str) -> InfoReport:
 
 
 # ------------------------------------------------------------------------------------------------------ info
-SECTIONS = ("overview", "tools", "figures", "parameters")
+SECTIONS = ("overview", "tools", "figures", "parameters", "tables", "columns")
 
 
 def info(topic: str | None = None, *, question: str | None = None, module: str | None = None,
@@ -1282,8 +2412,9 @@ def info(topic: str | None = None, *, question: str | None = None, module: str |
     ----------
     topic:
         None for the overview; a function, class or figure name (``"plot_agp"``, also ``"dp.plot_agp"``); a parameter
-        (``"min_participants"``); a question (``"sleep"``); ``"tools"``, ``"figures"`` or ``"parameters"`` for the
-        catalogues. Anything else searches. Matching ignores case.
+        (``"min_participants"``); a question (``"sleep"``); an output table (``"DomainMetrics.sleep_nights"``,
+        ``"plot_agp.data"``) or a column (``"gmi_percent"``); ``"tools"``, ``"figures"``, ``"parameters"``, ``"tables"``
+        or ``"columns"`` for the catalogues. Anything else searches. Matching ignores case.
     question, module:
         Filter the catalogues, such as ``info("figures", question="sleep")`` or ``info("tools", module="dm")``.
     phase, root, out:
@@ -1314,9 +2445,15 @@ def info(topic: str | None = None, *, question: str | None = None, module: str |
     group = next((k for k, t, _ in GROUPS if folded in (k, t.casefold())), None)
     if group is not None:
         return _group_report(group, _resolve_module(module))
+    by_table = {k.casefold(): k for k in TABLES}
+    if key.casefold() in by_table:
+        return _table_report(by_table[key.casefold()])
+    by_column = {c.casefold(): c for c in _all_columns()}
+    if folded in by_column:
+        return _column_report(by_column[folded])
     if search(key):
         return _search_report(key)
-    candidates = [*TOOLS, *PARAMETERS, *(k for k, _, _ in GROUPS)]
+    candidates = [*TOOLS, *PARAMETERS, *(k for k, _, _ in GROUPS), *TABLES]
     close = difflib.get_close_matches(folded, [c.casefold() for c in candidates], n=5, cutoff=0.6)
     hint = f"; did you mean {', '.join(close)}?" if close else "; utils.info() lists every topic"
     raise DataLoaderConfigurationError(f"no topic or match for {topic!r}{hint}")
@@ -1325,7 +2462,9 @@ def info(topic: str | None = None, *, question: str | None = None, module: str |
 def topics() -> list[str]:
     """Every topic ``info`` answers by name."""
 
-    return [*SECTIONS, *TOOLS, *PARAMETERS, *(k for k, _, _ in GROUPS)]
+    named = [*SECTIONS, *TOOLS, *PARAMETERS, *(k for k, _, _ in GROUPS), *TABLES]
+    taken = {n.casefold() for n in named}
+    return named + [c for c in _all_columns() if c.casefold() not in taken]
 
 
 # ----------------------------------------------------------------------------------------------- command line

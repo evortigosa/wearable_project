@@ -11,9 +11,11 @@ Sleep nights
     sleep time (the union of asleep records, so overlapping devices count once), wake after sleep onset (the period
     minus sleep time), time in bed (the period together with every in-bed record overlapping it), efficiency (sleep
     time over time in bed, or over the period where no in-bed record exists), and minutes and shares per stage where
-    stages were recorded. A night holding only in-bed records has its in-bed time but no sleep metrics: its sleep was
-    not measured, which is not the same as no sleep. Clock times are also given in hours after the night's noon, so
-    they can be averaged across nights without wrapping at midnight.
+    stages were recorded. Stages come from one source per night, the device that staged the most sleep, so two devices
+    staging the same minutes differently never count them twice; shares are fractions of that source's staged time.
+    A night holding only in-bed records has its in-bed time but no sleep metrics: its sleep was not measured, which
+    is not the same as no sleep. Clock times are also given in hours after the night's noon, so they can be averaged
+    across nights without wrapping at midnight.
 CGM metrics
     Only for participants whose glucose data has a continuous monitor's fixed cadence (``data_summaries``), so
     finger-stick readings are never mixed in. Readings are classified in mg/dL, the unit of the consensus ranges,
@@ -75,13 +77,15 @@ class NightRule:
 def definitions() -> dict[str, Any]:
     """The declared constants, as recorded in ``run.json``."""
 
+    bounds = {name: (low, high) for name, low, high in GLUCOSE_RANGES}
     return {"night_start_hour": NIGHT_START_HOUR, "episode_gap_minutes": EPISODE_GAP_MINUTES,
             "asleep_states": sorted(ASLEEP_STATES), "stage_states": list(STAGE_STATES),
             "mgdl_per_mmol": MGDL_PER_MMOL, "cgm_min_day_completeness": CGM_MIN_DAY_COMPLETENESS,
             "cgm_sufficient_days": CGM_SUFFICIENT_DAYS,
             "glucose_ranges_mgdl": [[n, lo, hi] for n, lo, hi in GLUCOSE_RANGES],
-            "glucose_range_rule": "low <= mg/dL < high, except in_range, which includes 180; fixed cadence per "
-                                  "data_summaries.FIXED_CADENCE"}
+            "glucose_range_rule": f"low <= mg/dL < high, except in_range, which includes "
+                                  f"{bounds['in_range_percent'][1]:g}, and high, which includes "
+                                  f"{bounds['high_percent'][1]:g}; fixed cadence per data_summaries.FIXED_CADENCE"}
 
 
 # ------------------------------------------------------------------------------------------------- sleep
@@ -283,12 +287,13 @@ def glucose_mgdl(mmol: pd.Series | np.ndarray) -> np.ndarray:
 def glucose_range(mgdl: np.ndarray) -> np.ndarray:
     """The consensus range of each reading, by name; the target range includes both 70 and 180 mg/dL."""
 
+    bounds = {name: (low, high) for name, low, high in GLUCOSE_RANGES}
     out = np.empty(len(mgdl), dtype=object)
     out[:] = "in_range_percent"
-    out[mgdl < 54.0] = "very_low_percent"
-    out[(mgdl >= 54.0) & (mgdl < 70.0)] = "low_percent"
-    out[(mgdl > 180.0) & (mgdl <= 250.0)] = "high_percent"
-    out[mgdl > 250.0] = "very_high_percent"
+    out[mgdl < bounds["very_low_percent"][1]] = "very_low_percent"
+    out[(mgdl >= bounds["low_percent"][0]) & (mgdl < bounds["low_percent"][1])] = "low_percent"
+    out[(mgdl > bounds["high_percent"][0]) & (mgdl <= bounds["high_percent"][1])] = "high_percent"
+    out[mgdl > bounds["very_high_percent"][0]] = "very_high_percent"
     return out
 
 

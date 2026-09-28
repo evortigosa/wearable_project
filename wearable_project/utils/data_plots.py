@@ -2282,8 +2282,11 @@ def plot_sleep_recording(metrics: "dm.DomainMetrics", *, show_ids: bool = False,
 
 # ------------------------------------------------------------------------------------------- glucose
 def _glucose_axes(ax, top: float) -> None:
-    ax.axhspan(70, 180, color="#e5f5e0", zorder=0)
-    for level, style in ((54, ":"), (70, "--"), (180, "--"), (250, ":")):
+    bounds = {name: (low, high) for name, low, high in dm.GLUCOSE_RANGES}
+    low, high = bounds["in_range_percent"]
+    ax.axhspan(low, high, color="#e5f5e0", zorder=0)
+    for level, style in ((bounds["very_low_percent"][1], ":"), (low, "--"), (high, "--"),
+                         (bounds["very_high_percent"][0], ":")):
         ax.axhline(level, color="0.55", linestyle=style, linewidth=0.8, zorder=1)
     ax.set_xlim(0, 24)
     ticks = np.arange(0, 25, 3)
@@ -2376,8 +2379,10 @@ def plot_glucose_days(readings: pd.DataFrame, *, valid_only: bool = True, show_i
         gaps = np.where(np.diff(x) > 0.5)[0] + 1
         x, y = np.insert(x, gaps, np.nan), np.insert(y, gaps, np.nan)
         ax.plot(x, y, color="0.45", linewidth=0.5, alpha=0.3)
-    median = dm.cgm_profile(rows.assign(valid_day=True))
-    ax.plot((median["minute"] + 7.5) / 60, median["p50"], color="#08306b", linewidth=2.2, label="median by 15 minutes")
+    bin_minutes = dm.AGP_BIN_MINUTES
+    median = dm.cgm_profile(rows.assign(valid_day=True), bin_minutes=bin_minutes)
+    ax.plot((median["minute"] + bin_minutes / 2) / 60, median["p50"], color="#08306b", linewidth=2.2,
+            label=f"median by {bin_minutes} minutes")
     _glucose_axes(ax, float(rows["mgdl"].quantile(0.999)) + 20)
     ax.legend(fontsize=7, loc="upper left")
     who = rows["RegistrationCode"].iloc[0] if show_ids else "one participant"
