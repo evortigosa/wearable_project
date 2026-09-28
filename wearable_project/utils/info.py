@@ -3,32 +3,39 @@ Wearable Data Processing and Modeling project
 Introspective help for the statistics and figure tools: ``data_statistics``, ``data_summaries``, ``domain_metrics``
 and ``data_plots``.
 As with ``DataLoaders.info``, whatever the code can state for itself is derived from it: signatures, docstrings,
-the options each figure accepts, the fields of every result, the output schema versions and the command line's own
-help. What the code cannot state is written here: the question each tool answers, how the tools chain, what each
-parameter and field means, which participants a figure shows, and an example. ``tests/test_utils_info.py`` holds
-those claims against the code. Every public function and class has a card and every parameter and field is
-explained. Every example runs as written, and every figure's announced level and panels match what it draws.
+the options each figure accepts, the fields of every result, the declared column lists, the value of every rule and
+threshold, the output schema versions and the command line's own help. What the code cannot state is written here:
+the question each tool answers, how the tools chain, what each parameter, field and column means, which participants
+a figure shows, the concepts the tools rest on, the reason for each default, and workflows from start to finish.
+Three test files hold those claims against the code and the samples: ``test_utils_info.py`` (every tool and
+parameter, and every example runs), ``test_utils_info_tables.py`` (every table and column against real outputs in
+both phases) and ``test_utils_info_guide.py`` (every workflow runs as printed, every default is read live and
+complete, and every name opens its own card).
 Typical notebook use:
-
     from wearable_project import utils
 
-    utils.info()                             # the map: modules, pipeline, tools by question
-    utils.info("compute_daily_statistics")   # one tool
-    utils.info("plot_agp")                   # one figure
-    utils.info("min_participants")           # one parameter, and the tools that take it
-    utils.info("sleep")                      # the tools for one question
-    utils.info("jetlag")                     # anything else: a ranked search
-    utils.info("plot_agp").as_dict()         # the same, structured
-
+    utils.info()                              # the map: modules, pipeline, tools by question
+    utils.info("compute_daily_statistics")    # one tool
+    utils.info("plot_agp")                    # one figure
+    utils.info("min_participants")            # one parameter, and the tools that take it
+    utils.info("sleep")                       # the tools for one question
+    utils.info("DomainMetrics.sleep_nights")  # one output table, column by column
+    utils.info("valid days")                  # one concept, with the current values of its rules
+    utils.info("CGM_SUFFICIENT_DAYS")         # one default: value, source, basis, the tools it governs
+    utils.info("shareable report")            # one workflow, as code that runs as printed
+    utils.info("jetlag")                      # anything else: a ranked search
+    utils.info("plot_agp").as_dict()          # the same, structured
 ``info`` describes the tools and never touches data. From a shell: ``python -m wearable_project.utils.info plot_agp``.
 """
 
 
 from __future__ import annotations
 import argparse
+import calendar
 import contextlib
 import dataclasses
 import difflib
+import functools
 import importlib
 import inspect
 import io
@@ -157,7 +164,7 @@ PARAMETERS = {
                  "keeps the stored units.",
     "include_individual": "Include figures of individual participants. By default they are included unless "
                           "min_participants is above 1, since they cannot respect a small-cell threshold.",
-    "lag_days": "Days from x to y: x on day d is paired with y on day d + lag_days (a whole number, at most 30).",
+    "lag_days": "Days from x to y: x on day d is paired with y on day d + lag_days (a whole number of days from -30 to 30; negative when y comes first).",
     "max_combinations": "How many feature combinations to draw, the most common first.",
     "measure": "What the figure draws; each figure lists its choices.",
     "method": "The correlation: 'spearman' (the default, rank-based) or 'pearson'.",
@@ -171,7 +178,7 @@ PARAMETERS = {
     "min_valid_days": "The k of the curves 'participants with at least k valid days'.",
     "mmol": "Glucose readings in mmol/L.",
     "name": "The table's name, such as 'participant_feature'.",
-    "night_rule": "Which nights count: NightRule(min_asleep_minutes=180) by default.",
+    "night_rule": "Which nights count: NightRule(min_asleep_minutes={d:night_rule}) by default.",
     "nights": "The sleep_nights table of domain metrics.",
     "order_by": "Order participants by the hour of their lowest value ('trough', the default) or highest ('peak').",
     "out": "A directory for a written run, which must be new or empty (unless resuming) and outside every data root; "
@@ -209,7 +216,7 @@ PARAMETERS = {
     "source": "A daily-statistics run: the object compute_daily_statistics returned, or the directory it wrote.",
     "state_validation": "How the loader checks the root's state database before reading: 'auto' (the default), "
                         "'required' or 'off'.",
-    "sufficient_only": "Only CGM participants with the 14 valid days the consensus requires (the default).",
+    "sufficient_only": "Only CGM participants with sufficient data, at least {d:cgm_sufficient_days} valid days (the default).",
     "summaries": "What summarize(...) returned.",
     "systolic": "Systolic pressures in mmHg, aligned with diastolic.",
     "thresholds": "The threshold values to try; None chooses a range suited to the rule's criterion.",
@@ -219,7 +226,7 @@ PARAMETERS = {
     "unit": "What counts once in a cohort distribution: 'participant' (the default: each participant's median day "
             "or night), or each day or night pooled ('participant_day', 'night').",
     "valid_only": "Draw valid days only (the default for cohort figures).",
-    "weekend_days": "The weekend, Monday being 0: (4, 5), Friday and Saturday, by default. A night is free when it "
+    "weekend_days": "The weekend, Monday being 0: {c:WEEKEND_DAYS}, {d:weekend_days}, by default. A night is free when it "
                     "ends on a weekend day, and weeks start the day after the weekend.",
     "workers": "Worker processes; 1, the default, computes in this process.",
     "x": "The first daily series: a feature of the run, or 'sleep' (total sleep of the night starting on day d, which "
@@ -284,7 +291,7 @@ FIELDS = {
                                       "sufficiency and the consensus metrics over valid days.",
     ("DomainMetrics", "errors"): "Participants that failed, with the reason.",
     ("DomainMetrics", "run"): "The run's record: parameters, output schema, definitions and timing.",
-    ("DomainMetrics", "cgm_profile"): "Each CGM participant's glucose percentiles per 15-minute bin of the day, over "
+    ("DomainMetrics", "cgm_profile"): "Each CGM participant's glucose percentiles per {c:AGP_BIN_MINUTES}-minute bin of the day, over "
                                       "valid days (the AGP).",
 }
 
@@ -314,7 +321,7 @@ S, M, D, P = "data_statistics", "data_summaries", "domain_metrics", "data_plots"
 E, B = "entry point", "building block"
 _WRITE_NOTE = "A new directory for the written run, outside every data root; None keeps the run in memory."
 _READ_NOTE = "The directory a run was written to."
-_NIGHT_RULE = "The night rule: NightRule(min_asleep_minutes=180) by default."
+_NIGHT_RULE = "The night rule: NightRule(min_asleep_minutes={d:night_rule}) by default."
 _HOUR_MEASURE = ("'value' (the default: the mean value, or the amount per day for totals and event amounts), "
                  "'records' per day, or 'coverage', the share of the participant's days with data in the hour.")
 
@@ -436,7 +443,7 @@ TOOLS: dict[str, _Tool] = {
         related=("plot_hour_of_day", "plot_hour_profiles", "plot_hourly_coverage", "plot_daily_rhythms")),
     "clinical_thresholds": _t(
         M, "clinical", E, "Readings beyond clinical thresholds, such as SpO2 below 90% or a temperature of at least "
-                          "38.0 C, per participant and for the cohort; counted only where the values are in the "
+                          "38.0 °C, per participant and for the cohort; counted only where the values are in the "
                           "threshold's unit.",
         "(participants, cohort): two DataFrames.", "sm.clinical_thresholds(daily)",
         related=("plot_clinical_thresholds",)),
@@ -861,7 +868,6 @@ TOOLS: dict[str, _Tool] = {
         P, "identity", B, "The category a feature's guide declares, such as 'Heart and cardiovascular'.",
         "A string.", 'dp.feature_category("HeartRate")', related=("feature_order",)),
 }
-
 
 
 # --------------------------------------------------------------------------------------------- output tables
@@ -1378,7 +1384,7 @@ TABLES: dict[str, _Table] = {
         notes=(("median", "The median of participants' medians."),)),
     "plot_agp.panels.metrics": _Table("the participant's consensus metrics", extends="DomainMetrics.cgm_periods",
                                       returned_by=("plot_agp",)),
-    "plot_glucose_days.panels.median": _Table("one per 15-minute bin", extends="DomainMetrics.cgm_profile",
+    "plot_glucose_days.panels.median": _Table("one per {c:AGP_BIN_MINUTES}-minute bin", extends="DomainMetrics.cgm_profile",
                                               returned_by=("plot_glucose_days",)),
     "plot_glycemic_cohort.panels.targets": _Table(
         "one per group and consensus target", ("group", "target", "participants", "meeting", "share", "suppressed"),
@@ -1502,8 +1508,8 @@ COLUMNS = {
     "days_b": "Participant-days with the second feature.",
     "n_days": "Valid days behind the value.",
     "nights": "The number of nights the row counts.",
-    "free_nights": "Valid nights before a free day (Friday and Saturday nights).",
-    "work_nights": "Valid nights before a workday (Sunday to Thursday nights).",
+    "free_nights": "Valid nights ending on a weekend day (utils.info(\"free nights\") gives the current weekend).",
+    "work_nights": "Valid nights ending on a workday.",
     "staged_nights": "Valid nights with sleep stages.",
     "participants": "The number of participants the row counts.",
     "participants_beyond": "Participants with at least one reading beyond the threshold.",
@@ -1741,6 +1747,1033 @@ def _pattern_meaning(column: str) -> str:
     match = _HOUR_STATISTIC.match(column)
     return _STATS[match.group(2)].format(m=_MEASURES[match.group(1)]) if match else ""
 
+
+# ---------------------------------------------------------------------------------------------------- concepts
+@dataclass(frozen=True)
+class _Concept:
+    """An idea the tools rest on. ``{d:key}`` in the text is the current value of the default ``key``."""
+
+    title: str
+    group: str
+    summary: str
+    body: tuple[str, ...]
+    tools: tuple[str, ...] = ()
+    parameters: tuple[str, ...] = ()
+    columns: tuple[str, ...] = ()
+    defaults: tuple[str, ...] = ()
+    related: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.body, str):
+            object.__setattr__(self, "body", (self.body,))
+
+
+CONCEPTS: dict[str, _Concept] = {
+    # ---------------------------------------------------------------------------------------- runs and inputs
+    "phases": _Concept(
+        "Phases: curated and native", "runs",
+        "Every tool reads one of two copies of the data: the native export, or the curated one.",
+        ("The native phase is the export as HealthKit wrote it, cleaned into one file per participant and feature. The "
+         "curated phase is the same data after curation: each record has a status (pass, review or exclude_default), "
+         "flags, and a default-inclusion decision, and units are resolved where they can be. The phases are "
+         "{d:phases}, and each has a default root ({d:data_roots}).",
+         "Curation adds information; it removes nothing. Curation columns (such as records_included) and tables "
+         "(DailyStatistics.curation) exist only in the curated phase, and figures of curation refuse the native one. "
+         "default_inclusion_only=True restricts a curated run to the records the curation includes by default."),
+        tools=("compute_coverage", "compute_daily_statistics", "compute_domain_metrics", "plot_curation"),
+        parameters=("phase", "root", "default_inclusion_only"), columns=("records_included",),
+        defaults=("phases", "data_roots"), related=("curation", "data-roots"), aliases=("curated phase", "native phase", "curated and native")),
+    "local-days": _Concept(
+        "Local days", "runs",
+        "A day is the participant's local calendar day, not the UTC day.",
+        ("An event's local time is its UTC time plus the record's UTC offset, so a run at 23:30 in Tel Aviv belongs to "
+         "that evening, not to the next UTC day. A record without an offset falls back to its UTC day and is counted "
+         "in records_without_offset, so you can see how often that happens. ActivitySummary has no event times: its "
+         "day is the export's own day key, which day_basis records.",
+         "Intervals are split at local midnight, and each piece belongs to its day: a night's sleep contributes to "
+         "two local days, which is why the sleep tools use nights instead."),
+        tools=("compute_daily_statistics", "time_zones"), columns=("local_date", "day_basis", "records_without_offset"),
+        related=("noon-to-noon-night", "time-zones"), aliases=("local day", "local time")),
+    "measurement-kinds": _Concept(
+        "Measurement kinds", "runs",
+        "How a feature's values combine into a day depends on what they measure.",
+        ("Each feature has a measurement kind, declared by the curation registry. Totals (extensive_total, such as "
+         "steps) are summed, each interval contributing to a day in proportion to its overlap with it, so daily sums "
+         "add up to the stored total. Event amounts (such as a meal's carbohydrates) are summed on the event's day. "
+         "Levels, rates, proportions and device summaries (heart rate, oxygen saturation, weight) are described by "
+         "mean, median, minimum and maximum, and never summed. Sleep and mindful sessions are counted in minutes.",
+         "The kind decides the daily columns (utils.info.daily_columns lists them) and each feature's headline metric: "
+         "value_sum for totals, value_mean for levels."),
+        tools=("compute_daily_statistics", "summarize"), columns=("value_sum", "value_mean", "value_median"),
+        related=("time-counted-once", "units"), aliases=("measurement kind",)),
+    "time-counted-once": _Concept(
+        "Time counted once", "quality",
+        "Overlapping records, such as a watch and a phone recording the same walk, are never counted twice.",
+        ("Observed minutes, sleep-state minutes and mindful minutes are the length of the union of intervals, so "
+         "overlapping records from several devices count once. What the overlap was is kept, too: redundant_minutes "
+         "counts the minutes covered by two or more sources at once, and QualityReport.features gives each feature's "
+         "redundant share.",
+         "Totals such as steps are allocated by overlap with each day, not deduplicated: when two devices record the "
+         "same steps, both are summed. The redundancy columns show where that can matter."),
+        tools=("compute_daily_statistics", "quality_report", "plot_quality"),
+        columns=("observed_minutes", "redundant_minutes", "redundant_share"),
+        related=("measurement-kinds",), aliases=("redundancy", "duplicate devices")),
+    "units": _Concept(
+        "Units", "runs",
+        "Values are harmonized to one unit per feature before any statistic.",
+        ("Where a unit can be harmonized, it is, so a feature's values share one unit (value_unit). A value whose unit "
+         "could not be established is left out of the value statistics and counted in values_unresolved, never "
+         "guessed. harmonize=False computes from stored values instead.",
+         "Glucose is classified in mg/dL, the unit of the consensus ranges, converting stored mmol/L with HealthKit's "
+         "factor ({d:mgdl_per_mmol}). Rounded mmol/L cutoffs such as 3.9 would misclassify the many readings exactly "
+         "at 70 mg/dL."),
+        tools=("compute_daily_statistics", "glucose_mgdl"), parameters=("harmonize",),
+        columns=("value_unit", "values_unresolved"), defaults=("mgdl_per_mmol",),
+        related=("measurement-kinds",), aliases=("harmonization", "harmonized units")),
+    "written-runs": _Concept(
+        "Written runs", "output",
+        "At cohort scale, compute once into a directory, then read it back one participant at a time.",
+        ("With out=, compute_daily_statistics and compute_domain_metrics write each participant's rows as it finishes, "
+         "so memory stays bounded; resume=True continues an interrupted run where it stopped. Every tool that takes a "
+         "run accepts its directory, and read_daily, iter_daily, read_table and read_domain_table read it back. "
+         "run.json records versions, registry fingerprints and the state database's checksum.",
+         "Each run records its output schema ({d:output_schemas}). A run written with another schema cannot be "
+         "resumed: compute it again. Three statistics tables are written under other names than their fields; each "
+         "table's card shows how to read it back."),
+        tools=("compute_daily_statistics", "compute_domain_metrics", "read_daily", "iter_daily", "read_table",
+               "read_domain_table", "export_parquet"),
+        parameters=("out", "resume", "workers"), defaults=("output_schemas",),
+        related=("data-roots",), aliases=("written run", "output schema", "run directory")),
+    "data-roots": _Concept(
+        "Data roots are read-only", "output",
+        "Nothing is ever written inside a data root.",
+        ("Every writing tool checks its destination first (data_statistics.guard_output), and refuses a path inside "
+         "any data root it knows of, such as {d:data_roots}. This holds for runs, figures (path=) and reports."),
+        tools=("guard_output", "protected_roots", "report"), parameters=("out", "path"), defaults=("data_roots",),
+        related=("written-runs",), aliases=("data root", "read only roots")),
+    # ------------------------------------------------------------------------------------------------ coverage
+    "coverage-tiers": _Concept(
+        "Two tiers: coverage and daily statistics", "coverage",
+        "Who has which data is cheap to answer; what the data say is not.",
+        ("compute_coverage answers who has which feature, how many rows and bytes, and in what curation state, from "
+         "the state databases and one file stat per file, without parsing a single CSV: it covers the whole cohort in "
+         "seconds. compute_daily_statistics reads the records, one participant at a time, and describes every "
+         "participant-day. Start with coverage to decide what to compute."),
+        tools=("compute_coverage", "compute_daily_statistics", "plot_participants_per_feature", "plot_feature_presence"),
+        related=("written-runs",), aliases=("tiers", "coverage tiers")),
+    "curation": _Concept(
+        "Curation status and default inclusion", "quality",
+        "In the curated phase each record carries a verdict, and a default decision to include it or not.",
+        ("A record's status is pass, review or exclude_default, and it may carry flags naming what the curation "
+         "noticed. Its default inclusion follows from both. Statistics count every record unless "
+         "default_inclusion_only=True; records_included counts those included by default, so the effect of the "
+         "choice is visible before making it. Figures of curation show the statuses and flags per feature."),
+        tools=("compute_coverage", "quality_report", "plot_curation", "plot_curation_flags"),
+        parameters=("default_inclusion_only",), columns=("records_included", "status", "flag", "pass_rows"),
+        related=("phases",), aliases=("curation status", "default inclusion", "curation flags")),
+    "provenance": _Concept(
+        "Provenance", "quality",
+        "How each record was acquired, and whether a person typed it in.",
+        ("Records are counted by acquisition method (such as automatic device recording or manual entry), and those "
+         "the participant entered by hand are counted separately (records_user_entered). A feature that is mostly "
+         "hand-entered, such as weight, reads differently from one a sensor records all day."),
+        tools=("quality_report", "provenance_tables", "plot_acquisition", "plot_acquisition_over_time"),
+        columns=("acquisition_method", "records_user_entered", "user_entered_share"),
+        aliases=("acquisition", "user entered records")),
+    "plausible-ranges": _Concept(
+        "Plausible ranges", "quality",
+        "Values outside a feature's plausible range are counted, not removed.",
+        ("{d:plausible_ranges} have a declared plausible range. Values below or above it are counted per day "
+         "(values_below_range, values_above_range) and summarized per feature, so implausible values are visible "
+         "without anything being silently dropped. Deciding what to exclude stays with the analysis."),
+        tools=("quality_report", "plot_quality"), columns=("values_below_range", "values_above_range", "days_assessed"),
+        defaults=("plausible_ranges",), aliases=("plausible range", "implausible values")),
+    "sampling-cadence": _Concept(
+        "Sampling cadence", "quality",
+        "How often a participant's device records a feature, and how regularly.",
+        ("typical_gap_minutes is the most common gap between consecutive records, and regular_share the share of "
+         "gaps within 10% of it. A continuous monitor shows a short, very regular gap; hand-entered data shows long, "
+         "irregular ones. A feature declared with a fixed cadence ({d:fixed_cadence}) gets expected records per day, "
+         "hence completeness, only for participants whose data show that cadence."),
+        tools=("summarize", "plot_sampling_cadence"), columns=("typical_gap_minutes", "regular_share",
+                                                                 "expected_records_per_day"),
+        defaults=("fixed_cadence",), related=("day-completeness",), aliases=("fixed cadence",)),
+    # ------------------------------------------------------------------------------------ adherence and retention
+    "valid-days": _Concept(
+        "Valid days", "adherence",
+        "Only days that meet their feature's valid-day rule enter summaries, patterns and most figures.",
+        ("A day with a single stray record says little about that day. Each feature has a ValidDayRule: a minimum "
+         "number of records, hours with data, or completeness. The defaults are conventions, overridable per "
+         "feature: {d:valid_day_rules}.",
+         "Pass rules={feature: sm.ValidDayRule(...)} to summarize, temporal_patterns and the figures that take "
+         "rules. plot_valid_day_rule shows, before committing, how many participant-days and participants a "
+         "threshold keeps."),
+        tools=("summarize", "temporal_patterns", "mark_valid_days", "plot_valid_day_rule", "ValidDayRule"),
+        parameters=("rules", "rule"), columns=("valid", "valid_days", "hours_with_data"),
+        defaults=("valid_day_rules",), related=("day-completeness", "adherence-and-gaps", "valid-nights"),
+        aliases=("valid day", "valid-day rule", "valid day rule", "wear time")),
+    "day-completeness": _Concept(
+        "Day completeness", "adherence",
+        "A day's records over those expected, for sensors that sample on a fixed period.",
+        ("Completeness exists only for features whose sensor samples on a fixed period when worn continuously, and "
+         "only for participants whose data shows that cadence ({d:fixed_cadence}). Occasional finger-stick glucose "
+         "readings are therefore never judged against a monitor's expected readings. For CGM, a day with at least "
+         "{d:cgm_day_completeness} of its expected readings is valid, the consensus criterion."),
+        tools=("summarize", "mark_valid_days", "cgm_metrics"),
+        columns=("completeness", "median_completeness", "expected_records_per_day"),
+        defaults=("fixed_cadence", "cgm_day_completeness"), related=("sampling-cadence", "valid-days"),
+        aliases=("expected records", "day completeness")),
+    "adherence-and-gaps": _Concept(
+        "Adherence and gaps", "adherence",
+        "How much of a participant's follow-up actually produced valid days.",
+        ("Per participant and feature: the follow-up span from the first to the last day with data, the valid days, "
+         "adherence (valid days over the span), the longest run of consecutive valid days, and the gaps between valid "
+         "days. A participant with 30 valid days over 30 days and one with 30 over a year differ in ways the count of "
+         "valid days alone would hide."),
+        tools=("summarize", "plot_adherence", "plot_follow_up"),
+        columns=("adherence", "span_days", "longest_valid_run", "gaps", "longest_gap_days"),
+        related=("valid-days", "retention-curve"), aliases=("adherence and gaps", "follow up")),
+    "retention-curve": _Concept(
+        "Retention curves", "adherence",
+        "How many participants still contribute valid days, day by day after their own start.",
+        ("Retention counts, for each day k after each participant's first valid day, the participants who still have "
+         "a valid day at k or later, as a share of those who started. It aligns everyone on their own start, so "
+         "enrolment dates do not blur how long people keep wearing a device."),
+        tools=("retention", "summarize", "plot_retention"), columns=("days_since_first_valid", "fraction"),
+        related=("adherence-and-gaps", "study-time"), aliases=("retention curve",)),
+    "study-time": _Concept(
+        "Study time and calendar time", "adherence",
+        "Figures can place days by date, or by days since each participant's first day.",
+        ("time_axis=\"study\" counts days since the participant's first day with data (study_day), which aligns "
+         "participants and keeps real dates out of the figure; time_axis=\"calendar\" uses dates, which shows "
+         "seasons and enrolment waves. Figures of one participant default to study time, so that real dates appear "
+         "only when asked for."),
+        parameters=("time_axis",), columns=("study_day", "study_month", "local_date"),
+        tools=("plot_daily_values", "plot_availability_raster", "plot_participant_overview"),
+        aliases=("study time", "calendar time")),
+    # ---------------------------------------------------------------------------------------------- patterns
+    "weekday-weekend": _Concept(
+        "Weekdays and weekends", "patterns",
+        "The weekend is {d:weekend_days}, as in Israel.",
+        ("temporal_patterns compares each participant's median valid weekday with their median valid weekend day, and "
+         "the cohort figures show the spread of those differences. For a cohort elsewhere, pass weekend_days to "
+         "temporal_patterns (Monday is 0).",
+         "Free and work nights in the sleep tools follow the same weekend: the nights before a weekend day are free."),
+        tools=("temporal_patterns", "plot_weekday_weekend", "plot_weekly_pattern", "sleep_regularity"),
+        parameters=("weekend_days",), columns=("weekday_median", "weekend_median", "weekend_minus_weekday"),
+        defaults=("weekend_days",), related=("free-nights",), aliases=("weekend", "weekday and weekend")),
+    "hour-of-day": _Concept(
+        "Hour of day", "patterns",
+        "When in the day a feature is recorded, and what it measures then.",
+        ("hour_of_day gives, per participant and local hour: records per day, the amount per day for totals, the mean "
+         "value for levels, and day_share, the share of the participant's days on which the hour holds data. Hours "
+         "without data are true zeros in the hourly table, not missing rows. The figures draw one of three measures: "
+         "value, records or coverage.",
+         "Relative profiles divide each participant's hours by their own daily mean, so that rhythms can be compared "
+         "between people whose levels differ."),
+        tools=("hour_of_day", "plot_hour_of_day", "plot_hourly_coverage", "plot_hour_profiles", "plot_daily_rhythms"),
+        parameters=("measure", "relative"), columns=("day_share", "records_per_day", "value_per_day", "relative"),
+        related=("local-days",), aliases=("daily rhythm", "time of day")),
+    "time-zones": _Concept(
+        "Time zones and travel", "patterns",
+        "Each participant's home zone, and the days they spent away from it.",
+        ("The home zone is the participant's most common UTC offset, together with the offset 60 minutes from it "
+         "when that covers at least {d:home_zone_share} of the days: the zone's daylight-saving time. A day with any other offset is away; consecutive away days form a trip. "
+         "A day on which the clocks change carries both home offsets, and is not away. Travel shifts local days, so "
+         "long trips are worth knowing before reading daily patterns."),
+        tools=("time_zones", "plot_time_zones"), columns=("home_offsets", "days_away", "trips", "longest_trip_days"),
+        defaults=("home_zone_share",), related=("local-days",), aliases=("time zone", "travel", "home zone")),
+    # ------------------------------------------------------------------------------------------------ values
+    "participant-medians": _Concept(
+        "Participants counted once", "values",
+        "A cohort distribution gives each participant one value: their median over valid days.",
+        ("A participant with 300 valid days would otherwise weigh 300 times more than one with a single day. Cohort "
+         "tables and most cohort figures therefore summarize each participant first (their median valid day) and "
+         "then describe those medians. unit=\"participant_day\" pools days instead, where that is the question.",
+         "Summaries.cohort is the resulting Table 1: per feature and metric, the distribution of participants' "
+         "medians ({d:summary_statistics} per participant)."),
+        tools=("summarize", "cohort_table", "plot_metric_distributions", "plot_caterpillar"),
+        parameters=("unit",), columns=("median", "p25", "p75", "n_days"), defaults=("summary_statistics",),
+        related=("valid-days", "small-cells"), aliases=("participant median", "counting participants once")),
+    "clinical-thresholds": _Concept(
+        "Clinical thresholds", "clinical",
+        "Readings beyond a clinical threshold are counted per participant and day.",
+        ("The thresholds are {d:clinical_thresholds}. They are counts, not diagnoses: a consumer device's single "
+         "reading below a threshold is a prompt to look, and the tables show how many readings and days are involved. "
+         "Participants whose values are not in the threshold's unit are left out, since their counts are unknown.",
+         "Population references are also drawn from established classifications: WHO adult BMI classes, daily-step "
+         "categories, blood-pressure guidelines and the WHO activity recommendation, each shown with its source."),
+        tools=("clinical_thresholds", "plot_clinical_thresholds", "plot_bmi_categories", "plot_step_categories",
+               "plot_blood_pressure", "plot_activity_goals"),
+        columns=("share_beyond", "days_beyond", "readings_below_90_percent"),
+        defaults=("clinical_thresholds", "bmi_classes", "step_categories", "bp_guidelines", "who_weekly_minutes"),
+        aliases=("clinical threshold",)),
+    # ------------------------------------------------------------------------------------------------- sleep
+    "noon-to-noon-night": _Concept(
+        "The noon-to-noon night", "sleep",
+        "A night is the window from noon to the next noon, named by its first date.",
+        ("Sleep crosses midnight, so local days would split it in two. A night starts at {d:night_start_hour}:00 local "
+         "time on night_date, and a record crossing noon is split at it. Clock times are also given in hours after "
+         "the night's noon, so onset, midpoint and final waking can be averaged across nights without wrapping at "
+         "midnight."),
+        tools=("sleep_nights", "compute_domain_metrics", "plot_sleep_raster"),
+        columns=("night_date", "onset_hours_after_noon", "midpoint_hours_after_noon"), defaults=("night_start_hour",),
+        related=("sleep-episodes", "local-days"), aliases=("night", "noon to noon", "hours after noon")),
+    "sleep-episodes": _Concept(
+        "Sleep episodes, main sleep and naps", "sleep",
+        "Asleep records close together form an episode; the longest episode is the night's main sleep.",
+        ("Asleep records separated by at most {d:episode_gap} minutes form one sleep episode. The episode with the most "
+         "asleep time is the main sleep; the others are naps. On the samples, gaps between asleep records are at most "
+         "120 minutes within a night and over 360 minutes between nights. From the main sleep come onset, final "
+         "waking, the sleep period between them and total sleep time; nap_minutes holds the rest."),
+        tools=("sleep_nights", "plot_sleep_architecture"),
+        columns=("episodes", "sleep_period_minutes", "asleep_minutes", "nap_minutes", "main_period"),
+        defaults=("episode_gap", "sleep_states"), related=("noon-to-noon-night", "sleep-staging"),
+        aliases=("sleep episode", "main sleep", "naps")),
+    "sleep-staging": _Concept(
+        "Sleep stages", "sleep",
+        "Stage minutes and shares come from one device per night.",
+        ("Two devices can stage the same minutes differently. Stages are therefore taken from one source per night, "
+         "the device that staged the most sleep, and the shares are fractions of that source's staged time. The "
+         "states are {d:sleep_states}."),
+        tools=("sleep_nights", "plot_sleep_architecture", "plot_sleep_raster"),
+        columns=("core_share", "deep_share", "rem_share", "staged", "staging_sources"), defaults=("sleep_states",),
+        related=("sleep-episodes",), aliases=("sleep stages", "staging")),
+    "sleep-efficiency": _Concept(
+        "Efficiency and wake after sleep onset", "sleep",
+        "Sleep time over time in bed, or over the sleep period when no time in bed was recorded.",
+        ("Wake after sleep onset (WASO) is the sleep period minus total sleep time. Efficiency is total sleep time over "
+         "time in bed, where an in-bed record overlaps the sleep; otherwise over the sleep period, which reads higher. "
+         "efficiency_basis says which, so the two are never compared unawares."),
+        tools=("sleep_nights", "plot_sleep"), columns=("efficiency", "efficiency_basis", "waso_minutes", "in_bed_minutes"),
+        related=("in-bed-only",), aliases=("sleep efficiency", "waso", "wake after sleep onset")),
+    "in-bed-only": _Concept(
+        "Nights with time in bed only", "sleep",
+        "A night holding only in-bed records has no measured sleep, which is not the same as no sleep.",
+        ("Some sources record time in bed but no sleep. Such a night keeps its in-bed time but gets no sleep metrics, "
+         "so it cannot pass for a short night. On the curated sample, about a third of nights are like this, which is "
+         "why plot_sleep_recording shows each participant's mix of nights."),
+        tools=("sleep_nights", "plot_sleep_recording", "summarize_domain"),
+        columns=("in_bed_recorded", "asleep_recorded", "nights_in_bed_only", "in_bed_only_nights"),
+        related=("valid-nights",), aliases=("in bed only", "time in bed only")),
+    "valid-nights": _Concept(
+        "Valid nights", "sleep",
+        "A night counts when its sleep was measured and the main sleep lasted long enough.",
+        ("A night is valid when it has asleep records and its main sleep lasted at least {d:night_rule} minutes "
+         "(NightRule). Short fragments and in-bed-only nights are kept in the tables but left out of sleep summaries "
+         "and figures. summarize_domain takes night_rule=, and sleep_regularity and the sleep figures take rule=."),
+        tools=("NightRule", "summarize_domain", "sleep_regularity", "plot_sleep"), parameters=("night_rule",),
+        defaults=("night_rule",), related=("in-bed-only", "valid-days"), aliases=("valid night", "night rule")),
+    "free-nights": _Concept(
+        "Free nights and social jetlag", "sleep",
+        "Sleep before a free day often differs from sleep before a workday.",
+        ("A night is free when the day it ends on is a weekend day ({d:weekend_days}), and a work night otherwise. Social jetlag is "
+         "the free-night sleep midpoint minus the work-night one, in hours: how far the body clock drifts when the "
+         "alarm is off. sleep_regularity also gives the night-to-night variability of onset, offset and midpoint."),
+        tools=("sleep_regularity", "plot_sleep_regularity"),
+        columns=("social_jetlag_hours", "midpoint_free", "midpoint_work", "free_nights", "work_nights"),
+        defaults=("weekend_days",), related=("weekday-weekend",), aliases=("social jetlag", "free night", "sleep regularity")),
+    # ------------------------------------------------------------------------------------------------ glucose
+    "cgm-validity": _Concept(
+        "CGM data: who, which days, and enough", "glucose",
+        "Consensus CGM metrics need a continuous monitor, valid days, and enough of them.",
+        ("Only participants whose glucose data shows a continuous monitor's fixed cadence get CGM metrics, so "
+         "finger-stick readings are never mixed in (cgm). A CGM day is valid with at least {d:cgm_day_completeness} of "
+         "its expected readings, and a participant's metrics are sufficient with at least {d:cgm_sufficient_days} "
+         "valid days, the consensus requirement. active_percent reports wear over valid days; span_active_percent "
+         "over the whole span."),
+        tools=("cgm_metrics", "compute_domain_metrics", "plot_cgm_wear", "plot_glycemic_cohort"),
+        parameters=("sufficient_only",), columns=("cgm", "valid", "sufficient", "active_percent", "span_active_percent"),
+        defaults=("cgm_day_completeness", "cgm_sufficient_days", "fixed_cadence"),
+        related=("day-completeness", "glucose-ranges"), aliases=("cgm validity", "cgm data", "sufficient cgm data")),
+    "glucose-ranges": _Concept(
+        "Glucose ranges and consensus targets", "glucose",
+        "Time in each glucose range, and the targets the consensus sets for them.",
+        ("Readings are classified into five ranges ({d:glucose_ranges}), and each range's time is the share of "
+         "readings in it. The consensus targets for most adults with diabetes are {d:glucose_targets}. For people "
+         "without diabetes these targets are a reference, not a goal.",
+         "Variability is the coefficient of variation (sd over mean); at or below the stability threshold, glucose "
+         "counts as stable."),
+        tools=("glucose_range", "cgm_metrics", "plot_cgm_ranges", "plot_glycemic_cohort"),
+        columns=("in_range_percent", "very_low_percent", "cv_percent", "meets_in_range"),
+        defaults=("glucose_ranges", "glucose_targets"), related=("cgm-validity", "gmi"),
+        aliases=("time in range", "glucose range", "consensus targets")),
+    "agp": _Concept(
+        "The ambulatory glucose profile (AGP)", "glucose",
+        "One participant's glucose by time of day, over all their valid days.",
+        ("The AGP stacks a participant's valid days on one 24-hour axis, in bins of {d:agp}, and draws the median "
+         "with the interquartile and outer percentile bands. It shows when in the day glucose runs high or varies, "
+         "which daily means hide. The cohort version draws the median across participants of their own medians."),
+        tools=("cgm_profile", "plot_agp", "plot_glucose_days"), columns=("minute", "p5", "p50", "p95"),
+        defaults=("agp",), related=("cgm-validity",), aliases=("ambulatory glucose profile", "glucose profile")),
+    "gmi": _Concept(
+        "The glucose management indicator (GMI)", "glucose",
+        "An estimate of HbA1c from mean CGM glucose.",
+        ("GMI (%) = 3.31 + 0.02392 × mean glucose in mg/dL (Bergenstal et al., Diabetes Care 2018), computed over "
+         "valid days. It estimates what an HbA1c test would show; the two can differ in a given person."),
+        tools=("cgm_metrics", "plot_glycemic_cohort"), columns=("gmi_percent", "mean_mgdl"),
+        related=("glucose-ranges",), aliases=("glucose management indicator",)),
+    # ------------------------------------------------------------------------------------ reports and safety
+    "small-cells": _Concept(
+        "Small-cell suppression", "output",
+        "Aggregates resting on too few participants are hidden, for figures leaving the lab.",
+        ("With min_participants=k, any point, bar, cell or bin resting on fewer than k participants is not drawn, its "
+         "values are removed from figure.data too, and the figure states how many were hidden. The default is "
+         "{o:min_participants}; 1 hides nothing. Choose k by the data-sharing rules that apply. Reports with k above 1 also leave out every "
+         "individual-level page, since those cannot respect a threshold."),
+        tools=("report", "plot_hour_of_day", "plot_metric_distributions", "plot_feature_correlations"),
+        parameters=("min_participants",), columns=("suppressed",), related=("individual-level",),
+        aliases=("small cell", "suppression", "small cell suppression")),
+    "individual-level": _Concept(
+        "Individual and cohort figures", "output",
+        "Some figures show participants one by one; others only aggregates.",
+        ("figure.individual_level says which: rows, points or bars per person, or cohort aggregates. Participant "
+         "identifiers appear only with show_ids=True, and real dates only with time_axis=\"calendar\". A shareable "
+         "report (include_individual=False, or min_participants above 1) leaves the individual pages out."),
+        tools=("report", "plot_participant_overview", "plot_sleep_raster"), parameters=("show_ids", "include_individual"),
+        related=("small-cells",), aliases=("individual level", "privacy")),
+    "group-labels": _Concept(
+        "Groups: labels and sizes", "values",
+        "One line, box or bar per group, each with its size stated.",
+        ("groups= maps each participant to a label: a dict, a Series, or a table with RegistrationCode and group. "
+         "Registration codes are matched in their 10K_ form, with or without the prefix. Participants without a "
+         "label are left out, and the figure says how many; groups smaller than min_participants are hidden."),
+        tools=("plot_metric_distributions", "plot_glycemic_cohort", "plot_retention"), parameters=("groups",),
+        columns=("group",), related=("small-cells",), aliases=("group labels",)),
+    "uncertainty": _Concept(
+        "Spread and uncertainty", "values",
+        "The interquartile band shows how participants differ; a confidence interval shows how sure the median is.",
+        ("Cohort figures draw the median with its interquartile band, the spread between participants. ci= adds a "
+         "bootstrap interval of the cohort median ({d:bootstrap_samples} resamples, seeded by seed), which narrows as "
+         "participants are added while the band does not. They answer different questions and are drawn "
+         "differently."),
+        tools=("plot_hour_of_day", "plot_weekly_pattern", "plot_monthly_pattern"), parameters=("ci", "seed"),
+        columns=("ci_low", "ci_high", "p25", "p75"), defaults=("bootstrap_samples",),
+        aliases=("confidence interval", "bootstrap", "spread and uncertainty")),
+    "figure-data": _Concept(
+        "Every figure carries its data", "output",
+        "What a figure draws is available as a table, exactly.",
+        ("figure.data holds the table the figure draws, and figure.panels each panel's table, with suppressed values "
+         "removed. A number read off a figure can therefore be checked, cited or re-plotted. utils.info(\"<figure>\") "
+         "lists their columns."),
+        tools=("plot_agp", "report"), related=("small-cells",), aliases=("figure data",)),
+    # ---------------------------------------------------------------------------------------------- multimodal
+    "co-availability": _Concept(
+        "Co-availability of modalities", "multimodal",
+        "A multimodal analysis needs days on which every chosen feature has data.",
+        ("day_overlap gives, for every pair of features, the participant-days holding both and their Jaccard index; "
+         "days_with gives each participant's days holding every one of a set of features. How many participants keep "
+         "at least k such days shrinks quickly as features are added: plot_multimodal_days shows that curve before a "
+         "dataset is fixed."),
+        tools=("day_overlap", "days_with", "plot_co_availability", "plot_multimodal_days", "plot_feature_combinations"),
+        columns=("jaccard", "days_both", "complete_days"), related=("within-person",),
+        aliases=("co availability", "modalities together")),
+    "within-person": _Concept(
+        "Within-person associations", "multimodal",
+        "Whether a person's own good days in one series go with their good days in another.",
+        ("plot_lagged_association pairs day d of one series with day d + lag of another, and uses each participant's "
+         "deviations from their own means, so that differences between people cannot pose as effects within them. "
+         "The pooled within-participant slope and correlation summarize it; each participant's own correlation is "
+         "kept too. \"sleep\" names total sleep of the night starting on day d."),
+        tools=("plot_lagged_association", "plot_feature_correlations"), parameters=("lag_days",),
+        columns=("within_slope", "within_r", "x_dev", "y_dev"), related=("co-availability",),
+        aliases=("lagged association", "within person")),
+}
+
+
+# ---------------------------------------------------------------------------------------------------- defaults
+def _num(value) -> str:
+    """A number as a person writes it: 70 rather than 70.0, 18.5 as is."""
+
+    if isinstance(value, float) and value == float("inf"):
+        return "∞"
+    return f"{value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else str(value)
+
+
+def _pct(fraction: float) -> str:
+    return f"{fraction * 100:g}%"
+
+
+def _and(items) -> str:
+    items = [str(i) for i in items]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _rule_text(rule) -> str:
+    parts = []
+    if rule.min_hours_with_data is not None:
+        parts.append(f"at least {_num(rule.min_hours_with_data)} hours with data")
+    if rule.min_completeness is not None:
+        parts.append(f"at least {_pct(rule.min_completeness)} of its expected records")
+    if rule.min_records > 1 or not parts:
+        parts.append(f"at least {rule.min_records} record" + ("" if rule.min_records == 1 else "s"))
+    return " and ".join(parts)
+
+
+def _bands(entries, unit: str) -> str:
+    out = []
+    for name, low, high in entries:
+        if high == float("inf"):
+            out.append(f"{name} from {_num(low)}")
+        elif not low:
+            out.append(f"{name} below {_num(high)}")
+        else:
+            out.append(f"{name} {_num(low)} to below {_num(high)}")
+    return "; ".join(out) + f" ({unit})"
+
+
+_OPERATORS = {"<": "below", "<=": "at most", ">": "above", ">=": "at least"}
+_UNITS = {"Cel": "°C"}
+
+
+@dataclass(frozen=True)
+class _Default:
+    """A threshold, rule or setting, read from the code whenever it is shown."""
+
+    title: str
+    group: str
+    sources: tuple[str, ...]          # "module.CONSTANT", or "module.Class.field" for a dataclass default
+    meaning: str
+    basis: str
+    used_by: tuple[str, ...]
+    change: str
+    inline: Any                       # the live values -> compact text
+
+
+DEFAULTS: dict[str, _Default] = {
+    "valid_day_rules": _Default(
+        "Valid-day rules", "adherence", ("data_summaries.DEFAULT_RULES", "data_summaries.DEFAULT_RULE"),
+        "When a participant-day counts as valid, per feature.",
+        "Conventions: at least 10 hours with data is a common wear-time criterion for heart rate; at least 70% of "
+        "expected readings is the international consensus criterion for CGM (Battelino et al., Diabetes Care 2019); "
+        "any other feature needs at least one record.",
+        ("summarize", "temporal_patterns", "plot_valid_day_rule", "plot_daily_values"),
+        "rules={feature: sm.ValidDayRule(...)} on summarize, temporal_patterns and the figures that take rules.",
+        lambda rules, default: "; ".join(f"{f} {_rule_text(r)}" for f, r in rules.items())
+        + f"; every other feature {_rule_text(default)}"),
+    "fixed_cadence": _Default(
+        "Fixed cadence", "adherence", ("data_summaries.FIXED_CADENCE",),
+        "Which features sample on a fixed period, and when a participant's data shows it. Only then are expected "
+        "records per day, and completeness, defined.",
+        "A continuous glucose monitor records every 5 or 15 minutes; finger-stick readings do not. Requiring a short, "
+        "regular typical gap keeps occasional readings from being judged against a monitor's expected readings.",
+        ("summarize", "mark_valid_days", "cgm_metrics"),
+        "A module constant; change it in data_summaries only with a reason recorded.",
+        lambda cadence: "; ".join(f"{f}, when the typical gap is at most {_num(c.max_typical_gap_minutes)} minutes "
+                                  f"and at least {_pct(c.min_regular_share)} of gaps are within 10% of it"
+                                  for f, c in cadence.items())),
+    "night_rule": _Default(
+        "Valid nights", "sleep", ("domain_metrics.NightRule.min_asleep_minutes",),
+        "The minimum main sleep for a night to count in sleep summaries and figures.",
+        "A convention: three hours of main sleep separate a night's sleep from fragments and naps recorded alone.",
+        ("summarize_domain", "sleep_regularity", "plot_sleep", "plot_sleep_timing", "plot_sleep_architecture",
+         "plot_sleep_regularity"),
+        "night_rule=dm.NightRule(min_asleep_minutes=...) on summarize_domain; rule= on sleep_regularity and the sleep "
+        "figures.", lambda minutes: _num(minutes)),
+    "night_start_hour": _Default(
+        "Night start", "sleep", ("domain_metrics.NIGHT_START_HOUR",),
+        "The local hour at which a night begins and the previous one ends.",
+        "A common convention: noon lies outside almost all night-time sleep, so no night is split.",
+        ("sleep_nights", "load_sleep_segments", "compute_domain_metrics"), "A module constant, recorded in run.json.",
+        lambda hour: _num(hour)),
+    "episode_gap": _Default(
+        "Sleep episode gap", "sleep", ("domain_metrics.EPISODE_GAP_MINUTES",),
+        "Asleep records separated by at most this many minutes form one sleep episode.",
+        "On the samples, gaps between asleep records are at most 120 minutes within a night and over 360 minutes "
+        "between nights.", ("sleep_nights", "compute_domain_metrics"), "A module constant, recorded in run.json.",
+        lambda minutes: _num(minutes)),
+    "sleep_states": _Default(
+        "Sleep states", "sleep", ("data_statistics.SLEEP_STATES", "data_statistics.ASLEEP_STATES",
+                                  "domain_metrics.ASLEEP_STATES", "domain_metrics.STAGE_STATES"),
+        "The sleep states HealthKit records, which of them count as asleep, and which are stages.",
+        "HealthKit's own states: asleep without a stage, and the core, deep and REM stages of devices that stage "
+        "sleep.", ("compute_daily_statistics", "sleep_nights"), "Fixed by HealthKit.",
+        lambda states, asleep, _asleep, stages: f"{_and(states)}; asleep means "
+        f"{_and(s for s in states if s in asleep)}; the stages are {_and(stages)}"),
+    "mgdl_per_mmol": _Default(
+        "Glucose unit conversion", "glucose", ("domain_metrics.MGDL_PER_MMOL",),
+        "mg/dL per mmol/L, used to classify stored mmol/L readings in the consensus ranges' unit.",
+        "HealthKit's factor, from the molar mass of glucose (180.15588 g/mol). On the samples every stored reading "
+        "converts to a whole mg/dL value within 1e-10.", ("glucose_mgdl", "cgm_metrics", "load_cgm_readings"),
+        "Fixed.", lambda factor: f"{factor:g} mg/dL per mmol/L"),
+    "cgm_day_completeness": _Default(
+        "Valid CGM day", "glucose", ("domain_metrics.CGM_MIN_DAY_COMPLETENESS",),
+        "The share of a day's expected readings a CGM day needs to be valid.",
+        "The international consensus on CGM metrics (Battelino et al., Diabetes Care 2019).",
+        ("cgm_metrics", "compute_domain_metrics", "load_cgm_readings"), "A module constant, recorded in run.json.",
+        lambda share: _pct(share)),
+    "cgm_sufficient_days": _Default(
+        "Sufficient CGM data", "glucose", ("domain_metrics.CGM_SUFFICIENT_DAYS",),
+        "The valid CGM days a participant needs for sufficient consensus metrics.",
+        "The international consensus: 14 days of CGM data approximate three months of glycaemia (Battelino et al., "
+        "Diabetes Care 2019).", ("cgm_metrics", "plot_glycemic_cohort", "plot_cgm_ranges"),
+        "sufficient_only=False on the glucose figures includes insufficient participants.", lambda days: _num(days)),
+    "glucose_ranges": _Default(
+        "Glucose ranges", "glucose", ("domain_metrics.GLUCOSE_RANGES",),
+        "The five consensus glucose ranges, in mg/dL; a reading on a boundary of the target range counts as in range.",
+        "The international consensus on time in ranges (Battelino et al., Diabetes Care 2019).",
+        ("cgm_metrics", "plot_cgm_ranges", "plot_agp"), "Fixed by the consensus.",
+        lambda ranges: _and(f"below {_num(hi)}" if lo is None else f"above {_num(lo)}" if hi is None
+                            else f"{_num(lo)} to {_num(hi)}" for _, lo, hi in ranges) + " mg/dL"),
+    "glucose_targets": _Default(
+        "Glucose targets", "glucose", ("data_plots.GLUCOSE_TARGETS", "data_plots.CV_STABILITY_THRESHOLD",
+                                       "data_plots.TIME_IN_RANGE_TARGET"),
+        "The consensus targets for time in ranges, and the variability at or below which glucose counts as stable.",
+        "Targets for most adults with diabetes (Battelino et al., Diabetes Care 2019); the CV threshold from Danne et "
+        "al., Diabetes Care 2017. For people without diabetes they are a reference, not a goal.",
+        ("plot_glycemic_cohort", "plot_cgm_ranges"), "Fixed by the consensus.",
+        lambda targets, cv, tir: "; ".join(name for name, *_ in targets)),
+    "agp": _Default(
+        "AGP bins and percentiles", "glucose", ("domain_metrics.AGP_BIN_MINUTES", "domain_metrics.AGP_PERCENTILES"),
+        "The width of the AGP's time-of-day bins, and the percentiles drawn.",
+        "The standard ambulatory glucose profile.", ("cgm_profile", "plot_agp", "plot_glucose_days"),
+        "bin_minutes= on cgm_profile.", lambda minutes, percentiles: f"{_num(minutes)}-minute bins, with the "
+        f"{_and(_num(p) for p in percentiles)}th percentiles"),
+    "clinical_thresholds": _Default(
+        "Clinical thresholds", "clinical", ("data_statistics.CLINICAL_THRESHOLDS",),
+        "Readings beyond these are counted per day, per participant and for the cohort.",
+        "SpO2 below 90% (hypoxaemia) and a body temperature of 38.0 °C or more (fever), counted where the values are "
+        "in the threshold's unit; counts, not diagnoses.", ("compute_daily_statistics", "clinical_thresholds", "plot_clinical_thresholds"),
+        "A module constant; each threshold becomes a daily column.",
+        lambda thresholds: "; ".join(f"{feature} {_OPERATORS[op]} {_num(limit)} {_UNITS.get(unit, unit)}"
+                                     for feature, entries in thresholds.items() for _, op, limit, unit in entries)),
+    "plausible_ranges": _Default(
+        "Plausible ranges", "quality", ("data_statistics.PLAUSIBLE_RANGES",),
+        "Per feature, the range outside which values are counted as implausible (never removed). The daily statistics "
+        "count them; quality_report and plot_quality summarize those counts.",
+        "Broad physiological limits in each feature's harmonized unit, for reporting values that are likely errors: "
+        "conventions, not clinical thresholds, applied only when the values are in their unit.",
+        ("compute_daily_statistics",), "A module constant.",
+        lambda ranges: f"{len(ranges)} features"),
+    "weekend_days": _Default(
+        "Weekend", "patterns", ("data_summaries.WEEKEND_DAYS",),
+        "The days of the week that count as weekend (Monday is 0). Free nights are those ending on them.",
+        "Friday and Saturday, the weekend in Israel, where the cohort lives.",
+        ("temporal_patterns", "activity_goals", "sleep_regularity", "plot_weekday_weekend", "plot_sleep_regularity"),
+        "weekend_days= on temporal_patterns, activity_goals, sleep_regularity and the figures that take it.",
+        lambda days: _and(calendar.day_name[d] for d in days)),
+    "home_zone_share": _Default(
+        "Home zone", "patterns", ("data_summaries.DST_PARTNER_MIN_SHARE",),
+        "The share of days the offset 60 minutes from a participant's most common one must cover to join the home "
+        "zone as its daylight-saving time.", "A daylight-saving season covers a large share of days; a short trip an hour away does not.", ("time_zones", "plot_time_zones"),
+        "A module constant.", lambda share: _pct(share)),
+    "bmi_classes": _Default(
+        "BMI classes", "clinical", ("data_plots.BMI_CLASSES",), "The adult BMI classes, in kg/m².",
+        "The WHO classification of adult BMI; each class runs from its lower bound up to, not including, its upper.", ("bmi_categories", "plot_bmi_categories"), "Fixed by the WHO.",
+        lambda classes: _bands(classes, "kg/m²")),
+    "step_categories": _Default(
+        "Daily-step categories", "clinical", ("data_plots.STEP_CATEGORIES",), "Categories of median daily steps.",
+        "Tudor-Locke and Bassett (2004) and Tudor-Locke et al. (2008); each category runs from its lower bound up to, "
+        "not including, its upper.",
+        ("step_categories", "plot_step_categories"), "Fixed.", lambda categories: _bands(categories, "steps a day")),
+    "who_weekly_minutes": _Default(
+        "Weekly activity recommendation", "clinical", ("data_plots.WHO_WEEKLY_MINUTES",),
+        "The weekly minutes of exercise a complete week is compared with.",
+        "The WHO's 2020 guidelines: 150 to 300 minutes of moderate activity a week for adults; this is the lower bound.",
+        ("activity_goals", "plot_activity_goals"), "Fixed by the WHO.", lambda minutes: f"{_num(minutes)} minutes"),
+    "bp_guidelines": _Default(
+        "Blood-pressure guidelines", "clinical", ("data_plots.BP_GUIDELINES",),
+        "The categories a participant's median blood pressure falls in, under each guideline.",
+        "ESC/ESH defines hypertension at home from 135/85 mmHg (2018 and 2023 guidelines), stricter than in the office; "
+        "ACC/AHA 2017 has its own categories. A participant falls in the highest category either pressure reaches, the "
+        "guidelines' and/or. The figures default to the ESC/ESH home thresholds.",
+        ("blood_pressure", "plot_blood_pressure"), "guideline= on blood_pressure and plot_blood_pressure.",
+        lambda guidelines: _and(guidelines)),
+    "activity_rings": _Default(
+        "Activity rings", "clinical", ("data_plots.ACTIVITY_RINGS",),
+        "The three Apple activity rings, each with its daily value and goal in ActivitySummary.",
+        "Apple's Move, Exercise and Stand rings.", ("activity_goals", "plot_activity_goals"), "Fixed by Apple.",
+        lambda rings: _and(name for name, *_ in rings)),
+    "bootstrap_samples": _Default(
+        "Bootstrap resamples", "values", ("data_plots.BOOTSTRAP_SAMPLES",),
+        "The resamples behind a confidence interval of the cohort median (ci=).",
+        "A common choice for percentile intervals; seed= makes them reproducible.",
+        ("plot_hour_of_day", "plot_weekly_pattern", "plot_monthly_pattern"), "A module constant.",
+        lambda n: _num(n)),
+    "summary_statistics": _Default(
+        "Participant statistics", "values", ("data_summaries.STATISTICS",),
+        "What participant summaries report for each metric over valid days.", "A distribution's usual description.",
+        ("summarize", "summarize_domain"), "Fixed.", lambda statistics: _and(statistics)),
+    "domain_summary_metrics": _Default(
+        "Summarized night and CGM metrics", "sleep", ("domain_metrics.SLEEP_SUMMARY_METRICS",
+                                                      "domain_metrics.CGM_SUMMARY_METRICS"),
+        "The night and CGM metrics summarize_domain describes per participant, with their units.",
+        "The metrics the sleep and CGM literature reports.", ("summarize_domain",), "Fixed.",
+        lambda sleep, cgm: f"{len(sleep)} night metrics and {len(cgm)} CGM metrics"),
+    "overview_features": _Default(
+        "One participant's overview", "values", ("data_plots.OVERVIEW_FEATURES",),
+        "The features plot_participant_overview draws by default.", "Activity, heart, sleep, body and glucose.",
+        ("plot_participant_overview",), "features= on plot_participant_overview.", lambda features: _and(features)),
+    "volume_bands": _Default(
+        "Data-volume bands", "coverage", ("data_plots.VOLUME_BANDS",), "The size bands of participants' data.",
+        "Decades of bytes.", ("plot_data_volume",), "Fixed.", lambda bands: _and(label for *_, label in bands)),
+    "report_sections": _Default(
+        "Report sections", "output", ("data_plots.REPORT_SECTIONS",), "The parts sections= can keep in a report.",
+        "The report's own structure.", ("report",), "sections= on report.", lambda sections: _and(sorted(sections))),
+    "feature_order": _Default(
+        "Feature categories", "identity", ("data_plots.CATEGORY_ORDER",),
+        "The order of feature categories in every figure; each feature also keeps one color.",
+        "From activity to nutrition, so related features sit together.",
+        ("plot_participants_per_feature",), "Fixed.",
+        lambda order: _and(order)),
+    "output_schemas": _Default(
+        "Output schemas", "output", ("data_statistics.OUTPUT_SCHEMA", "domain_metrics.DOMAIN_OUTPUT_SCHEMA"),
+        "The version of the written tables' layout, recorded in run.json.",
+        "Raised whenever a written table changes, so that a run is never resumed into a different layout; the module's "
+        "comment records what each version changed.",
+        ("compute_daily_statistics", "compute_domain_metrics"), "Fixed; compute an older run again.",
+        lambda statistics, domain: f"{statistics} for statistics runs and {domain} for domain runs"),
+    "phases": _Default(
+        "Phases", "runs", ("data_statistics.PHASES",), "The two copies of the data a tool can read.",
+        "The native export and its curated copy.", ("compute_coverage", "compute_daily_statistics",
+                                                    "compute_domain_metrics"),
+        "phase= on each of them.", lambda phases: _and(phases)),
+    "data_roots": _Default(
+        "Data roots", "runs", ("data_statistics.DEFAULT_CURATED_ROOT", "data_statistics.DEFAULT_NATIVE_ROOT"),
+        "Where each phase is read from when root= is not given; outputs are never written inside them.",
+        "The permanent HPP roots of the two phases.",
+        ("compute_coverage", "compute_daily_statistics", "compute_domain_metrics", "guard_output"),
+        "root= on the tools that read data.", lambda curated, native: f"{curated.name} (curated) and {native.name} "
+                                                                     f"(native), under {curated.parent}"),
+}
+
+# Public constants that are not analytical defaults, with the reason.
+NOT_DEFAULTS = {
+    **dict.fromkeys(("HOURLY_COLUMNS", "PROVENANCE_COLUMNS", "CURATION_COLUMNS", "PARTICIPANT_TABLES",
+                     "CLINICAL_COLUMNS", "NIGHT_COLUMNS", "CGM_DAY_COLUMNS", "CGM_PERIOD_COLUMNS",
+                     "CGM_READING_COLUMNS", "CGM_PROFILE_COLUMNS", "SEGMENT_COLUMNS", "REGULARITY_COLUMNS",
+                     "DOMAIN_TABLES", "TARGET_COLUMNS"), "column lists and table names, documented as output tables"),
+    **dict.fromkeys(("WEEKDAY_NAMES", "MONTH_NAMES", "PALETTE", "SINGLE", "BAND", "GLUCOSE_COLORS", "GLUCOSE_LABELS",
+                     "CATEGORY_COLORS", "SLEEP_COLORS", "SLEEP_LABELS", "THRESHOLD_LABELS", "ALL_PARTICIPANTS"),
+                    "presentation: names, labels and colors"),
+    "TYPE_CHECKING": "typing",
+}
+
+
+# --------------------------------------------------------------------------------------------------- workflows
+@dataclass(frozen=True)
+class _Workflow:
+    """A task from start to finish, as code that runs as printed."""
+
+    title: str
+    group: str
+    question: str
+    steps: tuple[tuple[str, str], ...]
+    reading: tuple[str, ...]
+    concepts: tuple[str, ...] = ()
+    phases: tuple[str, ...] = ("curated", "native")
+    aliases: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.reading, str):
+            object.__setattr__(self, "reading", (self.reading,))
+
+
+_START = '''from pathlib import Path
+from wearable_project.utils import data_statistics as ds, data_summaries as sm, domain_metrics as dm, data_plots as dp
+
+out = Path("{out}")
+out.mkdir(parents=True, exist_ok=True)'''
+
+WORKFLOWS: dict[str, _Workflow] = {
+    "first-look": _Workflow(
+        "A first look at a cohort", "coverage",
+        "Who has which data, how much, and over what period?",
+        (("Coverage answers who has which feature for the whole cohort in seconds, without reading the records.",
+          _START + '''
+coverage = ds.compute_coverage("{phase}"{root})
+coverage.features.sort_values("participants", ascending=False).head(10)'''),
+         ("Draw who has what: participants per feature, each participant's number of features, and the combinations "
+          "that occur together.",
+          '''dp.plot_participants_per_feature(coverage, path=out / "participants_per_feature.png")
+dp.plot_features_per_participant(coverage, path=out / "features_per_participant.png")
+dp.plot_feature_combinations(coverage, ["StepCount", "HeartRate", "Sleep", "Weight"], path=out / "combinations.png")'''),
+         ("Then when the data exist: daily statistics for the features of interest, and the figures of time.",
+          '''daily = ds.compute_daily_statistics("{phase}"{root}, features=["StepCount", "HeartRate", "Sleep"])
+dp.plot_availability_raster(daily, path=out / "availability.png")
+dp.plot_follow_up(daily, path=out / "follow_up.png")
+dp.plot_active_participants(daily, rolling=7, path=out / "active_participants.png")''')),
+        ("The participants with a feature are the ceiling of every analysis that uses it; the combinations show how "
+         "fast that ceiling falls when features are required together.",
+         "The availability raster shows each participant's months with data, so enrolment waves, drop-out and gaps "
+         "appear at once. The follow-up figure gives each participant's span and how densely it is filled.",
+         "At cohort scale, compute the daily statistics once into a directory (the workflow \"cohort run\")."),
+        concepts=("coverage-tiers", "local-days", "co-availability", "study-time"), aliases=("first look", "start")),
+    "quality-review": _Workflow(
+        "A data-quality review", "quality",
+        "Can the data be trusted, and where must they be read with care?",
+        (("Daily statistics for the features to review, and their quality report.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["HeartRate", "StepCount", "Weight", "OxygenSaturation"])
+quality = sm.quality_report(daily)
+quality.features[["feature", "records", "values_below_range", "values_above_range", "without_offset_share",
+                  "redundant_share"]]'''),
+         ("Implausible values, redundant devices, hand-entered records and how they were acquired.",
+          '''dp.plot_quality(quality, path=out / "quality.png")
+dp.plot_acquisition(quality, path=out / "acquisition.png")'''),
+         ("How regularly each participant's devices record, which hours hold data, and travel.",
+          '''dp.plot_sampling_cadence(daily, path=out / "sampling_cadence.png")
+dp.plot_hourly_coverage(daily, "HeartRate", path=out / "hourly_coverage.png")
+dp.plot_time_zones(daily, path=out / "time_zones.png")'''),
+         ("In the curated phase, what the curation questioned.",
+          '''if len(quality.curation):
+    dp.plot_curation(quality, path=out / "curation.png")
+    dp.plot_curation_flags(quality, path=out / "curation_flags.png")''')),
+        ("Values beyond the plausible range are counted, not removed: decide what to exclude, and say so.",
+         "A high redundant share means several devices recorded the same time. Time is counted once, but totals such "
+         "as steps are summed across devices.",
+         "Records without a UTC offset fall on their UTC day; a large share of them shifts daily patterns.",
+         "In the curated phase, default_inclusion_only=True restricts every statistic to what the curation keeps by "
+         "default; records_included shows the effect before choosing."),
+        concepts=("plausible-ranges", "time-counted-once", "provenance", "curation", "sampling-cadence", "time-zones"),
+        aliases=("quality review", "data quality", "trust")),
+    "choosing-valid-days": _Workflow(
+        "Choosing a valid-day rule", "adherence",
+        "Which days are good enough to use, and what does the choice cost?",
+        (("Daily statistics for the feature, and the rule's effect before committing to it.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["HeartRate", "StepCount"])
+dp.plot_valid_day_rule(daily, "HeartRate", thresholds=range(0, 25, 2), path=out / "valid_day_rule.png")'''),
+         ("Apply the chosen rule, and see each participant's valid days and adherence.",
+          '''rules = {"HeartRate": sm.ValidDayRule(min_hours_with_data=12)}
+summaries = sm.summarize(daily, rules=rules)
+summaries.adherence.query("feature == 'HeartRate'")[["RegistrationCode", "valid_days", "adherence",
+                                                     "longest_valid_run"]]'''),
+         ("Adherence and retention under that rule.",
+          '''dp.plot_adherence(summaries, "HeartRate", path=out / "adherence.png")
+dp.plot_retention(summaries, ["HeartRate"], path=out / "retention.png")''')),
+        ("The left panel shows the criterion over all participant-days; a threshold where few days lie loses little. "
+         "The right panel shows, as the threshold moves, the share of days kept and of participants keeping at least "
+         "k valid days.",
+         "summaries.rules records the rules applied: report them with every result."),
+        concepts=("valid-days", "day-completeness", "adherence-and-gaps", "retention-curve"),
+        aliases=("choosing a valid day rule", "valid day workflow")),
+    "cohort-run": _Workflow(
+        "Computing the whole cohort once", "runs",
+        "How is the full cohort computed, resumed and read back without running out of memory?",
+        (("Write the runs into directories. Each participant's rows are written as it finishes; resume=True continues "
+          "an interrupted run.",
+          '''from pathlib import Path
+from wearable_project.utils import data_statistics as ds, data_summaries as sm, domain_metrics as dm
+
+run_dir, domain_dir = Path("{out}") / "statistics_run", Path("{out}") / "domain_run"
+ds.compute_daily_statistics("{phase}"{root}, features=["StepCount", "HeartRate"], out=run_dir, resume=True)
+dm.compute_domain_metrics("{phase}"{root}, out=domain_dir, resume=True)'''),
+         ("Read the tables back, whole or one chunk at a time.",
+          '''participant_feature = ds.read_table(run_dir, "participant_feature")
+steps = ds.read_daily(run_dir, "StepCount")
+for chunk in ds.iter_daily(run_dir, "HeartRate"):
+    pass  # a bounded number of rows at a time
+nights = dm.read_domain_table(domain_dir, "sleep_nights")'''),
+         ("Every tool that takes a run accepts its directory, and reads it one participant at a time.",
+          '''summaries = sm.summarize(run_dir)
+patterns = sm.temporal_patterns(run_dir)
+summaries.cohort.head()''')),
+        ("workers= computes several participants at once. The same runs are available from the command line: python "
+         "-m wearable_project.utils.data_statistics daily --phase curated --out DIR.",
+         "run.json records versions, registry fingerprints and the output schema; a run with another schema cannot "
+         "be resumed. export_parquet(run_dir) adds Parquet copies for faster reading (it needs pyarrow).",
+         "Outputs are refused inside any data root."),
+        concepts=("written-runs", "data-roots", "coverage-tiers"), aliases=("cohort run", "full cohort", "at scale")),
+    "table-one": _Workflow(
+        "A cohort Table 1", "values",
+        "What are typical values in the cohort, counting each participant once?",
+        (("Participant summaries over valid days, and the cohort table of their medians.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["StepCount", "RestingHeartRate", "Weight"])
+summaries = sm.summarize(daily)
+summaries.cohort.query("metric in ['value_sum', 'value_mean']")[["feature", "metric", "unit", "participants",
+                                                                   "median", "p25", "p75"]]'''),
+         ("The same as a figure, whose table1 panel holds Table 1, and every participant's median with its "
+          "interquartile range.",
+          '''figure = dp.plot_metric_distributions(summaries, ["StepCount", "RestingHeartRate"], path=out / "table1.png")
+figure.panels["table1"]
+dp.plot_caterpillar(summaries, "StepCount", path=out / "caterpillar.png")''')),
+        ("Each participant contributes one value, their median valid day, so heavy wearers do not dominate.",
+         "n_days in participant_metrics says how many valid days stand behind each participant's median."),
+        concepts=("participant-medians", "valid-days", "figure-data"), aliases=("table 1", "table one")),
+    "daily-weekly-patterns": _Workflow(
+        "Finding daily and weekly patterns", "patterns",
+        "How do values change over the day, the week and the year?",
+        (("Temporal patterns over valid days.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["HeartRate", "StepCount"])
+patterns = sm.temporal_patterns(daily)'''),
+         ("The week: each weekday, then weekends against weekdays, paired within participants.",
+          '''dp.plot_weekly_pattern(patterns, "StepCount", ci=0.95, seed=1, path=out / "weekly.png")
+dp.plot_weekday_weekend(patterns, "StepCount", path=out / "weekday_weekend.png")'''),
+         ("The day: the cohort's hours, several features' rhythms side by side, and each participant's profile.",
+          '''participants, cohort = sm.hour_of_day(daily)
+dp.plot_hour_of_day(daily, "HeartRate", path=out / "hour_of_day.png")
+dp.plot_daily_rhythms(daily, ["HeartRate", "StepCount"], path=out / "daily_rhythms.png")
+dp.plot_hour_profiles(daily, "HeartRate", path=out / "hour_profiles.png")''')),
+        ("The shaded band is the spread between participants; ci= adds the uncertainty of the median, which is a "
+         "different thing.",
+         "The weekend is {d:weekend_days} by default; weekend_days= changes it.",
+         "Relative profiles divide each participant's hours by their own mean, so rhythms compare across levels."),
+        concepts=("weekday-weekend", "hour-of-day", "uncertainty", "time-zones"),
+        aliases=("patterns workflow", "rhythms")),
+    "sleep-analysis": _Workflow(
+        "Sleep analysis", "sleep",
+        "How long, when, how regularly and how well do participants sleep?",
+        (("Nights from noon to noon, and what each night recorded.",
+          '''from pathlib import Path
+from wearable_project.utils import domain_metrics as dm, data_plots as dp
+
+out = Path("{out}")
+out.mkdir(parents=True, exist_ok=True)
+metrics = dm.compute_domain_metrics("{phase}"{root})
+nights = metrics.sleep_nights
+nights[["asleep_recorded", "in_bed_recorded", "staged"]].mean()'''),
+         ("Per participant, over valid nights.",
+          '''summary = dm.summarize_domain(metrics)
+summary.cohort.head(12)'''),
+         ("What nights record, then duration, timing, stages and regularity.",
+          '''dp.plot_sleep_recording(metrics, path=out / "sleep_recording.png")
+dp.plot_sleep(metrics, path=out / "sleep.png")
+dp.plot_sleep_timing(metrics, path=out / "sleep_timing.png")
+dp.plot_sleep_architecture(metrics, path=out / "sleep_architecture.png")
+dp.plot_sleep_regularity(metrics, path=out / "sleep_regularity.png")'''),
+         ("One participant's nights.",
+          '''sleeper = nights["RegistrationCode"].value_counts().index[0]
+segments = dm.load_sleep_segments(sleeper, "{phase}"{root})
+dp.plot_sleep_raster(segments, path=out / "sleep_raster.png")''')),
+        ("Nights with time in bed only have no measured sleep; they are kept in the tables and left out of sleep "
+         "metrics. Look at plot_sleep_recording first.",
+         "Efficiency over time in bed and over the sleep period differ; efficiency_basis says which.",
+         "Social jetlag compares free nights (ending on a weekend day) with work nights."),
+        concepts=("noon-to-noon-night", "sleep-episodes", "valid-nights", "in-bed-only", "sleep-efficiency",
+                  "sleep-staging", "free-nights"),
+        aliases=("sleep workflow",)),
+    "cgm-analysis": _Workflow(
+        "Continuous glucose monitoring", "glucose",
+        "What do participants' CGM data show against the consensus metrics?",
+        (("CGM metrics for participants whose glucose data has a monitor's cadence.",
+          '''from pathlib import Path
+from wearable_project.utils import domain_metrics as dm, data_plots as dp
+
+out = Path("{out}")
+out.mkdir(parents=True, exist_ok=True)
+metrics = dm.compute_domain_metrics("{phase}"{root})
+periods = metrics.cgm_periods[metrics.cgm_periods["cgm"].astype(bool)]
+periods[["RegistrationCode", "valid_days", "sufficient", "mean_mgdl", "gmi_percent", "in_range_percent",
+         "cv_percent"]]'''),
+         ("The cohort against the consensus targets, time in ranges, and wear.",
+          '''dp.plot_glycemic_cohort(metrics, sufficient_only=False, path=out / "glycemic_cohort.png")
+dp.plot_cgm_ranges(metrics, sufficient_only=False, path=out / "cgm_ranges.png")
+dp.plot_cgm_wear(metrics, path=out / "cgm_wear.png")'''),
+         ("One participant's ambulatory glucose profile and daily traces.",
+          '''wearer = periods["RegistrationCode"].iloc[0]
+dp.plot_agp(metrics, wearer, path=out / "agp.png")
+readings = dm.load_cgm_readings(wearer, "{phase}"{root})
+dp.plot_glucose_days(readings, path=out / "glucose_days.png")''')),
+        ("Consensus metrics need at least {d:cgm_sufficient_days} valid days (sufficient); sufficient_only=False includes the others, "
+         "which the figures say.",
+         "The targets are those for most adults with diabetes: for others, a reference.",
+         "GMI estimates HbA1c from mean glucose; the two can differ in a given person.",
+         "The native phase has no usable glucose units, so these figures need the curated phase."),
+        concepts=("cgm-validity", "glucose-ranges", "agp", "gmi", "day-completeness"), phases=("curated",),
+        aliases=("cgm workflow", "glucose workflow")),
+    "comparing-groups": _Workflow(
+        "Comparing groups", "values",
+        "Do groups of participants differ, and are the groups large enough to say?",
+        (("Participant summaries, and a label for each participant. Here the label comes from the data; in practice "
+          "it comes from outside it, such as sex, an age band or a clinical label.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["StepCount", "RestingHeartRate", "HeartRate"])
+summaries = sm.summarize(daily)
+steps = summaries.participant_metrics.query("feature == 'StepCount' and metric == 'value_sum'")
+cut = steps["median"].median()
+groups = {code: "more steps" if median >= cut else "fewer steps"
+          for code, median in zip(steps["RegistrationCode"], steps["median"])}'''),
+         ("The same figures, one line, box or bar per group, each with its size.",
+          '''dp.plot_metric_distributions(summaries, ["RestingHeartRate"], groups=groups, path=out / "by_group.png")
+dp.plot_hour_of_day(daily, "HeartRate", groups=groups, ci=0.95, seed=1, path=out / "hour_by_group.png")
+dp.plot_retention(summaries, ["HeartRate"], groups=groups, path=out / "retention_by_group.png")''')),
+        ("Each group's size is stated; participants without a label are left out and counted.",
+         "Groups defined from the data being compared make the comparison partly circular, as here: this is an "
+         "illustration of the mechanics.",
+         "For figures leaving the lab, add min_participants so that small groups are hidden."),
+        concepts=("group-labels", "participant-medians", "uncertainty", "small-cells"),
+        aliases=("compare groups", "group comparison")),
+    "shareable-report": _Workflow(
+        "A report that can leave the lab", "output",
+        "How is a report produced that shows no individual and no small group?",
+        (("Coverage and daily statistics for the report.",
+          _START + '''
+coverage = ds.compute_coverage("{phase}"{root})
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["StepCount", "HeartRate", "RestingHeartRate"])'''),
+         ("The report, with small cells suppressed and individual pages left out.",
+          '''status = dp.report(daily, out / "cohort_report.pdf", coverage=coverage, sections=["cohort", "values"],
+                   min_participants=5, include_individual=False)
+status["status"].value_counts()'''),
+         ("What was not drawn, and why.",
+          '''status.query("status != 'drawn'")[["section", "figure", "status", "reason"]]''')),
+        ("Choose min_participants by the data-sharing rules that apply; every aggregate resting on fewer participants "
+         "is hidden, in the figures and in their data.",
+         "Individual pages are left out, identifiers never appear without show_ids=True, and the status table "
+         "accounts for every page considered.",
+         "The report is written only outside the data roots."),
+        concepts=("small-cells", "individual-level", "figure-data", "data-roots"),
+        aliases=("shareable report", "sharing", "report for sharing")),
+    "multimodal-dataset": _Workflow(
+        "Sizing a multimodal dataset", "multimodal",
+        "How many participants and days have several modalities together?",
+        (("How often pairs of features share a day.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["StepCount", "HeartRate", "Sleep", "RestingHeartRate"])
+overlap = sm.day_overlap(daily)
+overlap.query("feature_a == 'StepCount'").sort_values("jaccard", ascending=False)
+dp.plot_co_availability(daily, path=out / "co_availability.png")'''),
+         ("Days on which a whole set of features has data, and how many participants keep at least k of them.",
+          '''complete = sm.days_with(daily, ["StepCount", "HeartRate", "Sleep"])
+dp.plot_multimodal_days(daily, ["StepCount", "HeartRate", "Sleep"], path=out / "multimodal_days.png")'''),
+         ("Whether one modality goes with another within participants: steps on a day against sleep that night.",
+          '''metrics = dm.compute_domain_metrics("{phase}"{root})
+dp.plot_lagged_association(daily, "StepCount", "sleep", domain=metrics, path=out / "steps_and_sleep.png")''')),
+        ("Each feature added shrinks the complete days; the curve shows the dataset each requirement leaves.",
+         "days_with counts days with data; apply valid-day rules for days of usable quality.",
+         "The within-person association uses deviations from each participant's own means."),
+        concepts=("co-availability", "within-person", "valid-days"),
+        aliases=("multimodal dataset", "sizing a multimodal dataset")),
+    "one-participant": _Workflow(
+        "One participant, in depth", "values",
+        "What does one participant's record look like, day by day?",
+        (("Daily statistics and domain metrics, and a participant.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["StepCount", "RestingHeartRate", "Sleep", "Weight"])
+metrics = dm.compute_domain_metrics("{phase}"{root})
+participant = daily.daily["StepCount"]["RegistrationCode"].iloc[0]'''),
+         ("Their features over one time axis, their daily values and their travel.",
+          '''dp.plot_participant_overview(daily, participant, domain=metrics, path=out / "overview.png")
+dp.plot_daily_values(daily, "StepCount", participant=participant, path=out / "steps.png")
+dp.plot_time_zones(daily, participant=participant, path=out / "travel.png")''')),
+        ("These figures show one person: keep them in the lab. Identifiers appear only with show_ids=True, and real "
+         "dates only with time_axis=\"calendar\".",
+         "Valid days are drawn filled, other days hollow."),
+        concepts=("individual-level", "study-time", "valid-days"), aliases=("one participant", "dossier")),
+    "clinical-references": _Workflow(
+        "Checking clinical references", "clinical",
+        "How does the cohort sit against clinical thresholds and population references?",
+        (("Readings beyond the clinical thresholds.",
+          _START + '''
+daily = ds.compute_daily_statistics("{phase}"{root}, features=["OxygenSaturation", "BodyTemperature", "BMI",
+                                                               "StepCount", "BloodPressure", "ActivitySummary"])
+summaries = sm.summarize(daily)
+participants, cohort = sm.clinical_thresholds(daily)
+dp.plot_clinical_thresholds(daily, path=out / "clinical_thresholds.png")'''),
+         ("Body size, activity and blood pressure against their references.",
+          '''dp.plot_bmi_categories(summaries, path=out / "bmi.png")
+dp.plot_step_categories(summaries, path=out / "steps.png")
+dp.plot_blood_pressure(summaries, guideline="esc_esh_home", path=out / "blood_pressure.png")
+dp.plot_activity_goals(daily, path=out / "activity_goals.png")''')),
+        ("Counts beyond a threshold are prompts to look, not diagnoses.",
+         "Each reference names its source; plot_blood_pressure's guideline= chooses among ESC/ESH home, ESC/ESH office "
+         "and ACC/AHA."),
+        concepts=("clinical-thresholds", "valid-days"), aliases=("clinical workflow", "references")),
+}
+
 # ------------------------------------------------------------------------------------------------ discovery
 def _module(name: str) -> types.ModuleType:
     return importlib.import_module(f"wearable_project.utils.{name}")
@@ -1843,14 +2876,19 @@ def _group_title(key: str) -> str:
 
 def _cli_help() -> str:
     buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer), contextlib.suppress(SystemExit):
-        _module("data_statistics").main(["--help"])
+    argv = sys.argv[:]          # argparse names the program after sys.argv[0]: in a notebook, the kernel's launcher
+    sys.argv[:] = ["python -m wearable_project.utils.data_statistics", *argv[1:]]
+    try:
+        with contextlib.redirect_stdout(buffer), contextlib.suppress(SystemExit):
+            _module("data_statistics").main(["--help"])
+    finally:
+        sys.argv[:] = argv
     return buffer.getvalue().strip()
 
 
 # ------------------------------------------------------------------------------------------------ rendering
 def _wrap(text: str, indent: int = 2) -> list[str]:
-    return textwrap.wrap(" ".join(str(text).split()), width=WIDTH, initial_indent=" " * indent,
+    return textwrap.wrap(" ".join(_values(str(text)).split()), width=WIDTH, initial_indent=" " * indent,
                          subsequent_indent=" " * (indent + 2)) or [" " * indent]
 
 
@@ -1876,7 +2914,19 @@ def _document(title: str, subtitle: str, sections: list[tuple[str, list[str]]]) 
 
 
 def _report(kind: str, title: str, payload: dict[str, Any], text: str) -> InfoReport:
-    return InfoReport(kind=kind, title=title, payload=payload, text=text)
+    return InfoReport(kind=kind, title=title, payload=_filled(payload), text=text)
+
+
+def _filled(value):
+    """A payload with every current value filled in, like the text."""
+
+    if isinstance(value, str):
+        return _values(value) if "{" in value else value
+    if isinstance(value, dict):
+        return {k: _filled(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_filled(v) for v in value)
+    return value
 
 
 # ---------------------------------------------------------------------------------------------------- cards
@@ -1905,6 +2955,8 @@ def _tool_payload(name: str, phase: str, root, out) -> dict[str, Any]:
                         "methods": [{"name": m, "does": _first_sentence(inspect.getdoc(getattr(obj, m)) or "")}
                                     for m in _methods(obj)]})
     payload["tables"] = _tool_tables(name)
+    payload["concepts"] = _concepts_of("tool", name)
+    payload["workflows"] = _workflows_calling(name)
     if name == "main":
         payload["cli_help"] = _cli_help()
     return payload
@@ -1954,6 +3006,10 @@ def _tool_text(p: dict[str, Any]) -> str:
     if p["tables"]:
         title = {"figure": "Data and panels", "class": "Tables it holds"}.get(p["kind"], "Tables it returns")
         sections.append((title, _tool_tables_lines(p)))
+    if p["concepts"]:
+        sections.append(("Concepts", _wrap(", ".join(f"{_values(CONCEPTS[c].title)} ({c})" for c in p["concepts"]))))
+    if p["workflows"]:
+        sections.append(("In workflows", _wrap(", ".join(f"{WORKFLOWS[w].title} ({w})" for w in p["workflows"]))))
     if p["related"]:
         sections.append(("Related", _wrap(", ".join(p["related"]))))
     if p["docstring"]:
@@ -1980,6 +3036,10 @@ def _parameter_report(name: str) -> InfoReport:
     specific = [line for t in takers if t["meaning"] for line in _wrap(f"{t['tool']}: {t['meaning']}")]
     if specific:
         sections.append(("Where it means something more specific", specific))
+    concepts = _concepts_of("parameter", name)
+    payload["concepts"] = concepts
+    if concepts:
+        sections.append(("Concepts", _wrap(", ".join(f"{_values(CONCEPTS[c].title)} ({c})" for c in concepts))))
     if name in _all_columns():
         tables = _column_tables(name)
         payload["column"] = {"meaning": COLUMNS.get(name) or _pattern_meaning(name), "tables": tables}
@@ -2036,6 +3096,8 @@ def _section_report(section: str, question: str | None, module: str | None) -> I
         return _tables_section_report(question, module)
     if section == "columns":
         return _columns_section_report()
+    if section in ("concepts", "defaults", "workflows"):
+        return _guide_section_report(section, question, module)
     group, module_name = _resolve_group(question), _resolve_module(module)
     names = [n for n in TOOLS if (group is None or TOOLS[n].group == group)
              and (module_name is None or TOOLS[n].module == module_name)]
@@ -2118,6 +3180,12 @@ def _overview(phase: str, root, out) -> InfoReport:
                                  f"(such as utils.info(\"DomainMetrics.sleep_nights\")), and utils.info.table_columns() "
                                  f"gives a table's columns in a phase. A function's or figure's card lists the columns of "
                                  f"the tables it returns.")),
+        ("Concepts, defaults and workflows", _wrap(
+            f"{len(CONCEPTS)} concepts explain the ideas the tools rest on, with the current values of their rules: "
+            f"utils.info(\"concepts\"), or one such as utils.info(\"valid days\"). utils.info(\"defaults\") gives "
+            f"every threshold and rule ({len(DEFAULTS)}), read from the code, with its source and basis, and every "
+            f"option's default. {len(WORKFLOWS)} workflows run a task from start to finish as code: "
+            f"utils.info(\"workflows\"), or one such as utils.info(\"shareable report\").")),
         ("Conventions of the examples", _wrap(f"Every example assumes {SETUP_NOTES['base']}") + _code(payload["setup"], 4)),
         ("Asking", _wrap('utils.info("name") for a function, class, figure, parameter, question (such as "sleep"), '
                          'output table or column; utils.info("tools"), utils.info("figures"), utils.info("parameters"), '
@@ -2356,9 +3424,257 @@ def _columns_section_report() -> InfoReport:
     return _report("columns", "Columns", {"columns": rows},
                    _document("Columns", f"{len(rows)} column names across the output tables", [("Columns", body)]))
 
+
+# ------------------------------------------------------------------------- concepts, defaults, workflows: machinery
+_PLACEHOLDER = re.compile(r"\{d:([a-z_]+)\}")
+_OPTION = re.compile(r"\{o:([a-z_]+)\}")
+_CONSTANT = re.compile(r"\{c:([A-Za-z_][A-Za-z0-9_.]*)\}")
+
+
+def _live(source: str):
+    """The current value of a default's source: a module constant, or a dataclass field's default."""
+
+    module_name, *path = source.split(".")
+    obj: Any = _module(module_name)
+    for i, name in enumerate(path):
+        if inspect.isclass(obj) and dataclasses.is_dataclass(obj) and i == len(path) - 1:
+            return {f.name: f.default for f in dataclasses.fields(obj)}[name]
+        obj = getattr(obj, name)
+    return obj
+
+
+def _inline(key: str) -> str:
+    spec = DEFAULTS[key]
+    return spec.inline(*(_live(s) for s in spec.sources))
+
+
+def _values(text: str) -> str:
+    """Text with current values: {d:key} a default in words, {c:CONSTANT} a constant's value, {o:parameter} its defaults."""
+
+    text = _PLACEHOLDER.sub(lambda m: _inline(m.group(1)), text)
+    text = _CONSTANT.sub(lambda m: _constant_value(m.group(1)), text)
+    return _OPTION.sub(lambda m: _option_inline(m.group(1)), text)
+
+
+def _constant_value(name: str) -> str:
+    """A constant's current value, by the name it answers to (CONSTANT, module.CONSTANT or alias.CONSTANT)."""
+
+    key = _default_by_constant()[name]
+    constant = name.split(".")[-1] if name.count(".") == 1 and name.split(".")[0] in {**MODULES, **{a: 0 for a, *_ in MODULES.values()}} else name
+    return _short(_live(next(s for s in DEFAULTS[key].sources if s.split(".", 1)[1] == constant)))
+
+
+def _option_inline(name: str) -> str:
+    """A parameter's defaults, from the signatures: the usual value, then each exception with its tools."""
+
+    row = next(r for r in _option_defaults() if r["parameter"] == name)
+    usual, *others = sorted(row["defaults"], key=lambda d: -len(d["tools"]))
+    if not others:
+        return usual["value"]
+    return usual["value"] + " everywhere except " + _and(f"{', '.join(d['tools'])} ({d['value']})" for d in others)
+
+
+def _short(value) -> str:
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{k}: {_short(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, (frozenset, set)):
+        return ", ".join(sorted(map(str, value)))
+    if isinstance(value, (tuple, list)):
+        return "(" + ", ".join(_short(v) for v in value) + ")"
+    if isinstance(value, float):
+        return _num(value)
+    return str(value)
+
+
+def _detail(value) -> list[str]:
+    if isinstance(value, dict):
+        return [f"{k}: {_short(v)}" for k, v in value.items()]
+    if isinstance(value, (tuple, list)) and value and all(isinstance(v, (tuple, list)) for v in value):
+        return [", ".join(_short(x) for x in v) for v in value]
+    return [_short(value)]
+
+
+def _constant_names(key: str) -> list[str]:
+    return [source.split(".", 1)[1] for source in DEFAULTS[key].sources]
+
+
+def _default_by_constant() -> dict[str, str]:
+    """Every name a default answers to: CONSTANT, module.CONSTANT and alias.CONSTANT."""
+
+    names: dict[str, str] = {}
+    for key, spec in DEFAULTS.items():
+        for source in spec.sources:
+            module_name, constant = source.split(".", 1)
+            for name in (constant, source, f"{MODULES[module_name][0]}.{constant}"):
+                names[name] = key
+    return names
+
+
+def _default_payload(key: str) -> dict[str, Any]:
+    spec = DEFAULTS[key]
+    return {"default": key, "title": spec.title, "group": spec.group, "group_title": _group_title(spec.group),
+            "value": _inline(key), "sources": list(spec.sources),
+            "values": {source: _short(_live(source)) for source in spec.sources},
+            "detail": {source: _detail(_live(source)) for source in spec.sources},
+            "meaning": spec.meaning, "basis": spec.basis, "used_by": list(spec.used_by), "change": spec.change,
+            "concepts": [c for c, s in CONCEPTS.items() if key in s.defaults]}
+
+
+def _default_report(key: str) -> InfoReport:
+    p = _default_payload(key)
+    detail = [line for source, lines in p["detail"].items()
+              for line in (_wrap(f"{source}:") + [l for x in lines for l in _wrap(x, 4)])]
+    sections = [("Value", _wrap(p["value"])), ("In detail", detail), ("What it governs", _wrap(p["meaning"])),
+                ("Why this value", _wrap(p["basis"])), ("Used by", _wrap(", ".join(p["used_by"]))),
+                ("To use another value", _wrap(p["change"]))]
+    if p["concepts"]:
+        sections.append(("Concepts", _wrap(", ".join(f"{CONCEPTS[c].title} ({c})" for c in p["concepts"]))))
+    return _report("default", _constant_names(key)[0], p,
+                   _document(f"{p['title']} — default", f"{p['group_title']} · read from the code", sections))
+
+
+def _concept_payload(key: str) -> dict[str, Any]:
+    spec = CONCEPTS[key]
+    return {"concept": key, "title": _values(spec.title), "group": spec.group, "group_title": _group_title(spec.group),
+            "summary": _values(spec.summary), "body": [_values(p) for p in spec.body],
+            "values": [{"default": d, "title": DEFAULTS[d].title, "value": _inline(d), "constants": _constant_names(d)}
+                       for d in spec.defaults],
+            "tools": list(spec.tools), "parameters": list(spec.parameters), "columns": list(spec.columns),
+            "related": list(spec.related), "aliases": list(spec.aliases),
+            "workflows": [w for w, s in WORKFLOWS.items() if key in s.concepts]}
+
+
+def _concept_report(key: str) -> InfoReport:
+    p = _concept_payload(key)
+    sections = [("In short", _wrap(p["summary"])), ("Explanation", [l for para in p["body"] for l in _wrap(para) + [""]][:-1])]
+    if p["values"]:
+        sections.append(("Current values", [line for v in p["values"] for line in
+                                            _wrap(f"{v['title']}: {v['value']} (utils.info({v['constants'][0]!r}))")]))
+    for title, names in (("Tools", p["tools"]), ("Parameters", p["parameters"]), ("Columns", p["columns"])):
+        if names:
+            sections.append((title, _wrap(", ".join(names))))
+    if p["related"]:
+        sections.append(("Related concepts", _wrap(", ".join(f"{CONCEPTS[c].title} ({c})" for c in p["related"]))))
+    if p["workflows"]:
+        sections.append(("Workflows", _wrap(", ".join(f"{WORKFLOWS[w].title} ({w})" for w in p["workflows"]))))
+    return _report("concept", key, p, _document(f"{p['title']} — concept", p["group_title"], sections))
+
+
+def _workflow_payload(key: str, phase: str, root, out) -> dict[str, Any]:
+    spec = WORKFLOWS[key]
+    return {"workflow": key, "title": spec.title, "group": spec.group, "group_title": _group_title(spec.group),
+            "question": spec.question, "phases": list(spec.phases), "aliases": list(spec.aliases),
+            "steps": [{"does": does, "code": _fill(code, phase, root, out)} for does, code in spec.steps],
+            "reading": list(spec.reading), "concepts": list(spec.concepts)}
+
+
+def _workflow_report(key: str, phase: str, root, out) -> InfoReport:
+    p = _workflow_payload(key, phase, root, out)
+    steps: list[str] = []
+    for n, step in enumerate(p["steps"], 1):
+        steps.extend(_wrap(f"{n}. {step['does']}") + _code(step["code"], 4) + [""])
+    sections = [("The question", _wrap(p["question"])), ("Steps", steps[:-1]),
+                ("Reading the results", [l for para in p["reading"] for l in _wrap(para) + [""]][:-1]),
+                ("Concepts", _wrap(", ".join(f"{CONCEPTS[c].title} ({c})" for c in p["concepts"]))),
+                ("Runs in", _wrap(" and ".join(f"the {ph} phase" for ph in p["phases"])
+                                  + ("" if len(p["phases"]) > 1 else " only")))]
+    return _report("workflow", key, p, _document(f"{p['title']} — workflow", p["group_title"], sections))
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.casefold()))
+
+
+def _guide_names(kind: str, key: str) -> set[str]:
+    spec = CONCEPTS[key] if kind == "concept" else WORKFLOWS[key]
+    names = {_norm(key), _norm(_values(spec.title)), *(_norm(a) for a in spec.aliases)}
+    return names | {n[:-1] for n in names if n.endswith("s") and len(n) > 3}
+
+
+def _guide_index() -> dict[str, tuple[str, str]]:
+    """Every name a concept or workflow answers to, normalized: its key, title and aliases, singular or plural."""
+
+    index: dict[str, tuple[str, str]] = {}
+    for kind, catalogue in (("concept", CONCEPTS), ("workflow", WORKFLOWS)):
+        for key in catalogue:
+            for name in _guide_names(kind, key):
+                index.setdefault(name, (kind, key))
+    return index
+
+
+def _find_guide(topic: str) -> tuple[str, str] | None:
+    index, name = _guide_index(), _norm(topic)
+    return index.get(name) or (index.get(name[:-1]) if name.endswith("s") else None)
+
+
+def _tool_modules(names) -> set[str]:
+    return {TOOLS[n].module for n in names if n in TOOLS}
+
+
+def _guide_section_report(section: str, question: str | None, module: str | None) -> InfoReport:
+    group, module_name = _resolve_group(question), _resolve_module(module)
+    if section == "defaults":
+        keys = [k for k, s in DEFAULTS.items() if (group is None or s.group == group)
+                and (module_name is None or any(src.split(".")[0] == module_name for src in s.sources))]
+        line = lambda k: f"{DEFAULTS[k].title}: {_inline(k)} [{', '.join(_constant_names(k))}]"
+        rows = [_default_payload(k) for k in keys]
+        options = _option_defaults() if group is None and module_name is None else []
+        extra = [("Option defaults", [l for o in options for l in _wrap(
+            f"{o['parameter']}: " + "; ".join(f"{d['value']} ({_count(len(d['tools']), 'tool')})" if len(d["tools"]) > 3
+                                              else f"{d['value']} ({', '.join(d['tools'])})" for d in o["defaults"]))])] \
+            if options else []
+        title, subtitle = "Defaults", f"{len(keys)} defaults, read from the code; utils.info(\"<CONSTANT>\") explains one"
+        payload: dict[str, Any] = {"defaults": rows, "options": options}
+    elif section == "concepts":
+        keys = [k for k, s in CONCEPTS.items() if (group is None or s.group == group)
+                and (module_name is None or module_name in _tool_modules(s.tools))]
+        line = lambda k: f"{_values(CONCEPTS[k].title)} ({k}) — {_values(CONCEPTS[k].summary)}"
+        title, subtitle, extra = "Concepts", f"{len(keys)} concepts; utils.info(\"<concept>\") explains one", []
+        payload = {"concepts": [{"concept": k, "title": _values(CONCEPTS[k].title), "group": CONCEPTS[k].group,
+                                 "summary": _values(CONCEPTS[k].summary)} for k in keys]}
+    else:
+        keys = [k for k, s in WORKFLOWS.items() if (group is None or s.group == group)
+                and (module_name is None or re.search(rf"\b{MODULES[module_name][0]}\.", "".join(c for _, c in s.steps)))]
+        line = lambda k: f"{WORKFLOWS[k].title} ({k}) — {WORKFLOWS[k].question}"
+        title, subtitle, extra = "Workflows", f"{len(keys)} workflows; utils.info(\"<workflow>\") runs one as code", []
+        payload = {"workflows": [{"workflow": k, "title": WORKFLOWS[k].title, "group": WORKFLOWS[k].group,
+                                  "question": WORKFLOWS[k].question, "phases": list(WORKFLOWS[k].phases)} for k in keys]}
+    catalogue = CONCEPTS if section == "concepts" else WORKFLOWS if section == "workflows" else DEFAULTS
+    sections = [(t, [l for k in keys if catalogue[k].group == g for l in _wrap(line(k))]) for g, t, _ in GROUPS
+                if any(catalogue[k].group == g for k in keys)]
+    return _report(section, title, payload, _document(title, subtitle, sections + extra))
+
+
+@functools.lru_cache(maxsize=1)
+def _option_defaults() -> list[dict[str, Any]]:
+    """Every parameter's default, from the signatures: each distinct value and the tools that use it."""
+
+    rows = []
+    for name in sorted(PARAMETERS):
+        values: dict[str, list[str]] = {}
+        for tool, (_, obj) in tools().items():
+            if inspect.isclass(obj):
+                continue
+            for p in _parameters(obj):
+                if p.name == name and p.default is not p.empty:
+                    values.setdefault(_default(p.default), []).append(tool)
+        if values:
+            rows.append({"parameter": name, "defaults": [{"value": v, "tools": sorted(t)} for v, t in values.items()]})
+    return rows
+
+
+def _concepts_of(kind: str, name: str) -> list[str]:
+    field = {"tool": "tools", "parameter": "parameters"}[kind]
+    return [k for k, s in CONCEPTS.items() if name in getattr(s, field)]
+
+
+def _workflows_calling(tool: str) -> list[str]:
+    pattern = re.compile(rf"\b(ds|sm|dm|dp)\.{re.escape(tool)}\(")
+    return [k for k, s in WORKFLOWS.items() if any(pattern.search(code) for _, code in s.steps)]
+
 # ---------------------------------------------------------------------------------------------------- search
 def search(term: str, limit: int = 15) -> list[dict[str, Any]]:
-    """Topics matching ``term``, best first: tools, parameters, questions, output tables and columns."""
+    """Topics matching ``term``, best first: tools, parameters, questions, tables, columns, concepts, workflows, defaults."""
 
     words = [w for w in re.findall(r"[a-z0-9]+", term.casefold()) if len(w) > 1]
     phrase = " ".join(words)
@@ -2375,6 +3691,13 @@ def search(term: str, limit: int = 15) -> list[dict[str, Any]]:
                                                  else table_columns(k, "curated", optional=True))]), "")
                 for k, s in TABLES.items()]
     entries += [("column", c, COLUMNS.get(c) or _pattern_meaning(c), "") for c in _all_columns()]
+    entries += [("concept", k, " ".join([_values(s.title), _values(s.summary), *map(_values, s.body), *s.aliases]), "")
+                for k, s in CONCEPTS.items()]
+    entries += [("workflow", k, " ".join([s.title, s.question, *s.reading, *(d for d, _ in s.steps), *s.aliases]), "")
+                for k, s in WORKFLOWS.items()]
+    entries += [("default", _constant_names(k)[0], " ".join([s.title, s.meaning, s.basis, *_constant_names(k)]), "")
+                for k, s in DEFAULTS.items()]
+    entries = [(kind, name, _values(text), extra) for kind, name, text, extra in entries]
     results = []
     for kind, name, text, doc in entries:
         label, body, extra = name.casefold().replace("_", " "), text.casefold(), doc.casefold()
@@ -2389,8 +3712,23 @@ def search(term: str, limit: int = 15) -> list[dict[str, Any]]:
             score += 15 * (w in label.split()) + 6 * body.count(w) + 1 * extra.count(w)
         if score:
             results.append({"topic": name, "kind": kind, "score": score,
-                            "summary": TOOLS[name].does if kind == "tool" else TABLES[name].rows if kind == "table" else text})
+                            "summary": _search_summary(kind, name, text)})
     return sorted(results, key=lambda r: (-r["score"], r["topic"]))[:limit]
+
+
+def _search_summary(kind: str, name: str, text: str) -> str:
+    if kind == "tool":
+        return _values(TOOLS[name].does)
+    if kind == "table":
+        return _values(TABLES[name].rows)
+    if kind == "concept":
+        return _values(CONCEPTS[name].summary)
+    if kind == "workflow":
+        return WORKFLOWS[name].question
+    if kind == "default":
+        key = _default_by_constant()[name]
+        return f"{DEFAULTS[key].title}: {_inline(key)}"
+    return _values(text)
 
 
 def _search_report(term: str) -> InfoReport:
@@ -2401,7 +3739,7 @@ def _search_report(term: str) -> InfoReport:
 
 
 # ------------------------------------------------------------------------------------------------------ info
-SECTIONS = ("overview", "tools", "figures", "parameters", "tables", "columns")
+SECTIONS = ("overview", "tools", "figures", "parameters", "tables", "columns", "concepts", "defaults", "workflows")
 
 
 def info(topic: str | None = None, *, question: str | None = None, module: str | None = None,
@@ -2413,8 +3751,10 @@ def info(topic: str | None = None, *, question: str | None = None, module: str |
     topic:
         None for the overview; a function, class or figure name (``"plot_agp"``, also ``"dp.plot_agp"``); a parameter
         (``"min_participants"``); a question (``"sleep"``); an output table (``"DomainMetrics.sleep_nights"``,
-        ``"plot_agp.data"``) or a column (``"gmi_percent"``); ``"tools"``, ``"figures"``, ``"parameters"``, ``"tables"``
-        or ``"columns"`` for the catalogues. Anything else searches. Matching ignores case.
+        ``"plot_agp.data"``) or a column (``"gmi_percent"``); a concept (``"valid days"``), a workflow
+        (``"shareable report"``) or a default by its constant (``"CGM_SUFFICIENT_DAYS"``); ``"tools"``, ``"figures"``,
+        ``"parameters"``, ``"tables"``, ``"columns"``, ``"concepts"``, ``"defaults"`` or ``"workflows"`` for the
+        catalogues. Anything else searches. Matching ignores case, except for constants.
     question, module:
         Filter the catalogues, such as ``info("figures", question="sleep")`` or ``info("tools", module="dm")``.
     phase, root, out:
@@ -2435,6 +3775,9 @@ def info(topic: str | None = None, *, question: str | None = None, module: str |
         return _overview(phase, root, out)
     if folded in SECTIONS:
         return _section_report(folded, question, module)
+    constants = _default_by_constant()
+    if key in constants:          # exact constant names first: STEP_CATEGORIES is a default, step_categories a tool
+        return _default_report(constants[key])
     by_name = {n.casefold(): n for n in TOOLS}
     if folded in by_name:
         name = by_name[folded]
@@ -2451,9 +3794,13 @@ def info(topic: str | None = None, *, question: str | None = None, module: str |
     by_column = {c.casefold(): c for c in _all_columns()}
     if folded in by_column:
         return _column_report(by_column[folded])
+    found = _find_guide(key)                  # concepts and workflows, by key, title or alias
+    if found is not None:
+        kind, name = found
+        return _concept_report(name) if kind == "concept" else _workflow_report(name, phase, root, out)
     if search(key):
         return _search_report(key)
-    candidates = [*TOOLS, *PARAMETERS, *(k for k, _, _ in GROUPS), *TABLES]
+    candidates = [*TOOLS, *PARAMETERS, *(k for k, _, _ in GROUPS), *TABLES, *CONCEPTS, *WORKFLOWS, *_default_by_constant()]
     close = difflib.get_close_matches(folded, [c.casefold() for c in candidates], n=5, cutoff=0.6)
     hint = f"; did you mean {', '.join(close)}?" if close else "; utils.info() lists every topic"
     raise DataLoaderConfigurationError(f"no topic or match for {topic!r}{hint}")
@@ -2464,7 +3811,9 @@ def topics() -> list[str]:
 
     named = [*SECTIONS, *TOOLS, *PARAMETERS, *(k for k, _, _ in GROUPS), *TABLES]
     taken = {n.casefold() for n in named}
-    return named + [c for c in _all_columns() if c.casefold() not in taken]
+    constants = [c for c in _default_by_constant() if "." not in c]
+    columns = [c for c in _all_columns() if c.casefold() not in taken]
+    return named + constants + columns + [*CONCEPTS, *WORKFLOWS]
 
 
 # ----------------------------------------------------------------------------------------------- command line
