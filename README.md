@@ -157,10 +157,10 @@ BasalEnergyBurned      ███████████████████
 Height                 ████████████████████▌ 1,639
 DistanceWalkingRunning ████████████████████ 1,602
 FlightsClimbed         ███████████████████ 1,570
-Weight                 ███████████████████ 1,553
+Weight                 ██████████████████ 1,553
 ActivitySummary        ██████████████ 1,085
 HeartRate              █████████████ 1,055
-Sleep                  █████████████ 1,032
+Sleep                  ████████████ 1,032
 RestingHeartRate       █████████ 753
 Vo2Max                 ███████ 573
 HeartRateVariability   ███████ 568
