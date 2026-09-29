@@ -145,8 +145,6 @@ utils.info("compute_daily_statistics")     # help on any tool
 
 ## Loading features
 
-There are 33 features, each with a loader named `<Feature>Loader`, e.g., StepCountLoader, DistanceWalkingRunningLoader.
-
 How many participants have each feature, in the HPP roots (the same in both phases), as of the cohort check of 
 28 September 2026:
 
@@ -188,6 +186,8 @@ PeakFlow               ▏ 1
 
 The cohort grows, so for the current numbers ask the roots themselves: `ds.compute_coverage("curated").features` gives
 the participants, rows and bytes of every feature, without reading any feature file.
+
+There are 33 features, each with a loader named `<Feature>Loader`, e.g., StepCountLoader, DistanceWalkingRunningLoader.
 
 ```python
 from wearable_project.DataLoaders import HeartRateLoader
