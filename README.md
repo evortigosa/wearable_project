@@ -145,12 +145,49 @@ utils.info("compute_daily_statistics")     # help on any tool
 
 ## Loading features
 
-There are 33 features, each with a loader named `<Feature>Loader`: ActiveEnergyBurned, ActivitySummary, BMI,
-BasalEnergyBurned, BloodAlcoholContent, BloodGlucose, BloodPressure, BodyFatPercentage, BodyTemperature,
-Carbohydrates, DailyDistanceCycling, DailyDistanceSwimming, DistanceWalkingRunning, Electrocardiogram, EnergyConsumed,
-FlightsClimbed, HeartRate, HeartRateVariability, Height, LeanBodyMass, Mindful, OxygenSaturation, PeakFlow, Protein,
-RespiratoryRate, RestingHeartRate, Sleep, StepCount, TotalFat, Vo2Max, WaistCircumference, WalkingHeartRate and
-Weight.
+There are 33 features, each with a loader named `<Feature>Loader`, e.g., StepCountLoader, DistanceWalkingRunningLoader.
+
+How many participants have each feature, in the HPP roots (the same in both phases), as of the cohort check of 
+28 September 2026:
+
+```text
+StepCount              ██████████████████████████████████████████████████ 4,006
+ActiveEnergyBurned     ███████████████████████▋ 1,888
+BasalEnergyBurned      █████████████████████▊ 1,744
+Height                 ████████████████████▌ 1,639
+DistanceWalkingRunning ████████████████████ 1,602
+FlightsClimbed         ███████████████████▋ 1,570
+Weight                 ███████████████████▍ 1,553
+ActivitySummary        █████████████▌ 1,085
+HeartRate              █████████████▏ 1,055
+Sleep                  ████████████▉ 1,032
+RestingHeartRate       █████████▍ 753
+Vo2Max                 ███████▏ 573
+HeartRateVariability   ███████▏ 568
+WalkingHeartRate       ██████▊ 540
+Mindful                ██████▍ 514
+OxygenSaturation       █████▊ 460
+RespiratoryRate        █████▎ 425
+DailyDistanceCycling   █████ 405
+Electrocardiogram      ████▍ 349
+BMI                    ████ 324
+DailyDistanceSwimming  ███▏ 253
+BodyFatPercentage      ██▊ 224
+LeanBodyMass           ██ 157
+EnergyConsumed         █▍ 106
+Protein                █▎ 103
+Carbohydrates          █▎ 101
+BloodPressure          █▎ 97
+TotalFat               █▏ 95
+WaistCircumference     ▋ 52
+BloodGlucose           ▌ 39
+BodyTemperature        ▎ 20
+BloodAlcoholContent    ▏ 2
+PeakFlow               ▏ 1
+```
+
+The cohort grows, so for the current numbers ask the roots themselves: `ds.compute_coverage("curated").features` gives
+the participants, rows and bytes of every feature, without reading any feature file.
 
 ```python
 from wearable_project.DataLoaders import HeartRateLoader
