@@ -378,7 +378,7 @@ class AppleHealthFeatureLoader:
         Parameters
         ----------
         registration_codes:
-            Optional HPP registration code(s), e.g. ``"10K_1235738253"``. Bare participant folder IDs and integers
+            Optional HPP registration code(s), e.g. ``"10K_XXXXXXXXXX"``. Bare participant folder IDs and integers
             are accepted as well. ``None`` discovers every participant containing this feature.
         start_date, end_date:
             Optional inclusive UTC bounds applied to the feature's HPP ``Date`` anchor. For almost all features

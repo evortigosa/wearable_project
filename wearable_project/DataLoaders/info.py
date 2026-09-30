@@ -765,7 +765,7 @@ def _overview_report(*, native_root: Path, curated_root: Path) -> InfoReport:
         "  from wearable_project.DataLoaders.StepCountLoader import StepCountLoader",
         "  df = StepCountLoader().get_data().df",
         "  df = StepCountLoader(phase='native').get_data().df",
-        "  df = StepCountLoader(root='/path/to/sample').get_data(reg_ids='10K_1235738253').df",
+        "  df = StepCountLoader(root='/path/to/sample').get_data(reg_ids='10K_XXXXXXXXXX').df",
         "  print(StepCountLoader().profile())",
         "",
         "Feature-specific help",
