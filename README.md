@@ -10,7 +10,7 @@ analysis-ready data. It provides:
 
 Developed at the Segal Lab, Department of Computer Science and Applied Mathematics, Weizmann Institute of Science.
 
-For more details, see [this presentation][https://docs.google.com/presentation/d/1dbA7ByPcUTwcUZf5fLVpNBrlMeY5RP5Myy0WmeKwETI/edit?usp=drivesdk].
+For more details, see [this presentation](https://docs.google.com/presentation/d/1dbA7ByPcUTwcUZf5fLVpNBrlMeY5RP5Myy0WmeKwETI/edit?usp=drivesdk).
 
 ## How it fits together
 
