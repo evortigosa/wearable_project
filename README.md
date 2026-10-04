@@ -186,6 +186,50 @@ BloodAlcoholContent    ▏ 2
 PeakFlow               ▏ 1
 ```
 
+And how many rows each feature holds, from the same check. Together the cohort holds 451,653,688 rows in each phase, 
+and HeartRate alone is 61% of them (the counts span eight orders of magnitude, so the bars use a log scale):
+
+```text
+HeartRate              ███████████████████████████████████████████████████ 275,540,794
+StepCount              ███████████████████████████████████████████████ 60,014,907
+DistanceWalkingRunning ██████████████████████████████████████████████ 40,879,374
+BasalEnergyBurned      █████████████████████████████████████████████ 28,792,402
+ActiveEnergyBurned     ████████████████████████████████████████████ 19,812,185
+FlightsClimbed         ██████████████████████████████████████████ 9,876,659
+Sleep                  █████████████████████████████████████████ 5,469,021
+RespiratoryRate        ████████████████████████████████████████ 3,604,591
+HeartRateVariability   ███████████████████████████████████████ 2,250,623
+OxygenSaturation       ██████████████████████████████████████ 1,672,342
+ActivitySummary        █████████████████████████████████████▏ 1,530,301
+RestingHeartRate       ███████████████████████████████████ 570,414
+BloodGlucose           ███████████████████████████████████ 546,853
+WalkingHeartRate       ██████████████████████████████████ 384,732
+Weight                 ███████████████████████████████ 113,700
+Vo2Max                 ██████████████████████████████ 92,210
+DailyDistanceCycling   █████████████████████████████ 68,704
+BMI                    ████████████████████████████ 68,337
+BodyFatPercentage      ███████████████████████████ 44,719
+EnergyConsumed         ███████████████████████████ 44,174
+Protein                ███████████████████████████ 39,091
+LeanBodyMass           ███████████████████████████ 38,992
+Carbohydrates          ███████████████████████████ 38,855
+TotalFat               ███████████████████████████ 38,101
+Mindful                ███████████████████████████ 36,761
+DailyDistanceSwimming  ██████████████████████████ 28,248
+BodyTemperature        ██████████████████████████ 26,469
+Height                 ████████████████████████ 12,080
+BloodPressure          ████████████████████████ 10,346
+Electrocardiogram      ██████████████████████ 6,519
+BloodAlcoholContent    ████████████████ 835
+WaistCircumference     ██████████████ 346
+PeakFlow               ██ 3
+                       ╵     ╵     ╵     ╵     ╵     ╵     ╵     ╵     ╵
+                       1     10    100   1K    10K   100K  1M    10M   100M   rows (log scale)
+```
+
+Loaded for the whole cohort at once, HeartRate and StepCount exceed the default request limit of 50,000,000 rows: 
+load them in participant batches, or raise `max_rows`.
+
 The cohort grows, so for the current numbers ask the roots themselves: `ds.compute_coverage("curated").features` gives
 the participants, rows and bytes of every feature, without reading any feature file.
 
@@ -351,13 +395,13 @@ profile.participants     # one row per participant
 
 All loader errors derive from `DataLoaderError`:
 
-| Error                          | Raised when                                                                  |
-|--------------------------------|------------------------------------------------------------------------------|
-| `DataLoaderConfigurationError` | An invalid phase, filter or option is given                                  |
-| `DataLoaderPathError`          | The configured data root is unavailable                                      |
-| `DataLoaderReadError`          | A file cannot be read exactly                                                |
-| `DataLoaderStateError`         | A file disagrees with its state database, or the database does not record it |
-| `DataLoaderSizeError`          | A call would return more than `max_rows` rows                                |
+| Error                          | Raised when                                                                                                  |
+|--------------------------------|--------------------------------------------------------------------------------------------------------------|
+| `DataLoaderConfigurationError` | An invalid phase, filter or option is given                                                                  |
+| `DataLoaderPathError`          | The configured data root is unavailable                                                                      |
+| `DataLoaderReadError`          | A file cannot be read exactly, or the system refuses to let you read it;                                     |
+| `DataLoaderStateError`         | A file disagrees with its state database, or the database does not record it, or the database cannot be read |
+| `DataLoaderSizeError`          | A call would return more than `max_rows` rows                                                                |
 
 ### Help on a feature
 
@@ -497,6 +541,8 @@ python -m wearable_project.utils.cohort_acceptance --participants 50 --seed 1 --
    size mismatches, and on phases that disagree on a participant's rows.
 2. **It loads every feature in both phases** for a seeded random set of participants, with verification required,
    and checks dtypes, declared types and both helpers.
+3. **It checks that the roots' group can read every file, folder and state database.** A run by the data owner, who
+   can read everything, would otherwise pass while colleagues are refused.
 
 It writes `cohort_acceptance.txt` and `cohort_acceptance.json` to `--out`, and exits with 0 when nothing failed, 1
 when a check failed, and 2 for invalid arguments. `--features` restricts the run, `--participants 0` loads every

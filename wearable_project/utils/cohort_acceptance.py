@@ -10,6 +10,10 @@ run on a representative sample. This script checks what only the full cohort can
    loaded; declared categorical and whole-number columns typed as promised; curated rows equal to native rows per
    participant; both helpers working wherever they apply. Columns the representative sample never showed, and
    implausible values, are reported.
+3. Sharing. The data owner can read every file whatever its mode, so the owner's own run passes the checks above
+   even where colleagues are refused. The permission bits are checked instead: the files of the checked features,
+   every participant folder, each root and its state database must be open to their group. Anything that is not
+   is reported, with the command that fixes it.
 Usage:
 
     python -m wearable_project.utils.cohort_acceptance --participants 50 --seed 1 --out ~/acceptance
@@ -23,7 +27,9 @@ status is 0 when nothing failed (warnings allowed), 1 when a check failed, and 2
 from __future__ import annotations
 import argparse
 import json
+import os
 import random
+import stat
 import sys
 import time
 import traceback
@@ -37,7 +43,9 @@ from wearable_project import __release_label__, __version__
 from wearable_project.utils.data_statistics import protected_roots
 from wearable_project.curation import schema
 from wearable_project.DataLoaders import available_features
-from wearable_project.DataLoaders._base import DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, AppleHealthFeatureLoader
+from wearable_project.DataLoaders._base import (
+    _PHASE_STATE_FILES, DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, AppleHealthFeatureLoader, _account_name,
+)
 from wearable_project.exceptions import DataLoaderError
 
 
@@ -241,6 +249,74 @@ def check_loads(features, roots, codes, rows_by_participant, findings: Findings)
 
 
 # -------------------------------------------------------------------------------------------------- report
+def check_sharing(features, roots, findings: Findings) -> dict[str, dict[str, Any]]:
+    """
+    Whether each root is open to its group: files readable, folders readable and searchable, so that colleagues in
+    the group can list and read what the loaders read. Checked from the permission bits, since the data owner can
+    read everything whatever the bits say.
+    """
+
+    summary: dict[str, dict[str, Any]] = {}
+    for phase in PHASES:
+        root = roots[phase]
+        fix = f"the data owner can open the root to its group with: chmod -R g+rX {root}"
+        names = {f"{feature}.csv": feature for feature in features}
+        checked: Counter[str] = Counter()
+        closed_files: dict[str, list[str]] = {feature: [] for feature in features}
+        groups: set[int] = set()
+        try:
+            closed_folders = [] if _open_to_group(root, folder=True) else [str(root)]
+            folders = sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+        except OSError as exc:
+            findings.add("FAIL", phase, None, "sharing", f"could not list {root}: {exc}")
+            continue
+        for folder in folders:
+            if not _open_to_group(folder, folder=True):
+                closed_folders.append(folder.name)
+            try:
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        feature = names.get(entry.name)
+                        if feature is None:
+                            continue
+                        try:
+                            info = entry.stat()
+                        except OSError:  # a broken link: the profile reports the file as missing
+                            continue
+                        checked[feature] += 1
+                        groups.add(info.st_gid)
+                        if not info.st_mode & stat.S_IRGRP:
+                            closed_files[feature].append(folder.name)
+            except OSError:
+                closed_folders.append(folder.name)
+        for feature in features:
+            closed = closed_files[feature]
+            if closed:
+                findings.add("WARN", phase, feature, "files not readable by their group",
+                             f"{len(closed):,} of {checked[feature]:,}, e.g. {closed[:3]}; {fix}")
+        if closed_folders:
+            findings.add("WARN", phase, None, "folders not open to their group",
+                         f"{len(closed_folders):,}, e.g. {closed_folders[:3]}; {fix}")
+        database = root / _PHASE_STATE_FILES[phase]
+        database_open = _open_to_group(database, folder=False) if database.is_file() else None
+        if database_open is False:
+            findings.add("WARN", phase, None, "state database not readable by its group",
+                         f"{database.name}: the loaders cannot verify any file without it; {fix}")
+        summary[phase] = {
+            "groups": sorted(_account_name(gid, "group") for gid in groups),
+            "files_checked": sum(checked.values()),
+            "files_not_group_readable": {feature: len(v) for feature, v in closed_files.items() if v},
+            "folders_not_open_to_group": len(closed_folders),
+            "state_database_group_readable": database_open,
+        }
+    return summary
+
+
+def _open_to_group(path: Path, folder: bool) -> bool:
+    needed = stat.S_IRGRP | stat.S_IXGRP if folder else stat.S_IRGRP
+    return path.stat().st_mode & needed == needed
+
+
 def verdict(findings: Findings) -> str:
     if findings.count("FAIL"):
         return "FAIL"
@@ -289,6 +365,7 @@ def run(native: Path, curated: Path, participants: int, seed: int, features, pro
     findings = Findings()
     started = datetime.now(timezone.utc)
     profiled = check_profiles(features, roots, findings)
+    sharing = check_sharing(features, roots, findings)
     pool = sorted({code for phase in PHASES for rows in profiled["rows_by_participant"][phase].values() for code in rows})
     count = len(pool) if participants <= 0 else min(participants, len(pool))
     codes = sorted(random.Random(seed).sample(pool, count)) if pool else []
@@ -299,7 +376,8 @@ def run(native: Path, curated: Path, participants: int, seed: int, features, pro
         "roots": {k: str(v) for k, v in roots.items()}, "seed": seed, "features": list(features),
         "participants_requested": participants, "participants_sampled": codes,
         "started": started.isoformat(), "finished": datetime.now(timezone.utc).isoformat(),
-        "profiles": profiled["profiles"], "loads": loads, "findings": findings.items, "verdict": verdict(findings),
+        "profiles": profiled["profiles"], "sharing": sharing, "loads": loads, "findings": findings.items,
+        "verdict": verdict(findings),
     }
 
 

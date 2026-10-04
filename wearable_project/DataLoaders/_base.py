@@ -18,8 +18,10 @@ import csv
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
+import stat
 import warnings
 import numpy as np
 import pandas as pd
@@ -163,6 +165,44 @@ def _mangled_duplicate(name: Any, columns: Any) -> str | None:
 
     match = re.fullmatch(r"(.+)\.(\d+)", str(name))
     return match.group(1) if match and match.group(1) in {str(c) for c in columns} else None
+
+
+def _account_name(number: int, kind: str) -> str:
+    """The name of user or group ``number``, or the number itself where the system cannot name it."""
+
+    try:
+        import grp
+        import pwd
+
+        return pwd.getpwuid(number).pw_name if kind == "user" else grp.getgrgid(number).gr_name
+    except (ImportError, KeyError):
+        return str(number)
+
+
+def _permission_denied(path: Path, root: Path) -> str:
+    """
+    Why the system refused to let this user read ``path``, and what would fix it, from the file's owner, group and
+    mode. A file with mode 600 is readable by its owner alone: a load that works for the data owner then fails for
+    everyone else.
+    """
+
+    try:
+        info = path.stat()
+    except OSError:
+        return f"cannot read {path}: permission denied"
+    found = (f"cannot read {path}: permission denied. It belongs to user {_account_name(info.st_uid, 'user')} and "
+             f"group {_account_name(info.st_gid, 'group')}, with mode {stat.filemode(info.st_mode)}")
+    if not hasattr(os, "getgroups"):
+        return found
+    if info.st_uid == os.geteuid():
+        return f"{found}, which does not let its owner, you, read it: chmod u+r {path}"
+    if info.st_gid != os.getegid() and info.st_gid not in os.getgroups():
+        return (f"{found}. You are not a member of that group: ask the data owner to add you to it, or to give you "
+                "access another way, such as an ACL")
+    if not info.st_mode & stat.S_IRGRP:
+        return (f"{found}, which gives the group no read access. The data owner can open the whole root to its group "
+                f"with: chmod -R g+rX {root}")
+    return f"{found}. The group may read it, so a folder on the way to it, or an ACL, refuses you"
 
 
 def _empty_participant_metadata() -> pd.DataFrame:
@@ -1186,6 +1226,8 @@ class AppleHealthFeatureLoader:
                 path, low_memory=False, keep_default_na=False, na_values=[""], float_precision="round_trip",
                 dtype=text_columns,
             )
+        except PermissionError as exc:
+            raise DataLoaderReadError(_permission_denied(path, path.parent.parent)) from exc
         except Exception as exc:
             raise DataLoaderReadError(f"failed reading {path}: {exc}") from exc
         # When every row has one field more than the header, pandas quietly makes the first column the index,
@@ -1338,6 +1380,8 @@ class AppleHealthFeatureLoader:
                     "SELECT * FROM curation_outputs WHERE feature = ?", (self.feature_name,)
                 ).fetchall()
         except sqlite3.Error as exc:
+            if database.exists() and not os.access(database, os.R_OK):
+                raise DataLoaderStateError(_permission_denied(database, database.parent)) from exc
             raise DataLoaderStateError(f"could not read curation_outputs from {database}: {exc}") from exc
         return {str(row["participant_id"]): dict(row) for row in rows}, None
 
@@ -1384,6 +1428,8 @@ class AppleHealthFeatureLoader:
                     (self.feature_name,),
                 ).fetchall()
         except sqlite3.Error as exc:
+            if database.exists() and not os.access(database, os.R_OK):
+                raise DataLoaderStateError(_permission_denied(database, database.parent)) from exc
             raise DataLoaderStateError(f"could not read feature_outputs from {database}: {exc}") from exc
         return {str(row["participant_id"]): dict(row) for row in rows}, None
 

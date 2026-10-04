@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import sqlite3
-import tempfile
+import secrets
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -98,12 +98,27 @@ def validate_audit_count_columns(dataframe: Any, destination: Path) -> None:
             )
 
 
+def _new_temporary_file(directory: Path, prefix: str, suffix: str) -> Path:
+    """
+    Create an empty file for an atomic write the way ``open()`` creates files, so that the umask, and any default ACL,
+    decide its permissions. ``tempfile.mkstemp`` always makes the file private (mode 600), and the rename carries that
+    mode into the published file, which no one but its owner could then read.
+    """
+
+    for _ in range(100):
+        path = directory / f"{prefix}{secrets.token_hex(8)}{suffix}"
+        try:
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError(f"could not create a temporary file in {directory}")
+
+
 def atomic_write_csv(dataframe: Any, destination: Path) -> None:
     validate_audit_count_columns(dataframe, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
-    os.close(fd)
-    temporary = Path(temporary_name)
+    temporary = _new_temporary_file(destination.parent, prefix=f".{destination.name}.", suffix=".tmp")
     try:
         dataframe.to_csv(temporary, index=False, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
         with temporary.open("rb") as handle:

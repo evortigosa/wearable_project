@@ -1,6 +1,6 @@
 """
 Wearable Data Processing and Modeling project
-Generated integrity manifest for the 0.2.0rc4 processing-environment diagnostics release.
+Generated integrity manifest for the 0.3.0 release.
 """
 
 
@@ -37,5 +37,5 @@ EXPECTED_CORE_PROCESSING_MODULE_SHA256 = {
     "registry.py": "2ebdd1950e1342396b85eb25633447463f692ae945493a570e04c2c1ec543049",
     "resampling.py": "c4612c58727c4a9664b7e424591b188e60fcf9bb56e9586f241dd0f87235583e",
     "tracker.py": "17bfa3e0de58c68f48240d4bb89a80f4e1db5e8c7e3d2a4d984b7831e77c6cca",
-    "writer.py": "cb6fcf2e14aa9efe8d362ebee8b983da705d8d8cbbfb9529ecb0f9d08454ed47",
+    "writer.py": "40dd8819eaa560caeb585ecab3b1be7eb9917e50813a52c70e29ab9fe7666519",
 }
