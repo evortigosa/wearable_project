@@ -65,18 +65,23 @@ class RawInput:
     def participants(self) -> tuple[ParticipantFiles, ...]:
         raise NotImplementedError
 
+
     @contextmanager
     def open_text(self, file: RawFile) -> Iterator[TextIO]:
         raise NotImplementedError
 
+
     def descriptor(self) -> dict[str, object]:
         raise NotImplementedError
+
 
     def close(self) -> None:
         return None
 
+
     def __enter__(self) -> "RawInput":
         return self
+
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
@@ -89,6 +94,7 @@ class DirectoryInput(RawInput):
         self.original_path = path.resolve()
         self.root = self._resolve_root(self.original_path)
         self._participants = self._discover()
+
 
     @staticmethod
     def _looks_like_root(path: Path) -> bool:
@@ -104,6 +110,7 @@ class DirectoryInput(RawInput):
                 continue
         return False
 
+
     @classmethod
     def _resolve_root(cls, path: Path) -> Path:
         if cls._looks_like_root(path):
@@ -114,6 +121,7 @@ class DirectoryInput(RawInput):
         raise ValueError(
             f"Could not identify participant directories below {path}. Expected participant/YYYY-M.csv files."
         )
+
 
     def _discover(self) -> tuple[ParticipantFiles, ...]:
         result: list[ParticipantFiles] = []
@@ -154,13 +162,16 @@ class DirectoryInput(RawInput):
                 result.append(ParticipantFiles(participant_dir.name, files, marker, tuple(invalid), duplicates))
         return tuple(result)
 
+
     def participants(self) -> tuple[ParticipantFiles, ...]:
         return self._participants
+
 
     @contextmanager
     def open_text(self, file: RawFile) -> Iterator[TextIO]:
         with Path(file.member_path).open("r", encoding="utf-8-sig", newline="") as handle:
             yield handle
+
 
     def descriptor(self) -> dict[str, object]:
         return {
@@ -180,6 +191,7 @@ class ZipInput(RawInput):
         self.path = path.resolve()
         self._zip = zipfile.ZipFile(self.path)
         self._participants = self._discover()
+
 
     def _discover(self) -> tuple[ParticipantFiles, ...]:
         monthly: dict[str, dict[str, list[RawFile]]] = {}
@@ -228,8 +240,10 @@ class ZipInput(RawInput):
             )
         return tuple(result)
 
+
     def participants(self) -> tuple[ParticipantFiles, ...]:
         return self._participants
+
 
     @contextmanager
     def open_text(self, file: RawFile) -> Iterator[TextIO]:
@@ -239,6 +253,7 @@ class ZipInput(RawInput):
             yield text
         finally:
             text.close()
+
 
     def descriptor(self) -> dict[str, object]:
         stat = self.path.stat()
@@ -252,6 +267,7 @@ class ZipInput(RawInput):
             "uncompressed_monthly_bytes": sum(f.size_bytes for p in self._participants for f in p.files),
         }
 
+
     def close(self) -> None:
         self._zip.close()
 
@@ -263,3 +279,54 @@ def open_raw_input(path: Path) -> RawInput:
     if path.is_file() and path.suffix.lower() == ".zip":
         return ZipInput(path)
     raise ValueError(f"Input must be an extracted raw root or ZIP archive: {path}")
+
+
+class WorkerRawInput(RawInput):
+    """
+    Lightweight file reader used inside spawned profiler workers. Participant discovery is performed once in
+    the parent. Each worker receives immutable :class:`ParticipantFiles` descriptors and only needs the ability
+    to open their month files. Avoiding ``DirectoryInput``/``ZipInput`` discovery in every worker is important
+    on the entire cohort.
+    """
+
+    def __init__(self, kind: str, input_path: Path):
+        self.kind = kind
+        self.input_path = input_path.expanduser().resolve()
+        self._zip: zipfile.ZipFile | None = None
+        if kind == "zip":
+            self._zip = zipfile.ZipFile(self.input_path)
+        elif kind != "directory":
+            raise ValueError(f"Unsupported worker input kind: {kind!r}")
+
+
+    def participants(self) -> tuple[ParticipantFiles, ...]:
+        raise RuntimeError("WorkerRawInput does not perform participant discovery")
+
+
+    @contextmanager
+    def open_text(self, file: RawFile) -> Iterator[TextIO]:
+        if self.kind == "directory":
+            with Path(file.member_path).open("r", encoding="utf-8-sig", newline="") as handle:
+                yield handle
+            return
+        assert self._zip is not None
+        binary = self._zip.open(file.member_path, "r")
+        text = io.TextIOWrapper(binary, encoding="utf-8-sig", newline="")
+        try:
+            yield text
+        finally:
+            text.close()
+
+
+    def descriptor(self) -> dict[str, object]:
+        return {"kind": self.kind, "input_path": str(self.input_path)}
+
+
+    def close(self) -> None:
+        if self._zip is not None:
+            self._zip.close()
+            self._zip = None
+
+
+def open_worker_input(kind: str, input_path: Path) -> WorkerRawInput:
+    return WorkerRawInput(kind, input_path)

@@ -16,8 +16,11 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from .executor import iter_participant_results
 from .input_source import open_raw_input, raise_csv_field_limit
-from .profile import MixedSourceProfiler, ProfilerConfig, ProfilerState, TOOL_VERSION, normalize_source
+from .profile import (
+    MixedSourceProfiler, ProfilerConfig, ProfilerState, TOOL_VERSION, merge_profiler_state, normalize_source,
+)
 from .reports import write_reports
 
 
@@ -49,7 +52,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--category-top-k", type=int, default=200)
     parser.add_argument("--max-nested-list-items", type=int, default=128)
     parser.add_argument("--diagnostic-examples", type=int, default=100)
-    parser.add_argument("--checkpoint-every", type=int, default=100, help="Checkpoint after this many participants; 0 disables")
+    parser.add_argument(
+        "--workers", type=int, default=4, help="Participant worker processes (bounded by available CPUs)",
+    )
+    parser.add_argument(
+        "--max-in-flight", type=int, help="Maximum submitted participant tasks; defaults to --workers",
+    )
+    parser.add_argument(
+        "--fail-fast", action="store_true", help="Stop after the first participant worker failure",
+    )
+    parser.add_argument(
+        "--checkpoint-every", type=int, default=500,
+        help="Write a full-state checkpoint after this many participants; 0 disables",
+    )
     parser.add_argument("--progress-every", type=int, default=25, help="Print progress after this many participants; 0 disables")
     parser.add_argument("--resume", action="store_true", help="Resume OUTPUT.partial/checkpoint.pkl.gz")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output/partial directory")
@@ -90,7 +105,9 @@ def _config_from_args(args: argparse.Namespace) -> ProfilerConfig:
     )
 
 
-def _config_signature(config: ProfilerConfig, selected: set[str] | None) -> str:
+def _config_signature(
+    config: ProfilerConfig, selected: set[str] | None, max_participants: int | None = None,
+) -> str:
     payload = {
         "tool_version": TOOL_VERSION,
         "config": {
@@ -104,6 +121,7 @@ def _config_signature(config: ProfilerConfig, selected: set[str] | None) -> str:
             "diagnostic_examples": config.diagnostic_examples,
         },
         "selected_participants": sorted(selected) if selected is not None else None,
+        "max_participants": max_participants,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -128,7 +146,9 @@ def _save_checkpoint(path: Path, state: ProfilerState, signature: str, input_des
         "state": state,
     }
     temporary = path.with_suffix(path.suffix + ".tmp")
-    with gzip.open(temporary, "wb", compresslevel=3) as handle:
+    # Checkpoints contain the complete reduced state. Level 1 materially lowers checkpoint CPU time on the full
+    # cohort while retaining useful compression.
+    with gzip.open(temporary, "wb", compresslevel=1) as handle:
         pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(temporary, path)
 
@@ -157,6 +177,22 @@ def _load_checkpoint(path: Path, signature: str, input_descriptor: dict[str, obj
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
+    if args.max_in_flight is not None and args.max_in_flight < 1:
+        raise ValueError("--max-in-flight must be at least 1")
+    if args.max_participants is not None and args.max_participants < 1:
+        raise ValueError("--max-participants must be at least 1")
+    if args.numeric_sample_size < 0:
+        raise ValueError("--numeric-sample-size must be non-negative")
+    if args.category_top_k < 1:
+        raise ValueError("--category-top-k must be at least 1")
+    if args.max_nested_list_items < 1:
+        raise ValueError("--max-nested-list-items must be at least 1")
+    if args.diagnostic_examples < 0:
+        raise ValueError("--diagnostic-examples must be non-negative")
+    if args.checkpoint_every < 0 or args.progress_every < 0:
+        raise ValueError("--checkpoint-every and --progress-every must be non-negative")
     raise_csv_field_limit()
     _assert_safe_paths(args.input, args.output)
     output = args.output.expanduser().resolve()
@@ -176,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
 
     selected = _selected_participants(args.participants_file)
     config = _config_from_args(args)
-    signature = _config_signature(config, selected)
+    signature = _config_signature(config, selected, args.max_participants)
     started_wall = time.time()
 
     with open_raw_input(args.input) as raw_input:
@@ -192,23 +228,69 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_participants is not None:
             participants = participants[: args.max_participants]
         total = len(participants)
-        newly_completed = 0
-        for index, participant_files in enumerate(participants, start=1):
-            if participant_files.participant_id in state.completed_participants:
-                continue
-            profiler.scan_participant(participant_files)
-            newly_completed += 1
-            if args.progress_every and newly_completed % args.progress_every == 0:
-                elapsed = max(time.time() - started_wall, 1e-9)
-                print(
-                    f"[{index}/{total}] participants={len(state.completed_participants)} "
-                    f"files={state.total_files} outer_rows={state.total_outer_rows} "
-                    f"decoded_items={state.total_payload_items} elapsed={elapsed:.1f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            if args.checkpoint_every and newly_completed % args.checkpoint_every == 0:
-                _save_checkpoint(checkpoint, state, signature, descriptor)
+        remaining = [
+            participant
+            for participant in participants if participant.participant_id not in state.completed_participants
+        ]
+        workers_requested = int(args.workers)
+        workers_effective = max(1, min(workers_requested, os.cpu_count() or 1, max(1, len(remaining)),),)
+        max_in_flight = max(1, int(args.max_in_flight or workers_effective))
+        state.workers_requested = workers_requested
+        state.workers_effective = workers_effective
+        state.max_in_flight = max_in_flight
+        state.execution_mode = "multiprocessing" if workers_effective > 1 else "sequential"
+
+        newly_attempted = 0
+        first_failure: tuple[str, str] | None = None
+        results = iter_participant_results(
+            raw_input=raw_input,
+            participants=remaining,
+            config=config,
+            workers=workers_effective,
+            max_in_flight=max_in_flight,
+        )
+        try:
+            for result in results:
+                newly_attempted += 1
+                participant_id = result.participant_id
+                state.participant_runtime_seconds[participant_id] = result.runtime_seconds
+                if result.peak_rss_bytes is not None:
+                    state.participant_peak_rss_bytes[participant_id] = result.peak_rss_bytes
+                if result.error is not None or result.state is None:
+                    message = result.error or "Worker returned no participant state"
+                    state.participant_failures[participant_id] = {
+                        "participant_id": participant_id,
+                        "error": message,
+                        "traceback": result.traceback_text,
+                        "runtime_seconds": result.runtime_seconds,
+                        "peak_rss_bytes": result.peak_rss_bytes,
+                    }
+                    if first_failure is None:
+                        first_failure = (participant_id, message)
+                else:
+                    merge_profiler_state(state, result.state)
+                    state.participant_failures.pop(participant_id, None)
+
+                if args.progress_every and newly_attempted % args.progress_every == 0:
+                    elapsed = max(time.time() - started_wall, 1e-9)
+                    attempted_total = len(state.completed_participants) + len(state.participant_failures)
+                    print(
+                        f"[{attempted_total}/{total}] completed={len(state.completed_participants)} "
+                        f"failed={len(state.participant_failures)} files={state.total_files} "
+                        f"outer_rows={state.total_outer_rows} decoded_items={state.total_payload_items} "
+                        f"workers={workers_effective} in_flight={max_in_flight} elapsed={elapsed:.1f}s",
+                        file=sys.stderr, flush=True,
+                    )
+                if args.checkpoint_every and newly_attempted % args.checkpoint_every == 0:
+                    _save_checkpoint(checkpoint, state, signature, descriptor)
+                if first_failure is not None and args.fail_fast:
+                    _save_checkpoint(checkpoint, state, signature, descriptor)
+                    break
+        finally:
+            close_results = getattr(results, "close", None)
+            if close_results is not None:
+                close_results()
+
         _save_checkpoint(checkpoint, state, signature, descriptor)
         manifest = {
             "tool_version": TOOL_VERSION,
@@ -224,19 +306,33 @@ def main(argv: list[str] | None = None) -> int:
                 "max_nested_list_items": config.max_nested_list_items,
                 "diagnostic_examples": config.diagnostic_examples,
             },
+            "execution": {
+                "workers_requested": workers_requested,
+                "workers_effective": workers_effective,
+                "max_in_flight": max_in_flight,
+                "start_method": "spawn" if workers_effective > 1 else None,
+                "task_unit": "participant",
+                "task_order": "descending_source_bytes_then_participant_id",
+                "deterministic_parent_reduction": True,
+                "fail_fast": bool(args.fail_fast),
+            },
             "python": sys.version,
             "platform": platform.platform(),
             "started_epoch": state.started_at_epoch,
             "finished_epoch": time.time(),
             "selected_participant_count": total,
             "completed_participant_count": len(state.completed_participants),
+            "failed_participant_count": len(state.participant_failures),
         }
         write_reports(partial, profiler, manifest)
 
     checkpoint.unlink(missing_ok=True)
     marker = partial / ".profile_complete"
-    marker.write_text(TOOL_VERSION + "\n", encoding="utf-8")
+    status = "complete" if not state.participant_failures else "complete_with_errors"
+    marker.write_text(f"{TOOL_VERSION}\n{status}\n", encoding="utf-8")
     os.replace(partial, output)
     print(json.dumps({"output": str(output), **profiler.summary()}, sort_keys=True), flush=True)
-
-    return 0
+    if first_failure is not None and args.fail_fast:
+        participant_id, message = first_failure
+        print(f"ERROR: participant {participant_id}: {message}", file=sys.stderr)
+    return 1 if state.participant_failures else 0

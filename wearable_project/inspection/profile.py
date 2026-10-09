@@ -21,7 +21,7 @@ from .input_source import ParticipantFiles, RawFile, RawInput
 from .sketches import BoundedCounter, NumericSketch
 
 
-TOOL_VERSION = "mixed-source-profiler-1.0.0"
+TOOL_VERSION = "mixed-source-profiler-1.1.0"
 EXPECTED_COLUMNS = (
     "id",
     "participant_id",
@@ -221,10 +221,19 @@ class DiagnosticCollector:
     counts: collections.Counter[str] = field(default_factory=collections.Counter)
     examples: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: collections.defaultdict(list))
 
+
     def add(self, code: str, context: Mapping[str, Any] | None = None, count: int = 1) -> None:
         self.counts[code] += count
         if context is not None and len(self.examples[code]) < self.max_examples_per_code:
             self.examples[code].append(dict(context))
+
+
+    def merge(self, other: "DiagnosticCollector") -> None:
+        self.counts.update(other.counts)
+        for code in sorted(other.examples):
+            remaining = self.max_examples_per_code - len(self.examples[code])
+            if remaining > 0:
+                self.examples[code].extend(other.examples[code][:remaining])
 
 
 @dataclass
@@ -236,11 +245,31 @@ class SourceSlice:
     first_outer_datetime: str | None = None
     last_outer_datetime: str | None = None
 
+
     def observe_datetime(self, value: str) -> None:
         if not value:
             return
         self.first_outer_datetime = value if self.first_outer_datetime is None else min(self.first_outer_datetime, value)
         self.last_outer_datetime = value if self.last_outer_datetime is None else max(self.last_outer_datetime, value)
+
+
+    def merge(self, other: "SourceSlice") -> None:
+        self.rows += other.rows
+        self.months.update(other.months)
+        self.features.update(other.features)
+        self.versions.update(other.versions)
+        if other.first_outer_datetime is not None:
+            self.first_outer_datetime = (
+                other.first_outer_datetime
+                if self.first_outer_datetime is None
+                else min(self.first_outer_datetime, other.first_outer_datetime)
+            )
+        if other.last_outer_datetime is not None:
+            self.last_outer_datetime = (
+                other.last_outer_datetime
+                if self.last_outer_datetime is None
+                else max(self.last_outer_datetime, other.last_outer_datetime)
+            )
 
 
 @dataclass
@@ -284,6 +313,30 @@ class FeatureStats:
         self.last_outer_datetime = value if self.last_outer_datetime is None else max(self.last_outer_datetime, value)
 
 
+    def merge(self, other: "FeatureStats") -> None:
+        self.participants.update(other.participants)
+        self.files.update(other.files)
+        self.months.update(other.months)
+        self.outer_rows += other.outer_rows
+        self.decoded_outer_rows += other.decoded_outer_rows
+        self.decode_failures += other.decode_failures
+        self.payload_items += other.payload_items
+        self.payload_top_types.update(other.payload_top_types)
+        self.list_lengths.merge(other.list_lengths)
+        if other.first_outer_datetime is not None:
+            self.first_outer_datetime = (
+                other.first_outer_datetime
+                if self.first_outer_datetime is None
+                else min(self.first_outer_datetime, other.first_outer_datetime)
+            )
+        if other.last_outer_datetime is not None:
+            self.last_outer_datetime = (
+                other.last_outer_datetime
+                if self.last_outer_datetime is None
+                else max(self.last_outer_datetime, other.last_outer_datetime)
+            )
+
+
 @dataclass
 class FieldStats:
     raw_source_label: str
@@ -299,6 +352,17 @@ class FieldStats:
     string_too_long_count: int = 0
     nested_list_truncated_count: int = 0
     list_lengths: NumericSketch = field(default_factory=lambda: NumericSketch(sample_size=2048))
+
+
+    def merge(self, other: "FieldStats") -> None:
+        self.present_count += other.present_count
+        self.null_count += other.null_count
+        self.types.update(other.types)
+        self.numeric.merge(other.numeric)
+        self.categorical.merge(other.categorical)
+        self.string_too_long_count += other.string_too_long_count
+        self.nested_list_truncated_count += other.nested_list_truncated_count
+        self.list_lengths.merge(other.list_lengths)
 
 
 @dataclass
@@ -317,6 +381,17 @@ class TemporalStats:
     duration: NumericSketch = field(default_factory=NumericSketch)
 
 
+    def merge(self, other: "TemporalStats") -> None:
+        self.item_count += other.item_count
+        self.start_present += other.start_present
+        self.end_present += other.end_present
+        self.invalid_start += other.invalid_start
+        self.invalid_end += other.invalid_end
+        self.negative_duration += other.negative_duration
+        self.zero_duration += other.zero_duration
+        self.duration.merge(other.duration)
+
+
 @dataclass
 class ActivityStats:
     label: str
@@ -326,6 +401,15 @@ class ActivityStats:
     field_presence: collections.Counter[str] = field(default_factory=collections.Counter)
     schemas: collections.Counter[str] = field(default_factory=collections.Counter)
     duration: NumericSketch = field(default_factory=NumericSketch)
+
+
+    def merge(self, other: "ActivityStats") -> None:
+        self.count += other.count
+        self.participants.update(other.participants)
+        self.files.update(other.files)
+        self.field_presence.update(other.field_presence)
+        self.schemas.update(other.schemas)
+        self.duration.merge(other.duration)
 
 
 @dataclass
@@ -341,6 +425,18 @@ class StepAlternativeStats:
     alternative_names: collections.Counter[str] = field(default_factory=collections.Counter)
 
 
+    def merge(self, other: "StepAlternativeStats") -> None:
+        self.outer_rows += other.outer_rows
+        self.rows_with_multiple_alternatives += other.rows_with_multiple_alternatives
+        self.rows_with_estimated += other.rows_with_estimated
+        self.rows_with_merge += other.rows_with_merge
+        self.rows_with_both += other.rows_with_both
+        self.rows_equal += other.rows_equal
+        self.rows_different += other.rows_different
+        self.difference_merge_minus_estimated.merge(other.difference_merge_minus_estimated)
+        self.alternative_names.update(other.alternative_names)
+
+
 @dataclass
 class ProfilerConfig:
     decode_non_apple: bool = True
@@ -351,6 +447,7 @@ class ProfilerConfig:
     max_nested_list_items: int = 128
     max_category_length: int = 256
     diagnostic_examples: int = 100
+
 
     def should_decode(self, source_key: str) -> bool:
         if self.decode_source_keys:
@@ -386,16 +483,99 @@ class ProfilerState:
     total_outer_rows: int = 0
     total_decoded_outer_rows: int = 0
     total_payload_items: int = 0
+    participant_failures: dict[str, dict[str, Any]] = field(default_factory=dict)
+    participant_runtime_seconds: dict[str, float] = field(default_factory=dict)
+    participant_peak_rss_bytes: dict[str, int] = field(default_factory=dict)
+    workers_requested: int = 1
+    workers_effective: int = 1
+    max_in_flight: int = 1
+    execution_mode: str = "sequential"
     started_at_epoch: float = field(default_factory=time.time)
+
 
     def __post_init__(self) -> None:
         self.diagnostics.max_examples_per_code = self.config.diagnostic_examples
+
+
+def merge_profiler_state(target: ProfilerState, source: ProfilerState) -> None:
+    """
+    Merge one fully scanned participant state into the cohort state. The executor calls this in a deterministic
+    task order. Participant-owned dictionaries therefore cannot collide, while cohort aggregates are reduced
+    through explicit merge operations rather than shared mutable state.
+    """
+    duplicate_participants = set(target.participants) & set(source.participants)
+    if duplicate_participants:
+        raise ValueError(
+            "Participant profile merged more than once: "
+            + ", ".join(sorted(duplicate_participants))
+        )
+    target.participants.update(source.participants)
+
+    for key, incoming in source.features.items():
+        existing = target.features.get(key)
+        if existing is None:
+            target.features[key] = incoming
+        else:
+            existing.merge(incoming)
+    for key, incoming in source.fields.items():
+        existing = target.fields.get(key)
+        if existing is None:
+            target.fields[key] = incoming
+        else:
+            existing.merge(incoming)
+    for key, incoming in source.temporal.items():
+        existing = target.temporal.get(key)
+        if existing is None:
+            target.temporal[key] = incoming
+        else:
+            existing.merge(incoming)
+
+    target.schema_counts.update(source.schema_counts)
+    for key, participants in source.schema_participants.items():
+        target.schema_participants[key].update(participants)
+    for key, representative in source.representative_payloads.items():
+        target.representative_payloads.setdefault(key, representative)
+
+    target.source_labels.update(source.source_labels)
+    for key, incoming in source.activity.items():
+        existing = target.activity.get(key)
+        if existing is None:
+            target.activity[key] = incoming
+        else:
+            existing.merge(incoming)
+    target.participant_activity.update(source.participant_activity)
+    target.provenance.update(source.provenance)
+    for key, values in source.participant_devices.items():
+        target.participant_devices[key].update(values)
+    for key, values in source.participant_device_details.items():
+        target.participant_device_details[key].update(values)
+    for key, values in source.participant_apps.items():
+        target.participant_apps[key].update(values)
+    for key, values in source.participant_streams.items():
+        target.participant_streams[key].update(values)
+    for key, incoming in source.step_alternatives.items():
+        existing = target.step_alternatives.get(key)
+        if existing is None:
+            target.step_alternatives[key] = incoming
+        else:
+            existing.merge(incoming)
+
+    target.diagnostics.merge(source.diagnostics)
+    target.outer_schema_issues.extend(source.outer_schema_issues)
+    target.invalid_files.extend(source.invalid_files)
+    target.completed_participants.update(source.completed_participants)
+    target.total_files += source.total_files
+    target.total_source_bytes += source.total_source_bytes
+    target.total_outer_rows += source.total_outer_rows
+    target.total_decoded_outer_rows += source.total_decoded_outer_rows
+    target.total_payload_items += source.total_payload_items
 
 
 class MixedSourceProfiler:
     def __init__(self, raw_input: RawInput, state: ProfilerState):
         self.raw_input = raw_input
         self.state = state
+
 
     def scan_participant(self, participant_files: ParticipantFiles) -> None:
         pid = participant_files.participant_id
@@ -426,6 +606,7 @@ class MixedSourceProfiler:
         if not participant_files.export_ended_present:
             self.state.diagnostics.add("export_ended_missing", {"participant_id": pid})
         self.state.completed_participants.add(pid)
+
 
     def _scan_file(self, file: RawFile, participant: ParticipantStats) -> None:
         try:
@@ -459,6 +640,7 @@ class MixedSourceProfiler:
                 "source_file": file.member_path,
                 "error": f"{type(exc).__name__}: {exc}",
             })
+
 
     def _scan_outer_row(
         self, file: RawFile, row_number: int, row: Mapping[str | None, Any], participant: ParticipantStats,
@@ -553,6 +735,7 @@ class MixedSourceProfiler:
                 item=item,
             )
 
+
     def _profile_item(
         self, *, file: RawFile, row_number: int, payload_index: int, raw_source: str, source_key: str, feature: str,
         version: str, outer_datetime: str, item: dict[str, Any],
@@ -613,6 +796,7 @@ class MixedSourceProfiler:
             return digest_source
         digest = hashlib.sha256(digest_source.encode("utf-8", "surrogatepass")).hexdigest()
         return f"{digest_source[:3000]}…[sha256={digest}]"
+
 
     def _walk_value(
         self, *, value: Any, path: str, depth: int, context_base: str, raw_source: str, source_key: str,
@@ -686,6 +870,7 @@ class MixedSourceProfiler:
                     participant_id=participant_id,
                 )
 
+
     def _capture_provenance(
         self, *, participant_id: str, raw_source: str, source_key: str, feature: str, path: str, value: Any,
     ) -> None:
@@ -709,6 +894,7 @@ class MixedSourceProfiler:
         subset = {key: normalized[key] for key in sorted(set(normalized) & DEVICE_KEYS) if normalized[key] not in (None, "")}
         if subset:
             self.state.participant_device_details[(participant_id, source_key)].add(_safe_text(subset))
+
 
     def _profile_temporal(
         self, raw_source: str, source_key: str, feature: str, version: str, item: Mapping[str, Any],
@@ -754,6 +940,7 @@ class MixedSourceProfiler:
                     "outer_datetime": outer_datetime,
                     "expected_labels": sorted(expected),
                 })
+
 
     def _profile_google_item(
         self, file: RawFile, row_number: int, payload_index: int, feature: str, version: str,
@@ -802,6 +989,7 @@ class MixedSourceProfiler:
                     "duration_seconds": (end - start).total_seconds(),
                 })
 
+
     def _profile_step_alternatives(
         self, *, file: RawFile, row_number: int, raw_source: str, source_key: str, feature: str,
         version: str, items: list[dict[str, Any]],
@@ -848,6 +1036,7 @@ class MixedSourceProfiler:
                 f"{file.participant_id}|{file.member_path}|{row_number}|step_difference|{difference!r}",
             )
 
+
     def source_membership_counts(self) -> collections.Counter[str]:
         counts: collections.Counter[str] = collections.Counter()
         for participant in self.state.participants.values():
@@ -855,13 +1044,20 @@ class MixedSourceProfiler:
             counts[" + ".join(source_set) if source_set else "<no_rows>"] += 1
         return counts
 
+
     def summary(self) -> dict[str, Any]:
         mixed = sum(len(participant.source_slices) > 1 for participant in self.state.participants.values())
         decoded_sources = sorted({key[1] for key, stats in self.state.features.items() if stats.decoded_outer_rows})
+        runtimes = list(self.state.participant_runtime_seconds.values())
+        peak_values = list(self.state.participant_peak_rss_bytes.values())
+        status = "complete" if not self.state.participant_failures else "complete_with_errors"
         return {
             "tool_version": TOOL_VERSION,
+            "status": status,
             "participants": len(self.state.participants),
             "participants_completed": len(self.state.completed_participants),
+            "participants_failed": len(self.state.participant_failures),
+            "participants_attempted": len(self.state.completed_participants) + len(self.state.participant_failures),
             "monthly_files": self.state.total_files,
             "source_bytes": self.state.total_source_bytes,
             "outer_rows": self.state.total_outer_rows,
@@ -878,5 +1074,12 @@ class MixedSourceProfiler:
             "outer_schema_issue_files": len(self.state.outer_schema_issues),
             "invalid_or_duplicate_month_files": len(self.state.invalid_files),
             "export_ended_missing_participants": self.state.diagnostics.counts.get("export_ended_missing", 0),
+            "workers_requested": self.state.workers_requested,
+            "workers_effective": self.state.workers_effective,
+            "max_in_flight": self.state.max_in_flight,
+            "execution_mode": self.state.execution_mode,
+            "participant_runtime_seconds_sum": sum(runtimes),
+            "participant_runtime_seconds_max": max(runtimes) if runtimes else None,
+            "participant_peak_rss_bytes_max": max(peak_values) if peak_values else None,
             "elapsed_seconds": time.time() - self.state.started_at_epoch,
         }

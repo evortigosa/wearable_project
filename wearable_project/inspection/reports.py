@@ -66,6 +66,7 @@ def write_reports(output_dir: Path, profiler: MixedSourceProfiler, manifest: Map
     _write_steps(output_dir, state)
     _write_diagnostics(output_dir, state)
     _write_input_issues(output_dir, state)
+    _write_execution(output_dir, state)
     (output_dir / "REPORT.md").write_text(_markdown_report(summary, state), encoding="utf-8")
 
 
@@ -461,8 +462,68 @@ def _write_diagnostics(output_dir: Path, state: ProfilerState) -> None:
 
 
 def _write_input_issues(output_dir: Path, state: ProfilerState) -> None:
-    write_csv(output_dir / "outer_schema_issues.csv", state.outer_schema_issues, ("participant_id", "canonical_month", "source_file", "missing_columns", "extra_columns"))
-    write_csv(output_dir / "invalid_or_duplicate_month_files.csv", state.invalid_files, ("participant_id", "kind", "path", "details"))
+    write_csv(
+        output_dir / "outer_schema_issues.csv",
+        sorted(
+            state.outer_schema_issues,
+            key=lambda row: (
+                str(row.get("participant_id", "")),
+                str(row.get("canonical_month", "")),
+                str(row.get("source_file", "")),
+            ),
+        ),
+        ("participant_id", "canonical_month", "source_file", "missing_columns", "extra_columns"),
+    )
+    write_csv(
+        output_dir / "invalid_or_duplicate_month_files.csv",
+        sorted(
+            state.invalid_files,
+            key=lambda row: (
+                str(row.get("participant_id", "")),
+                str(row.get("kind", "")),
+                str(row.get("path", "")),
+            ),
+        ),
+        ("participant_id", "kind", "path", "details"),
+    )
+
+
+def _write_execution(output_dir: Path, state: ProfilerState) -> None:
+    participant_ids = sorted(
+        set(state.participant_runtime_seconds)
+        | set(state.participant_peak_rss_bytes)
+        | set(state.completed_participants)
+        | set(state.participant_failures)
+    )
+    telemetry = []
+    for participant_id in participant_ids:
+        failure = state.participant_failures.get(participant_id)
+        telemetry.append({
+            "participant_id": participant_id,
+            "status": "failed" if failure else "complete",
+            "runtime_seconds": state.participant_runtime_seconds.get(participant_id),
+            "peak_rss_bytes": state.participant_peak_rss_bytes.get(participant_id),
+            "error": failure.get("error") if failure else None,
+        })
+    write_csv(
+        output_dir / "participant_execution.csv",
+        telemetry, ("participant_id", "status", "runtime_seconds", "peak_rss_bytes", "error"),
+    )
+
+    failures = [
+        {
+            "participant_id": participant_id,
+            "error": value.get("error"),
+            "runtime_seconds": value.get("runtime_seconds"),
+            "peak_rss_bytes": value.get("peak_rss_bytes"),
+            "traceback": value.get("traceback"),
+        }
+        for participant_id, value in sorted(state.participant_failures.items())
+    ]
+    write_csv(
+        output_dir / "participant_failures.csv",
+        failures, ("participant_id", "error", "runtime_seconds", "peak_rss_bytes", "traceback"),
+    )
 
 
 def _markdown_report(summary: Mapping[str, Any], state: ProfilerState) -> str:
@@ -487,6 +548,16 @@ def _markdown_report(summary: Mapping[str, Any], state: ProfilerState) -> str:
 - Deep-decoded outer rows: **{summary['decoded_outer_rows']:,}**
 - Deep-decoded payload items: **{summary['payload_items']:,}**
 - Payload decode failures: **{summary['payload_decode_failures']:,}**
+- Participant worker failures: **{summary['participants_failed']:,}**
+
+## Execution
+
+- Mode: **{summary['execution_mode']}**
+- Workers requested/effective: **{summary['workers_requested']:,} / {summary['workers_effective']:,}**
+- Maximum in flight: **{summary['max_in_flight']:,}**
+- Wall-clock elapsed: **{summary['elapsed_seconds']:.1f} seconds**
+- Sum of participant worker runtimes: **{summary['participant_runtime_seconds_sum']:.1f} seconds**
+- Maximum observed worker high-water RSS: **{summary['participant_peak_rss_bytes_max'] or 0:,} bytes**
 
 ## Raw source labels
 

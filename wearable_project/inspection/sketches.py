@@ -118,9 +118,9 @@ class NumericSketch:
 
 @dataclass
 class BoundedCounter:
-    """A bounded heavy-hitter counter.
-    Counts are exact until pruning occurs. After pruning, emitted counts are lower bounds;
-    this is explicitly reported. Low-cardinality fields remain exact.
+    """
+    A bounded heavy-hitter counter. Counts are exact until pruning occurs. After pruning, emitted counts are
+    lower bounds; this is explicitly reported. Low-cardinality fields remain exact.
     """
 
     capacity: int = 200
@@ -135,16 +135,35 @@ class BoundedCounter:
             self._prune()
 
     def _prune(self) -> None:
-        retained = self.counts.most_common(self.capacity)
+        # Resolve equal-count ties lexicographically so pruning does not depend on process completion order or
+        # Counter insertion order.
+        retained = sorted(
+            self.counts.items(), key=lambda item: (-item[1], item[0])
+        )[: self.capacity]
         retained_keys = {key for key, _ in retained}
         self.pruned_mass += sum(count for key, count in self.counts.items() if key not in retained_keys)
         self.counts = Counter(dict(retained))
         self.prune_operations += 1
 
+    def merge(self, other: "BoundedCounter") -> None:
+        """
+        Merge another bounded counter. Counts retained by either input remain lower bounds after a prior prune.
+        ``pruned_mass`` therefore accumulates both already-discarded mass and any additional mass discarded
+        while combining the retained candidates.
+        """
+        self.pruned_mass += other.pruned_mass
+        self.prune_operations += other.prune_operations
+        for key, count in sorted(other.counts.items()):
+            self.counts[key] += count
+        if len(self.counts) > max(2 * self.capacity, self.capacity + 32):
+            self._prune()
+
     def items(self) -> Iterable[tuple[str, int]]:
         if len(self.counts) > self.capacity:
             self._prune()
-        return self.counts.most_common(self.capacity)
+        return sorted(
+            self.counts.items(), key=lambda item: (-item[1], item[0])
+        )[: self.capacity]
 
     @property
     def approximate(self) -> bool:
