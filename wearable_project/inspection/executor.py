@@ -14,7 +14,7 @@ import traceback
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 import multiprocessing as mp
 from .input_source import ParticipantFiles, RawInput, WorkerRawInput, open_worker_input, raise_csv_field_limit
 from .profile import MixedSourceProfiler, ProfilerConfig, ProfilerState
@@ -140,15 +140,15 @@ def ordered_participants(participants: Sequence[ParticipantFiles]) -> list[Parti
 
 
 def iter_participant_results(
-    *, raw_input: RawInput, participants: Sequence[ParticipantFiles], config: ProfilerConfig,
-    workers: int, max_in_flight: int,
+    *, raw_input: RawInput, participants: Sequence[ParticipantFiles], config: ProfilerConfig, workers: int,
+    max_in_flight: int, on_complete: Callable[[ParticipantProfileResult], None] | None = None,
 ) -> Iterator[ParticipantProfileResult]:
     """
-    Yield participant results in deterministic task order.
-    Workers scan participants independently. Results may finish out of order, but
-    the parent buffers at most ``max_in_flight`` results and yields them in the
-    deterministic largest-first order. This keeps representative examples,
-    bounded sketches, checkpoints, and resumed runs reproducible.
+    Yield participant results in deterministic task order. Workers scan participants independently. Results may
+    finish out of order, but the parent buffers at most ``max_in_flight`` results and yields them in the
+    deterministic largest-first order. This keeps representative examples, bounded sketches, checkpoints, and
+    resumed runs reproducible. ``on_complete`` is invoked in the parent as each worker result actually finishes,
+    so operator progress can remain responsive without affecting deterministic reduction.
     """
     tasks = [
         ParticipantProfileTask(sequence=index, participant=participant)
@@ -161,7 +161,10 @@ def iter_participant_results(
     inflight_limit = max(1, int(max_in_flight))
     if worker_count == 1 or len(tasks) == 1:
         for task in tasks:
-            yield _scan_local(raw_input, config, task)
+            result = _scan_local(raw_input, config, task)
+            if on_complete is not None:
+                on_complete(result)
+            yield result
         return
 
     descriptor = raw_input.descriptor()
@@ -211,6 +214,8 @@ def iter_participant_results(
                             error=f"{type(exc).__name__}: {exc}",
                             traceback_text=traceback.format_exc(),
                         )
+                    if on_complete is not None:
+                        on_complete(result)
                     buffered[sequence] = result
             while next_yield in buffered:
                 yield buffered.pop(next_yield)

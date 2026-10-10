@@ -21,7 +21,8 @@ from .input_source import ParticipantFiles, RawFile, RawInput
 from .sketches import BoundedCounter, NumericSketch
 
 
-TOOL_VERSION = "mixed-source-profiler-1.1.0"
+TOOL_VERSION = "mixed-source-profiler-1.1.1"
+CHECKPOINT_COMPATIBLE_TOOL_VERSIONS = frozenset({"mixed-source-profiler-1.1.0", TOOL_VERSION,})
 EXPECTED_COLUMNS = (
     "id",
     "participant_id",

@@ -16,10 +16,12 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from tqdm import tqdm
 from .executor import iter_participant_results
 from .input_source import open_raw_input, raise_csv_field_limit
 from .profile import (
-    MixedSourceProfiler, ProfilerConfig, ProfilerState, TOOL_VERSION, merge_profiler_state, normalize_source,
+    CHECKPOINT_COMPATIBLE_TOOL_VERSIONS, MixedSourceProfiler, ProfilerConfig, ProfilerState, TOOL_VERSION,
+    merge_profiler_state, normalize_source,
 )
 from .reports import write_reports
 
@@ -62,10 +64,19 @@ def _parser() -> argparse.ArgumentParser:
         "--fail-fast", action="store_true", help="Stop after the first participant worker failure",
     )
     parser.add_argument(
-        "--checkpoint-every", type=int, default=500,
+        "--checkpoint-every", type=int, default=1000,
         help="Write a full-state checkpoint after this many participants; 0 disables",
     )
-    parser.add_argument("--progress-every", type=int, default=25, help="Print progress after this many participants; 0 disables")
+    parser.add_argument(
+        "--progress-every", type=int, default=0,
+        help=(
+            "Write a detailed progress snapshot after this many reduced participants; "
+            "0 disables snapshots (the tqdm bar remains enabled)"
+        ),
+    )
+    parser.add_argument(
+        "--no-progress", action="store_true", help="Disable the tqdm participant progress bar",
+    )
     parser.add_argument("--resume", action="store_true", help="Resume OUTPUT.partial/checkpoint.pkl.gz")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output/partial directory")
     parser.add_argument("--version", action="version", version=TOOL_VERSION)
@@ -107,9 +118,10 @@ def _config_from_args(args: argparse.Namespace) -> ProfilerConfig:
 
 def _config_signature(
     config: ProfilerConfig, selected: set[str] | None, max_participants: int | None = None,
+    *, tool_version: str = TOOL_VERSION,
 ) -> str:
     payload = {
-        "tool_version": TOOL_VERSION,
+        "tool_version": tool_version,
         "config": {
             "decode_non_apple": config.decode_non_apple,
             "decode_source_keys": sorted(config.decode_source_keys),
@@ -153,12 +165,15 @@ def _save_checkpoint(path: Path, state: ProfilerState, signature: str, input_des
     os.replace(temporary, path)
 
 
-def _load_checkpoint(path: Path, signature: str, input_descriptor: dict[str, object]) -> ProfilerState:
+def _load_checkpoint(
+    path: Path, compatible_signatures: set[str], input_descriptor: dict[str, object],
+) -> ProfilerState:
     with gzip.open(path, "rb") as handle:
         payload = pickle.load(handle)
-    if payload.get("tool_version") != TOOL_VERSION:
+    checkpoint_version = payload.get("tool_version")
+    if checkpoint_version not in CHECKPOINT_COMPATIBLE_TOOL_VERSIONS:
         raise ValueError("Checkpoint tool version differs from the current profiler")
-    if payload.get("config_signature") != signature:
+    if payload.get("config_signature") not in compatible_signatures:
         raise ValueError("Checkpoint configuration differs from this command")
     old_descriptor = payload.get("input_descriptor", {})
     keys = {"kind", "input_path", "participant_count", "monthly_file_count"}
@@ -213,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     selected = _selected_participants(args.participants_file)
     config = _config_from_args(args)
     signature = _config_signature(config, selected, args.max_participants)
+    compatible_signatures = {
+        _config_signature(config, selected, args.max_participants, tool_version=version,)
+        for version in CHECKPOINT_COMPATIBLE_TOOL_VERSIONS
+    }
     started_wall = time.time()
 
     with open_raw_input(args.input) as raw_input:
@@ -220,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.resume:
             if not checkpoint.exists():
                 raise FileNotFoundError(f"No checkpoint found: {checkpoint}")
-            state = _load_checkpoint(checkpoint, signature, descriptor)
+            state = _load_checkpoint(checkpoint, compatible_signatures, descriptor)
         else:
             state = ProfilerState(config=config)
         profiler = MixedSourceProfiler(raw_input, state)
@@ -242,12 +261,36 @@ def main(argv: list[str] | None = None) -> int:
 
         newly_attempted = 0
         first_failure: tuple[str, str] | None = None
+        progress_failures = 0
+        initial_completed = len(state.completed_participants)
+        progress = tqdm(
+            total=total,
+            initial=initial_completed,
+            desc="Inspecting participants",
+            unit="participant",
+            file=sys.stderr,
+            disable=args.no_progress,
+            dynamic_ncols=True,
+        )
+
+        def participant_finished(result) -> None:
+            nonlocal progress_failures
+            if result.error is not None or result.state is None:
+                progress_failures += 1
+            progress.update(1)
+            progress.set_postfix(
+                workers=workers_effective,
+                failed=progress_failures,
+                refresh=False,
+            )
+
         results = iter_participant_results(
             raw_input=raw_input,
             participants=remaining,
             config=config,
             workers=workers_effective,
             max_in_flight=max_in_flight,
+            on_complete=participant_finished,
         )
         try:
             for result in results:
@@ -274,12 +317,12 @@ def main(argv: list[str] | None = None) -> int:
                 if args.progress_every and newly_attempted % args.progress_every == 0:
                     elapsed = max(time.time() - started_wall, 1e-9)
                     attempted_total = len(state.completed_participants) + len(state.participant_failures)
-                    print(
+                    tqdm.write(
                         f"[{attempted_total}/{total}] completed={len(state.completed_participants)} "
                         f"failed={len(state.participant_failures)} files={state.total_files} "
                         f"outer_rows={state.total_outer_rows} decoded_items={state.total_payload_items} "
                         f"workers={workers_effective} in_flight={max_in_flight} elapsed={elapsed:.1f}s",
-                        file=sys.stderr, flush=True,
+                        file=sys.stderr,
                     )
                 if args.checkpoint_every and newly_attempted % args.checkpoint_every == 0:
                     _save_checkpoint(checkpoint, state, signature, descriptor)
@@ -290,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             close_results = getattr(results, "close", None)
             if close_results is not None:
                 close_results()
+            progress.close()
 
         _save_checkpoint(checkpoint, state, signature, descriptor)
         manifest = {
@@ -315,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
                 "task_order": "descending_source_bytes_then_participant_id",
                 "deterministic_parent_reduction": True,
                 "fail_fast": bool(args.fail_fast),
+                "progress_bar_enabled": not args.no_progress,
+                "progress_every": args.progress_every,
             },
             "python": sys.version,
             "platform": platform.platform(),
