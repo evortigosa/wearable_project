@@ -7,6 +7,7 @@ Bounded deterministic sketches used by the raw-export profiler.
 from __future__ import annotations
 import hashlib
 import heapq
+import json
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -15,6 +16,56 @@ from typing import Any, Iterable
 
 def _hash64(text: str) -> int:
     return int.from_bytes(hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=8).digest(), "big")
+
+
+def stable_rank(value: Any) -> str:
+    """
+    Return a process-order-independent rank for JSON-like evidence. ``default=str`` mirrors the profiler's
+    report serialization. SHA-256 is intentionally used here rather than Python's randomized ``hash`` so the
+    selected examples are stable across workers, processes, checkpoints, and interpreter invocations.
+    """
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+@dataclass
+class RankedExamples:
+    """Bounded deterministic examples selected by the smallest stable ranks."""
+
+    capacity: int = 100
+    entries: dict[str, Any] = field(default_factory=dict)
+
+    def add(self, value: Any) -> str:
+        rank = stable_rank(value)
+        if self.capacity <= 0:
+            return rank
+        self.entries.setdefault(rank, value)
+        if len(self.entries) > self.capacity:
+            for discarded in sorted(self.entries, reverse=True)[: len(self.entries) - self.capacity]:
+                del self.entries[discarded]
+        return rank
+
+    def merge(self, other: "RankedExamples") -> None:
+        for rank, value in other.entries.items():
+            self.entries.setdefault(rank, value)
+        if len(self.entries) > self.capacity:
+            for discarded in sorted(self.entries, reverse=True)[: len(self.entries) - self.capacity]:
+                del self.entries[discarded]
+
+    def items(self) -> list[tuple[str, Any]]:
+        return [(rank, self.entries[rank]) for rank in sorted(self.entries)]
+
+    def values(self) -> list[Any]:
+        return [value for _, value in self.items()]
+
+    def __len__(self) -> int:
+        return len(self.entries)
 
 
 def _quantile(values: list[float], probability: float) -> float | None:
