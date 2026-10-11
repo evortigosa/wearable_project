@@ -5,11 +5,15 @@ Deterministic report writers for the mixed-source raw-export profiler.
 
 
 from __future__ import annotations
+import collections
 import csv
 import json
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
-from .profile import MixedSourceProfiler, ProfilerState, canonical_json
+from .profile import (
+    CrossVersionCalibrationStats, MixedSourceProfiler, ProfilerState, canonical_json, normalize_source,
+)
 
 
 def write_csv(path: Path, rows: Iterable[Mapping[str, Any]], fieldnames: Sequence[str]) -> None:
@@ -70,7 +74,10 @@ def _source_set_change_count(sequence: list[dict[str, Any]]) -> int:
 def write_reports(output_dir: Path, profiler: MixedSourceProfiler, manifest: Mapping[str, Any]) -> None:
     state = profiler.state
     summary = profiler.summary()
+    acceptance = _phase0_acceptance(state, summary)
+    summary["phase0_acceptance_status"] = acceptance["status"]
     write_json(output_dir / "summary.json", summary)
+    write_json(output_dir / "phase0_acceptance.json", acceptance)
     write_json(output_dir / "run_manifest.json", dict(manifest))
     _write_participants(output_dir, state)
     _write_participant_sources(output_dir, state)
@@ -84,14 +91,341 @@ def write_reports(output_dir: Path, profiler: MixedSourceProfiler, manifest: Map
     _write_temporal(output_dir, state)
     _write_temporal_alignment(output_dir, state)
     _write_duplicate_calibration(output_dir, state)
+    _write_cross_version_calibration(output_dir, state)
     _write_activity(output_dir, state)
     _write_provenance(output_dir, state)
     _write_steps(output_dir, state)
+    _write_step_temporal(output_dir, state)
     _write_focused_anomalies(output_dir, state)
     _write_diagnostics(output_dir, state)
     _write_input_issues(output_dir, state)
     _write_execution(output_dir, state)
     (output_dir / "REPORT.md").write_text(_markdown_report(summary, state), encoding="utf-8")
+
+
+def _phase0_acceptance(state: ProfilerState, summary: Mapping[str, Any],) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, passed: bool, observed: Any, expected: Any) -> None:
+        checks.append({
+            "name": name,
+            "passed": bool(passed),
+            "observed": observed,
+            "expected": expected,
+        })
+
+    add(
+        "participant_workers_complete",
+        summary["participants_failed"] == 0,
+        summary["participants_failed"],
+        0,
+    )
+    add(
+        "payload_decode_failures_zero",
+        summary["payload_decode_failures"] == 0,
+        summary["payload_decode_failures"],
+        0,
+    )
+    add(
+        "outer_schema_issues_zero",
+        summary["outer_schema_issue_files"] == 0,
+        summary["outer_schema_issue_files"],
+        0,
+    )
+    add(
+        "invalid_or_duplicate_month_files_zero",
+        summary["invalid_or_duplicate_month_files"] == 0,
+        summary["invalid_or_duplicate_month_files"],
+        0,
+    )
+    add(
+        "export_ended_missing_participants_zero",
+        summary["export_ended_missing_participants"] == 0,
+        summary["export_ended_missing_participants"],
+        0,
+    )
+    source_total = sum(state.source_labels.values())
+    add(
+        "outer_source_accounting_closes",
+        source_total == state.total_outer_rows,
+        source_total,
+        state.total_outer_rows,
+    )
+    directory_total = (
+        summary["data_bearing_participants"]
+        + summary["empty_export_directories"]
+        + summary["participant_directories_with_month_files_but_no_rows"]
+    )
+    add(
+        "participant_directory_accounting_closes",
+        directory_total == summary["participant_directories"],
+        directory_total,
+        summary["participant_directories"],
+    )
+    decoded_item_total = sum(stats.payload_items for stats in state.features.values())
+    add(
+        "decoded_payload_item_accounting_closes",
+        decoded_item_total == state.total_payload_items,
+        decoded_item_total,
+        state.total_payload_items,
+    )
+
+    coverage_groups: dict[tuple[str, str, str, str, str], collections.Counter[str]] = {}
+    for key, count in state.cross_version_coverage.items():
+        raw_source, source_key, feature, version, candidate, status = key
+        coverage_groups.setdefault(
+            (raw_source, source_key, feature, version, candidate),
+            collections.Counter(),
+        )[status] += count
+    coverage_failures = []
+    for key, counts in coverage_groups.items():
+        observations = counts.get("observations", 0)
+        classified = (
+            counts.get("normalized", 0)
+            + counts.get("missing_identity", 0)
+            + counts.get("missing_content", 0)
+        )
+        if observations != classified:
+            coverage_failures.append({"key": key, "observations": observations, "classified": classified})
+    add(
+        "cross_version_normalization_accounting_closes",
+        not coverage_failures,
+        coverage_failures,
+        [],
+    )
+    cross_version_failures = []
+    for key, stats in state.cross_version_calibration.items():
+        classified = (
+            stats.exact_only_groups
+            + stats.shared_and_divergent_groups
+            + stats.divergent_only_groups
+        )
+        location_classified = (
+            stats.same_month_overlap_groups + stats.cross_month_only_groups
+        )
+        if stats.identity_groups != classified or stats.identity_groups != location_classified:
+            cross_version_failures.append({
+                "key": key,
+                "identity_groups": stats.identity_groups,
+                "classification_total": classified,
+                "location_total": location_classified,
+            })
+    add(
+        "cross_version_group_accounting_closes",
+        not cross_version_failures,
+        cross_version_failures,
+        [],
+    )
+    nearest_numeric_counts = {
+        key[:-1]: stats.count
+        for key, stats in state.cross_version_numeric.items()
+        if key[-1] == "nearest_absolute_value_difference"
+    }
+    cross_version_numeric_failures = []
+    for key, stats in state.cross_version_calibration.items():
+        observed = nearest_numeric_counts.get(key, 0)
+        if observed != stats.identity_groups:
+            cross_version_numeric_failures.append({
+                "key": key,
+                "identity_groups": stats.identity_groups,
+                "nearest_numeric_comparisons": observed,
+            })
+    add(
+        "cross_version_numeric_difference_accounting_closes",
+        not cross_version_numeric_failures,
+        cross_version_numeric_failures,
+        [],
+    )
+
+    google_versions: dict[str, set[str]] = collections.defaultdict(set)
+    for (_, source_key, feature, version), stats in state.features.items():
+        if source_key == "googlefitness" and stats.decoded_outer_rows:
+            google_versions[feature].add(version)
+    multi_version_features = sorted(
+        feature for feature, versions in google_versions.items() if len(versions) > 1
+    )
+    candidate_versions = {
+        (feature, version)
+        for (_, source_key, feature, version, _, status), count
+        in state.cross_version_coverage.items()
+        if source_key == "googlefitness" and status == "observations" and count > 0
+    }
+    missing_candidate_versions = sorted(
+        (feature, version)
+        for feature in multi_version_features
+        for version in google_versions[feature]
+        if (feature, version) not in candidate_versions
+    )
+    add(
+        "multi_version_feature_versions_have_normalized_candidates",
+        not missing_candidate_versions,
+        missing_candidate_versions,
+        [],
+    )
+
+    candidate_versions_by_feature: dict[tuple[str, str], set[str]] = (
+        collections.defaultdict(set)
+    )
+    for (_, source_key, feature, version, candidate, status), count in (
+        state.cross_version_coverage.items()
+    ):
+        if (
+            source_key == "googlefitness"
+            and status == "observations"
+            and count > 0
+        ):
+            candidate_versions_by_feature[(feature, candidate)].add(version)
+    features_without_shared_candidate = []
+    for feature in multi_version_features:
+        required_versions = google_versions[feature]
+        shared_candidates = sorted(
+            candidate
+            for (candidate_feature, candidate), versions
+            in candidate_versions_by_feature.items()
+            if candidate_feature == feature and required_versions.issubset(versions)
+        )
+        if not shared_candidates:
+            features_without_shared_candidate.append(feature)
+    add(
+        "multi_version_features_have_shared_candidate_definitions",
+        not features_without_shared_candidate,
+        features_without_shared_candidate,
+        [],
+    )
+
+    step_accounting: dict[tuple[str, str, str], collections.Counter[str]] = {}
+    for key, count in state.step_temporal_accounting.items():
+        raw_source, source_key, version, metric = key
+        step_accounting.setdefault(
+            (raw_source, source_key, version), collections.Counter()
+        )[metric] += count
+    step_failures = []
+    for key, counts in step_accounting.items():
+        if counts.get("raw_interval_entries", 0) != (
+            counts.get("valid_raw_intervals", 0)
+            + counts.get("invalid_raw_intervals", 0)
+        ):
+            step_failures.append({"key": key, "counts": dict(counts)})
+    add(
+        "stepcount_raw_interval_accounting_closes",
+        not step_failures,
+        step_failures,
+        [],
+    )
+    step_pair_failures = []
+    for key, counts in step_accounting.items():
+        paired = counts.get("paired_summary_raw_comparisons", 0)
+        if counts.get("summary_entries", 0) != (
+            paired + counts.get("unpaired_summary_entries", 0)
+        ):
+            step_pair_failures.append({
+                "key": key,
+                "side": "summary",
+                "counts": dict(counts),
+            })
+        if counts.get("valid_raw_intervals", 0) != (
+            paired + counts.get("unpaired_raw_intervals", 0)
+        ):
+            step_pair_failures.append({
+                "key": key,
+                "side": "raw_interval",
+                "counts": dict(counts),
+            })
+    add(
+        "stepcount_summary_raw_pair_accounting_closes",
+        not step_pair_failures,
+        step_pair_failures,
+        [],
+    )
+    profiled_step_outer_rows = sum(
+        counts.get("outer_rows", 0) for counts in step_accounting.values()
+    )
+    expected_step_outer_rows = sum(
+        stats.outer_rows for stats in state.step_alternatives.values()
+    )
+    add(
+        "stepcount_temporal_outer_row_accounting_closes",
+        profiled_step_outer_rows == expected_step_outer_rows,
+        profiled_step_outer_rows,
+        expected_step_outer_rows,
+    )
+    profiled_alternatives = sum(
+        counts.get("aggregation_alternatives", 0)
+        for counts in step_accounting.values()
+    )
+    expected_alternatives = sum(
+        sum(stats.alternative_names.values())
+        for stats in state.step_alternatives.values()
+    )
+    add(
+        "stepcount_temporal_alternative_accounting_closes",
+        profiled_alternatives == expected_alternatives,
+        profiled_alternatives,
+        expected_alternatives,
+    )
+
+    malformed_unique_total = sum(
+        len(values) for values in state.malformed_unique_items.values()
+    )
+    malformed_reason_total = sum(state.malformed_item_counts.values())
+    malformed_reason_set_total = sum(
+        count * len([reason for reason in reason_set.split(";") if reason])
+        for (*_, reason_set), count in state.malformed_reason_sets.items()
+    )
+    add(
+        "malformed_reason_accounting_closes",
+        malformed_reason_total == malformed_reason_set_total,
+        malformed_reason_total,
+        malformed_reason_set_total,
+    )
+    malformed_unique_from_reason_sets = sum(state.malformed_reason_sets.values())
+    add(
+        "malformed_unique_item_accounting_closes",
+        malformed_unique_total == malformed_unique_from_reason_sets,
+        malformed_unique_total,
+        malformed_unique_from_reason_sets,
+    )
+    add(
+        "malformed_diagnostic_counts_unique_items",
+        state.diagnostics.counts.get("malformed_payload_item", 0)
+        == malformed_unique_total,
+        state.diagnostics.counts.get("malformed_payload_item", 0),
+        malformed_unique_total,
+    )
+    scalar_malformed = sum(
+        count
+        for (raw_source, feature, version, reason), count in state.malformed_item_counts.items()
+        if normalize_source(raw_source) == "googlefitness"
+        and feature == "StepCount"
+        and version == "1.0"
+        and reason == "scalar_payload"
+    )
+    add(
+        "expected_stepcount_v1_scalar_not_malformed",
+        scalar_malformed == 0,
+        scalar_malformed,
+        0,
+    )
+
+    google_decoded = any(
+        source_key == "googlefitness" and stats.decoded_outer_rows > 0
+        for (_, source_key, _, _), stats in state.features.items()
+    )
+    status = "not_applicable" if not google_decoded else (
+        "pass" if all(check["passed"] for check in checks) else "fail"
+    )
+    return {
+        "tool_version": summary["tool_version"],
+        "status": status,
+        "scope": (
+            "Structural acceptance of the mixed-source census and Google Fitness "
+            "Phase 0 calibration evidence; it does not choose Phase 1 processing policy."
+        ),
+        "check_count": len(checks),
+        "passed_check_count": sum(check["passed"] for check in checks),
+        "failed_check_count": sum(not check["passed"] for check in checks),
+        "checks": checks,
+    }
 
 
 def _write_participants(output_dir: Path, state: ProfilerState) -> None:
@@ -625,6 +959,216 @@ def _write_duplicate_calibration(output_dir: Path, state: ProfilerState) -> None
     )
 
 
+def _write_cross_version_calibration(output_dir: Path, state: ProfilerState) -> None:
+    coverage: dict[tuple[str, str, str, str, str], collections.Counter[str]] = {}
+    for key, count in state.cross_version_coverage.items():
+        raw_source, source_key, feature, version, candidate, status = key
+        bucket = coverage.setdefault(
+            (raw_source, source_key, feature, version, candidate),
+            collections.Counter(),
+        )
+        bucket[status] += count
+    coverage_rows = []
+    for key, counts in coverage.items():
+        raw_source, source_key, feature, version, candidate = key
+        observations = counts.get("observations", 0)
+        normalized = counts.get("normalized", 0)
+        missing_identity = counts.get("missing_identity", 0)
+        missing_content = counts.get("missing_content", 0)
+        coverage_rows.append({
+            "raw_source_label": raw_source,
+            "source_key": source_key,
+            "feature": feature,
+            "collecting_method_version": version,
+            "candidate_definition": candidate,
+            "observations": observations,
+            "normalized_observations": normalized,
+            "missing_identity_observations": missing_identity,
+            "missing_content_observations": missing_content,
+            "accounting_closes": int(
+                observations == normalized + missing_identity + missing_content
+            ),
+        })
+    write_csv(
+        output_dir / "cross_version_normalization_coverage.csv",
+        sorted(
+            coverage_rows,
+            key=lambda row: (
+                row["source_key"], row["feature"], row["candidate_definition"],
+                row["collecting_method_version"],
+            ),
+        ),
+        (
+            "raw_source_label", "source_key", "feature",
+            "collecting_method_version", "candidate_definition", "observations",
+            "normalized_observations", "missing_identity_observations",
+            "missing_content_observations", "accounting_closes",
+        ),
+    )
+
+    # Emit one explicit row for every candidate/version pair, including zero shared-identity groups. Absence of a
+    # row must never be ambiguous between "not evaluated" and "evaluated with no overlap".
+    versions_by_candidate: dict[tuple[str, str, str, str], set[str]] = (
+        collections.defaultdict(set)
+    )
+    for raw_source, source_key, feature, version, candidate in coverage:
+        versions_by_candidate[(raw_source, source_key, feature, candidate)].add(version)
+
+    rows = []
+    for candidate_key, versions in versions_by_candidate.items():
+        raw_source, source_key, feature, candidate = candidate_key
+        for version_a, version_b in combinations(sorted(versions), 2):
+            stats_key = (
+                raw_source, source_key, feature, candidate, version_a, version_b
+            )
+            stats = state.cross_version_calibration.get(
+                stats_key, CrossVersionCalibrationStats()
+            )
+            coverage_a = coverage[(
+                raw_source, source_key, feature, version_a, candidate
+            )]
+            coverage_b = coverage[(
+                raw_source, source_key, feature, version_b, candidate
+            )]
+            rows.append({
+                "raw_source_label": raw_source,
+                "source_key": source_key,
+                "feature": feature,
+                "candidate_definition": candidate,
+                "version_a": version_a,
+                "version_b": version_b,
+                "candidate_observations_version_a": coverage_a.get("observations", 0),
+                "candidate_observations_version_b": coverage_b.get("observations", 0),
+                "normalized_observations_version_a": coverage_a.get("normalized", 0),
+                "normalized_observations_version_b": coverage_b.get("normalized", 0),
+                "identity_groups": stats.identity_groups,
+                "identity_group_observations_version_a": stats.observations_version_a,
+                "identity_group_observations_version_b": stats.observations_version_b,
+                "within_group_distinct_content_fingerprint_total_version_a": (
+                    stats.distinct_content_version_a
+                ),
+                "within_group_distinct_content_fingerprint_total_version_b": (
+                    stats.distinct_content_version_b
+                ),
+                "shared_content_fingerprints": stats.shared_content_fingerprints,
+                "exact_content_overlap_groups": stats.exact_content_overlap_groups,
+                "divergent_content_groups": stats.divergent_content_groups,
+                "exact_only_groups": stats.exact_only_groups,
+                "shared_and_divergent_groups": stats.shared_and_divergent_groups,
+                "divergent_only_groups": stats.divergent_only_groups,
+                "same_month_overlap_groups": stats.same_month_overlap_groups,
+                "cross_month_only_groups": stats.cross_month_only_groups,
+                "classification_accounting_closes": int(
+                    stats.identity_groups
+                    == stats.exact_only_groups
+                    + stats.shared_and_divergent_groups
+                    + stats.divergent_only_groups
+                ),
+                "location_accounting_closes": int(
+                    stats.identity_groups
+                    == stats.same_month_overlap_groups
+                    + stats.cross_month_only_groups
+                ),
+            })
+    write_csv(
+        output_dir / "cross_version_duplicate_revision_calibration.csv",
+        sorted(
+            rows,
+            key=lambda row: (
+                row["source_key"], row["feature"], row["candidate_definition"],
+                row["version_a"], row["version_b"],
+            ),
+        ),
+        (
+            "raw_source_label", "source_key", "feature", "candidate_definition",
+            "version_a", "version_b", "candidate_observations_version_a",
+            "candidate_observations_version_b", "normalized_observations_version_a",
+            "normalized_observations_version_b", "identity_groups",
+            "identity_group_observations_version_a",
+            "identity_group_observations_version_b",
+            "within_group_distinct_content_fingerprint_total_version_a",
+            "within_group_distinct_content_fingerprint_total_version_b",
+            "shared_content_fingerprints",
+            "exact_content_overlap_groups", "divergent_content_groups",
+            "exact_only_groups", "shared_and_divergent_groups",
+            "divergent_only_groups", "same_month_overlap_groups",
+            "cross_month_only_groups", "classification_accounting_closes",
+            "location_accounting_closes",
+        ),
+    )
+
+    example_rows = []
+    for key, bucket in state.cross_version_examples.items():
+        raw_source, source_key, feature, candidate, version_a, version_b, classification = key
+        for rank, context in bucket.items():
+            example_rows.append({
+                "raw_source_label": raw_source,
+                "source_key": source_key,
+                "feature": feature,
+                "candidate_definition": candidate,
+                "version_a": version_a,
+                "version_b": version_b,
+                "classification": classification,
+                "stable_rank": rank,
+                "context_json": canonical_json(context),
+            })
+    write_csv(
+        output_dir / "cross_version_duplicate_revision_examples.csv",
+        sorted(
+            example_rows,
+            key=lambda row: (
+                row["source_key"], row["feature"], row["candidate_definition"],
+                row["version_a"], row["version_b"], row["classification"],
+                row["stable_rank"],
+            ),
+        ),
+        (
+            "raw_source_label", "source_key", "feature", "candidate_definition",
+            "version_a", "version_b", "classification", "stable_rank",
+            "context_json",
+        ),
+    )
+
+    numeric_rows = []
+    for key, stats in state.cross_version_numeric.items():
+        (
+            raw_source, source_key, feature, candidate, version_a, version_b, metric,
+        ) = key
+        numeric_rows.append({
+            "raw_source_label": raw_source,
+            "source_key": source_key,
+            "feature": feature,
+            "candidate_definition": candidate,
+            "version_a": version_a,
+            "version_b": version_b,
+            "metric": metric,
+            "observation_count": stats.count,
+            "participant_count": len(stats.participants),
+            **stats.values.summary(),
+        })
+    numeric_fields = (
+        "numeric_count", "finite_count", "nonfinite_count", "numeric_min",
+        "numeric_p01", "numeric_p25", "numeric_median", "numeric_p75",
+        "numeric_p99", "numeric_max", "numeric_mean", "numeric_zero_count",
+        "numeric_negative_count", "quantile_sample_size", "quantile_method",
+    )
+    write_csv(
+        output_dir / "cross_version_numeric_difference_profile.csv",
+        sorted(
+            numeric_rows,
+            key=lambda row: (
+                row["source_key"], row["feature"], row["candidate_definition"],
+                row["version_a"], row["version_b"], row["metric"],
+            ),
+        ),
+        (
+            "raw_source_label", "source_key", "feature", "candidate_definition",
+            "version_a", "version_b", "metric", "observation_count",
+            "participant_count", *numeric_fields,
+        ),
+    )
+
+
 def _candidate_activity_file(label: str) -> tuple[str, str]:
     sleep_labels = {"sleep", "sleep.light", "sleep.deep", "sleep.rem", "sleep.awake"}
     if label in sleep_labels or label.startswith("sleep."):
@@ -864,6 +1408,10 @@ def _write_provenance(output_dir: Path, state: ProfilerState) -> None:
             "app_package_count": len(values_by_dimension["app_package"]),
             "app_name_count": len(values_by_dimension["app_name"]),
             "added_by_count": len(values_by_dimension["added_by"]),
+            "raw_application_identifier_count": len(app_union),
+            "multiple_raw_application_identifiers": int(len(app_union) > 1),
+            # Compatibility aliases retained for 1.2.0 report consumers. The raw identifiers are not canonicalized
+            # application identities.
             "application_identity_count": len(app_union),
             "source_name_count": len(values_by_dimension["source_name"]),
             "source_id_count": len(values_by_dimension["source_id"]),
@@ -892,6 +1440,7 @@ def _write_provenance(output_dir: Path, state: ProfilerState) -> None:
         "participant_id", "source_key", "coarse_device_count", "detailed_device_count",
         "device_manufacturer_count", "device_model_count", "device_type_count",
         "device_uid_count", "app_package_count", "app_name_count", "added_by_count",
+        "raw_application_identifier_count", "multiple_raw_application_identifiers",
         "application_identity_count", "source_name_count", "source_id_count",
         "data_source_id_count", "origin_data_source_id_count", "stream_identity_count",
         "user_entered_value_count", "apparent_multi_device", "apparent_multi_application",
@@ -985,6 +1534,142 @@ def _write_steps(output_dir: Path, state: ProfilerState) -> None:
     )
 
 
+def _write_step_temporal(output_dir: Path, state: ProfilerState) -> None:
+    accounting: dict[tuple[str, str, str], collections.Counter[str]] = {}
+    for key, count in state.step_temporal_accounting.items():
+        raw_source, source_key, version, metric = key
+        accounting.setdefault(
+            (raw_source, source_key, version), collections.Counter()
+        )[metric] += count
+    accounting_rows = []
+    accounting_metrics = (
+        "outer_rows",
+        "aggregation_alternatives",
+        "summary_entries",
+        "raw_interval_entries",
+        "valid_raw_intervals",
+        "invalid_raw_intervals",
+        "paired_summary_raw_comparisons",
+        "unpaired_summary_entries",
+        "unpaired_raw_intervals",
+    )
+    for key, counts in accounting.items():
+        raw_source, source_key, version = key
+        accounting_rows.append({
+            "raw_source_label": raw_source,
+            "source_key": source_key,
+            "collecting_method_version": version,
+            **{metric: counts.get(metric, 0) for metric in accounting_metrics},
+            "raw_interval_accounting_closes": int(
+                counts.get("raw_interval_entries", 0)
+                == counts.get("valid_raw_intervals", 0)
+                + counts.get("invalid_raw_intervals", 0)
+            ),
+        })
+    write_csv(
+        output_dir / "stepcount_temporal_accounting.csv",
+        sorted(
+            accounting_rows,
+            key=lambda row: (row["source_key"], row["collecting_method_version"]),
+        ),
+        (
+            "raw_source_label", "source_key", "collecting_method_version",
+            *accounting_metrics, "raw_interval_accounting_closes",
+        ),
+    )
+
+    count_rows = [
+        {
+            "raw_source_label": raw_source,
+            "source_key": source_key,
+            "collecting_method_version": version,
+            "observation_level": observation_level,
+            "alternative_name": alternative_name,
+            "relationship": relationship,
+            "value": value,
+            "count": count,
+        }
+        for (
+            raw_source,
+            source_key,
+            version,
+            observation_level,
+            alternative_name,
+            relationship,
+            value,
+        ), count in state.step_temporal_alignment_counts.items()
+    ]
+    write_csv(
+        output_dir / "stepcount_temporal_alignment_counts.csv",
+        sorted(
+            count_rows,
+            key=lambda row: (
+                row["source_key"], row["collecting_method_version"],
+                row["observation_level"], row["alternative_name"],
+                row["relationship"], row["value"],
+            ),
+        ),
+        (
+            "raw_source_label", "source_key", "collecting_method_version",
+            "observation_level", "alternative_name", "relationship", "value",
+            "count",
+        ),
+    )
+
+    numeric_rows = []
+    for key, stats in state.step_temporal_numeric.items():
+        raw_source, source_key, version, observation_level, alternative_name, metric = key
+        numeric_rows.append({
+            "raw_source_label": raw_source,
+            "source_key": source_key,
+            "collecting_method_version": version,
+            "observation_level": observation_level,
+            "alternative_name": alternative_name,
+            "metric": metric,
+            "observation_count": stats.count,
+            "participant_count": len(stats.participants),
+            **stats.values.summary(),
+        })
+    numeric_fields = (
+        "numeric_count", "finite_count", "nonfinite_count", "numeric_min",
+        "numeric_p01", "numeric_p25", "numeric_median", "numeric_p75",
+        "numeric_p99", "numeric_max", "numeric_mean", "numeric_zero_count",
+        "numeric_negative_count", "quantile_sample_size", "quantile_method",
+    )
+    write_csv(
+        output_dir / "stepcount_temporal_numeric_profile.csv",
+        sorted(
+            numeric_rows,
+            key=lambda row: (
+                row["source_key"], row["collecting_method_version"],
+                row["observation_level"], row["alternative_name"], row["metric"],
+            ),
+        ),
+        (
+            "raw_source_label", "source_key", "collecting_method_version",
+            "observation_level", "alternative_name", "metric",
+            "observation_count", "participant_count", *numeric_fields,
+        ),
+    )
+
+    example_rows = []
+    bucket = state.diagnostics.examples.get(
+        "stepcount_raw_interval_not_contained_in_summary_utc_day"
+    )
+    if bucket is not None:
+        for rank, context in bucket.items():
+            example_rows.append({
+                "diagnostic_code": "stepcount_raw_interval_not_contained_in_summary_utc_day",
+                "stable_rank": rank,
+                "context_json": canonical_json(context),
+            })
+    write_csv(
+        output_dir / "stepcount_temporal_examples.csv",
+        sorted(example_rows, key=lambda row: row["stable_rank"]),
+        ("diagnostic_code", "stable_rank", "context_json"),
+    )
+
+
 def _write_focused_anomalies(output_dir: Path, state: ProfilerState) -> None:
     rows = []
     for key, stats in state.focused_distributions.items():
@@ -1056,10 +1741,61 @@ def _write_focused_anomalies(output_dir: Path, state: ProfilerState) -> None:
     )
 
     malformed_rows = []
+    reason_occurrences_by_summary: collections.Counter[tuple[str, str, str, str]] = collections.Counter()
+    distinct_reasons_by_summary: dict[tuple[str, str, str, str], set[str]] = collections.defaultdict(set)
     for key, count in state.malformed_item_counts.items():
         raw_source, feature, version, reason = key
+        summary_key = (raw_source, normalize_source(raw_source), feature, version)
+        reason_occurrences_by_summary[summary_key] += count
+        distinct_reasons_by_summary[summary_key].add(reason)
+
+    for key, item_ids in state.malformed_unique_items.items():
+        raw_source, source_key, feature, version = key
+        unique_items = len(item_ids)
+        reason_occurrences = reason_occurrences_by_summary.get(key, 0)
         malformed_rows.append({
             "raw_source_label": raw_source,
+            "source_key": source_key,
+            "feature": feature,
+            "collecting_method_version": version,
+            "unique_malformed_items": unique_items,
+            "malformed_reason_occurrences": reason_occurrences,
+            "participant_count": len(
+                state.malformed_unique_item_participants.get(key, set())
+            ),
+            "distinct_reason_count": len(distinct_reasons_by_summary.get(key, set())),
+            "mean_reasons_per_item": (
+                reason_occurrences / unique_items if unique_items else None
+            ),
+            "reason_accounting_closes": int(
+                reason_occurrences
+                == sum(
+                    count * len([reason for reason in reason_key[4].split(";") if reason])
+                    for reason_key, count in state.malformed_reason_sets.items() if reason_key[:4] == key
+                )
+            ),
+        })
+    write_csv(
+        output_dir / "malformed_item_summary.csv",
+        sorted(
+            malformed_rows,
+            key=lambda row: (row["source_key"], row["feature"], row["collecting_method_version"],),
+        ),
+        (
+            "raw_source_label", "source_key", "feature",
+            "collecting_method_version", "unique_malformed_items",
+            "malformed_reason_occurrences", "participant_count",
+            "distinct_reason_count", "mean_reasons_per_item",
+            "reason_accounting_closes",
+        ),
+    )
+
+    reason_rows = []
+    for key, count in state.malformed_item_counts.items():
+        raw_source, feature, version, reason = key
+        reason_rows.append({
+            "raw_source_label": raw_source,
+            "source_key": normalize_source(raw_source),
             "feature": feature,
             "collecting_method_version": version,
             "reason": reason,
@@ -1067,17 +1803,45 @@ def _write_focused_anomalies(output_dir: Path, state: ProfilerState) -> None:
             "participant_count": len(state.malformed_item_participants[key]),
         })
     write_csv(
-        output_dir / "malformed_item_summary.csv",
+        output_dir / "malformed_item_reasons.csv",
         sorted(
-            malformed_rows,
+            reason_rows,
             key=lambda row: (
-                row["raw_source_label"], row["feature"], row["collecting_method_version"],
-                row["reason"],
+                row["source_key"], row["feature"], row["collecting_method_version"], row["reason"],
             ),
         ),
         (
-            "raw_source_label", "feature", "collecting_method_version", "reason",
-            "item_count", "participant_count",
+            "raw_source_label", "source_key", "feature",
+            "collecting_method_version", "reason", "item_count",
+            "participant_count",
+        ),
+    )
+
+    reason_set_rows = []
+    for key, count in state.malformed_reason_sets.items():
+        raw_source, source_key, feature, version, reason_set = key
+        reason_set_rows.append({
+            "raw_source_label": raw_source,
+            "source_key": source_key,
+            "feature": feature,
+            "collecting_method_version": version,
+            "reason_set": reason_set,
+            "reason_count_per_item": len([reason for reason in reason_set.split(";") if reason]),
+            "unique_item_count": count,
+        })
+    write_csv(
+        output_dir / "malformed_item_reason_sets.csv",
+        sorted(
+            reason_set_rows,
+            key=lambda row: (
+                row["source_key"], row["feature"], row["collecting_method_version"],
+                row["reason_set"],
+            ),
+        ),
+        (
+            "raw_source_label", "source_key", "feature",
+            "collecting_method_version", "reason_set", "reason_count_per_item",
+            "unique_item_count",
         ),
     )
 
@@ -1197,6 +1961,7 @@ def _markdown_report(summary: Mapping[str, Any], state: ProfilerState) -> str:
 
 ## Headline inventory
 
+- Phase 0 structural acceptance: **{summary['phase0_acceptance_status']}**
 - Participant directories discovered: **{summary['participant_directories']:,}**
 - Data-bearing participants: **{summary['data_bearing_participants']:,}**
 - Empty export directories: **{summary['empty_export_directories']:,}**
@@ -1240,14 +2005,23 @@ processing registry is calibrated against the complete cohort.
   `participant_feature_version_transitions.csv` expose sequential, overlapping, and reverting exporter versions.
 - `duplicate_revision_calibration.csv` and `duplicate_revision_examples.csv` compare alternative outer-row and
   payload-item identity definitions without dropping or reconciling any observation.
+- `cross_version_normalization_coverage.csv`, `cross_version_duplicate_revision_calibration.csv`,
+  `cross_version_duplicate_revision_examples.csv`, and `cross_version_numeric_difference_profile.csv` compare
+  version-neutral, feature-specific identity candidates and numeric differences across collecting-method versions
+  without declaring one version authoritative.
 - `activity_submeasurement_profile.csv` and `activity_context_values.csv` characterize measurements and provenance
   attached to each routed activity label.
 - `participant_provenance_values.csv` and `participant_provenance_summary.csv` keep device, application, and source
   stream identities separate.
 - `temporal_alignment_counts.csv` records exact date, weekday-label, and timezone-offset relationships.
+- `stepcount_temporal_accounting.csv`, `stepcount_temporal_alignment_counts.csv`,
+  `stepcount_temporal_numeric_profile.csv`, and `stepcount_temporal_examples.csv` expose the nested version-2
+  StepCount summary date, raw interval, outer timestamp, and alternative-level relationships.
 - `focused_anomaly_distributions.csv`, `calories_negative_distribution.csv`,
-  `weight_interval_duration_distribution.csv`, `weight_calibration.csv`, and `malformed_item_summary.csv` provide
-  evidence for feature-specific native and curation policies.
+  `weight_interval_duration_distribution.csv`, `weight_calibration.csv`, `malformed_item_summary.csv`,
+  `malformed_item_reasons.csv`, and `malformed_item_reason_sets.csv` provide evidence for feature-specific native
+  and curation policies while separating unique malformed observations from reason occurrences.
+- `phase0_acceptance.json` evaluates structural accounting gates for the final calibration evidence package.
 - `representative_payloads.json` and `diagnostic_examples.csv` use stable cryptographic ranking rather than
   first-seen process order.
 

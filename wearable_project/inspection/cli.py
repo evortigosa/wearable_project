@@ -77,6 +77,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-progress", action="store_true", help="Disable the tqdm participant progress bar",
     )
+    parser.add_argument(
+        "--require-phase0-pass", action="store_true",
+        help=("Exit nonzero after writing reports unless phase0_acceptance.json has status 'pass'"),
+    )
     parser.add_argument("--resume", action="store_true", help="Resume OUTPUT.partial/checkpoint.pkl.gz")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output/partial directory")
     parser.add_argument("--version", action="version", version=TOOL_VERSION)
@@ -233,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         for version in CHECKPOINT_COMPATIBLE_TOOL_VERSIONS
     }
     started_wall = time.time()
+    phase0_acceptance_status = "not_generated"
 
     with open_raw_input(args.input) as raw_input:
         descriptor = raw_input.descriptor()
@@ -361,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                 "fail_fast": bool(args.fail_fast),
                 "progress_bar_enabled": not args.no_progress,
                 "progress_every": args.progress_every,
+                "require_phase0_pass": bool(args.require_phase0_pass),
             },
             "python": sys.version,
             "platform": platform.platform(),
@@ -371,14 +377,34 @@ def main(argv: list[str] | None = None) -> int:
             "failed_participant_count": len(state.participant_failures),
         }
         write_reports(partial, profiler, manifest)
+        acceptance_path = partial / "phase0_acceptance.json"
+        if acceptance_path.exists():
+            phase0_acceptance_status = json.loads(
+                acceptance_path.read_text(encoding="utf-8")
+            ).get("status", "unknown")
 
     checkpoint.unlink(missing_ok=True)
     marker = partial / ".profile_complete"
     status = "complete" if not state.participant_failures else "complete_with_errors"
     marker.write_text(f"{TOOL_VERSION}\n{status}\n", encoding="utf-8")
     os.replace(partial, output)
-    print(json.dumps({"output": str(output), **profiler.summary()}, sort_keys=True), flush=True)
+    print(
+        json.dumps(
+            {"output": str(output), "phase0_acceptance_status": phase0_acceptance_status, **profiler.summary(),},
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     if first_failure is not None and args.fail_fast:
         participant_id, message = first_failure
         print(f"ERROR: participant {participant_id}: {message}", file=sys.stderr)
-    return 1 if state.participant_failures else 0
+    if state.participant_failures:
+        return 1
+    if args.require_phase0_pass and phase0_acceptance_status != "pass":
+        print(
+            "ERROR: Phase 0 acceptance status is "
+            f"{phase0_acceptance_status!r}; see {output / 'phase0_acceptance.json'}",
+            file=sys.stderr,
+        )
+        return 2
+    return 0

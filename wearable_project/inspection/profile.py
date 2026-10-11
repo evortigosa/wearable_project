@@ -15,14 +15,14 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 from .input_source import ParticipantFiles, RawFile, RawInput
 from .sketches import BoundedCounter, NumericSketch, RankedExamples, stable_rank
 
-
-TOOL_VERSION = "mixed-source-profiler-1.2.0"
+TOOL_VERSION = "mixed-source-profiler-1.2.1"
 CHECKPOINT_COMPATIBLE_TOOL_VERSIONS = frozenset({TOOL_VERSION})
 EXPECTED_COLUMNS = (
     "id",
@@ -424,6 +424,170 @@ def _difference_bucket(value: float) -> str:
     return f"{direction}_{scale}"
 
 
+STEP_PRIMARY_ALTERNATIVE_KEYS = (
+    "estimated_steps",
+    "merge_step_deltas",
+    "com.xiaomi.hm.health",
+)
+
+
+def _step_alternative_key(value: Any) -> str | None:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return None
+    if text.endswith(":estimated_steps") or text == "estimated_steps":
+        return "estimated_steps"
+    if text.endswith(":merge_step_deltas") or text == "merge_step_deltas":
+        return "merge_step_deltas"
+    return text
+
+
+def _normalized_timestamp(value: Any) -> str | None:
+    parsed = parse_time_info(value)
+    if parsed is None:
+        return None
+    return parsed.utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _normalized_outer_date(value: Any) -> str | None:
+    parsed = parse_time_info(value)
+    if parsed is None:
+        return None
+    return parsed.local.date().isoformat()
+
+
+def _step_summary_entries(item: Mapping[str, Any]) -> list[tuple[str, date, float | None]]:
+    entries: list[tuple[str, date, float | None]] = []
+    steps = item.get("steps")
+    if isinstance(steps, list):
+        for index, step in enumerate(steps):
+            if not isinstance(step, Mapping):
+                continue
+            summary_date = parse_date(step.get("date"))
+            if summary_date is None:
+                continue
+            entries.append((f"steps[{index}]", summary_date, _numeric_value(step.get("value"))))
+    return entries
+
+
+def _cross_version_candidate_specs(
+    feature: str, version: str, item: Mapping[str, Any], outer_datetime: str,
+) -> list[tuple[str, Mapping[str, Any] | None, Mapping[str, Any] | None]]:
+    """
+    Return version-neutral calibration candidates for known Google features. These projections are evidence-gathering
+    candidates, not processing policy. Identity intentionally excludes the measurement value so the report can
+    distinguish exact cross-version repeats from changed-value candidates.
+    """
+
+    if feature in {"Calories", "Distance"}:
+        value_key = "calorie" if feature == "Calories" else "distance"
+        start = _normalized_timestamp(item.get("start_date", item.get("start")))
+        end = _normalized_timestamp(item.get("end_date", item.get("end")))
+        value = _first_numeric(item, value_key, "value")
+        return [
+            (
+                "measurement_interval",
+                {"start_utc": start, "end_utc": end} if start and end else None,
+                {"value": value} if value is not None else None,
+            )
+        ]
+
+    if feature in {"Weight", "Height"}:
+        start = _normalized_timestamp(item.get("start_date", item.get("start")))
+        end = _normalized_timestamp(item.get("end_date", item.get("end")))
+        value = _numeric_value(item.get("value"))
+        added_by = str(item.get("added_by") or "<missing>")
+        interval = {"start_utc": start, "end_utc": end} if start and end else None
+        return [
+            (
+                "measurement_interval",
+                interval,
+                {"value": value} if value is not None else None,
+            ),
+            (
+                "measurement_interval_added_by",
+                {**interval, "added_by": added_by} if interval else None,
+                {"value": value} if value is not None else None,
+            ),
+        ]
+
+    if feature == "StepCount":
+        result: list[tuple[str, Mapping[str, Any] | None, Mapping[str, Any] | None]] = []
+        summary_entries = _step_summary_entries(item)
+        if summary_entries:
+            base_summary = [
+                (
+                    {"summary_date": summary_date.isoformat()},
+                    {"value": value} if value is not None else None,
+                )
+                for _, summary_date, value in summary_entries
+            ]
+        else:
+            outer_date = _normalized_outer_date(outer_datetime)
+            value = _numeric_value(item.get("value"))
+            base_summary = [(
+                {"summary_date": outer_date} if outer_date else None,
+                {"value": value} if value is not None else None,
+            )]
+
+        alternative_key = _step_alternative_key(item.get("source"))
+        if version == "1.0":
+            comparison_alternatives = STEP_PRIMARY_ALTERNATIVE_KEYS
+        elif alternative_key is not None:
+            comparison_alternatives = (alternative_key,)
+        else:
+            comparison_alternatives = ()
+
+        for identity, content in base_summary:
+            result.append(("summary_date", identity, content))
+            for comparison_alternative in comparison_alternatives:
+                result.append((
+                    f"summary_date__alternative={comparison_alternative}",
+                    identity,
+                    content,
+                ))
+
+        outer_date = _normalized_outer_date(outer_datetime)
+        value_candidates = [
+            content.get("value")
+            for _, content in base_summary
+            if content is not None
+        ]
+        if not value_candidates:
+            scalar = _numeric_value(item.get("value"))
+            if scalar is not None:
+                value_candidates = [scalar]
+        for value in value_candidates or [None]:
+            identity = {"outer_local_date": outer_date} if outer_date else None
+            content = {"value": value} if value is not None else None
+            result.append(("outer_local_date", identity, content))
+            for comparison_alternative in comparison_alternatives:
+                result.append((
+                    f"outer_local_date__alternative={comparison_alternative}",
+                    identity,
+                    content,
+                ))
+        return result
+
+    return []
+
+
+def _step_interval_relation(start: datetime, end: datetime, summary_date: date) -> str:
+    day_start = datetime.combine(summary_date, datetime.min.time(), tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    if end <= day_start:
+        return "before_summary_day_utc"
+    if start >= day_end:
+        return "after_summary_day_utc"
+    if start >= day_start and end <= day_end:
+        return "contained_within_summary_day_utc"
+    if start < day_start and end > day_end:
+        return "spans_entire_summary_day_utc"
+    if start < day_start:
+        return "overlaps_summary_day_start_utc"
+    return "overlaps_summary_day_end_utc"
+
+
 def _month_index(month: str) -> int:
     year, number = month.split("-", 1)
     return int(year) * 12 + int(number) - 1
@@ -695,6 +859,56 @@ class _SeenIdentity:
 
 
 @dataclass
+class CrossVersionCalibrationStats:
+    identity_groups: int = 0
+    observations_version_a: int = 0
+    observations_version_b: int = 0
+    distinct_content_version_a: int = 0
+    distinct_content_version_b: int = 0
+    shared_content_fingerprints: int = 0
+    exact_content_overlap_groups: int = 0
+    divergent_content_groups: int = 0
+    exact_only_groups: int = 0
+    shared_and_divergent_groups: int = 0
+    divergent_only_groups: int = 0
+    same_month_overlap_groups: int = 0
+    cross_month_only_groups: int = 0
+
+    def merge(self, other: "CrossVersionCalibrationStats") -> None:
+        self.identity_groups += other.identity_groups
+        self.observations_version_a += other.observations_version_a
+        self.observations_version_b += other.observations_version_b
+        self.distinct_content_version_a += other.distinct_content_version_a
+        self.distinct_content_version_b += other.distinct_content_version_b
+        self.shared_content_fingerprints += other.shared_content_fingerprints
+        self.exact_content_overlap_groups += other.exact_content_overlap_groups
+        self.divergent_content_groups += other.divergent_content_groups
+        self.exact_only_groups += other.exact_only_groups
+        self.shared_and_divergent_groups += other.shared_and_divergent_groups
+        self.divergent_only_groups += other.divergent_only_groups
+        self.same_month_overlap_groups += other.same_month_overlap_groups
+        self.cross_month_only_groups += other.cross_month_only_groups
+
+
+@dataclass
+class _CrossVersionEvidence:
+    observation_count: int = 0
+    months: set[str] = field(default_factory=set)
+    content_fingerprints: set[str] = field(default_factory=set)
+    content_examples: dict[str, Any] = field(default_factory=dict)
+    content_representative_ranks: dict[str, str] = field(default_factory=dict)
+    content_representative_contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    representative_rank: str | None = None
+    representative_context: dict[str, Any] | None = None
+
+
+@dataclass
+class _CrossVersionIdentityGroup:
+    identity_value: Mapping[str, Any]
+    versions: dict[str, _CrossVersionEvidence] = field(default_factory=dict)
+
+
+@dataclass
 class ActivitySubmeasurementStats:
     label: str
     version: str
@@ -835,6 +1049,10 @@ class ProfilerState:
     temporal_alignment_counts: collections.Counter[tuple[str, str, str, str, str, str]] = field(default_factory=collections.Counter)
     participant_feature_version_months: dict[tuple[str, str, str, str, str, str], FeatureVersionMonthStats] = field(default_factory=dict)
     duplicate_calibration: dict[tuple[str, str, str, str, str, str], DuplicateCalibrationStats] = field(default_factory=dict)
+    cross_version_coverage: collections.Counter[tuple[str, str, str, str, str, str]] = field(default_factory=collections.Counter)
+    cross_version_calibration: dict[tuple[str, str, str, str, str, str], CrossVersionCalibrationStats] = field(default_factory=dict)
+    cross_version_examples: dict[tuple[str, str, str, str, str, str, str], RankedExamples] = field(default_factory=dict)
+    cross_version_numeric: dict[tuple[str, str, str, str, str, str, str], FocusedDistributionStats] = field(default_factory=dict)
     schema_counts: collections.Counter[tuple[str, str, str, str, str]] = field(default_factory=collections.Counter)
     schema_participants: dict[tuple[str, str, str, str, str], set[str]] = field(default_factory=lambda: collections.defaultdict(set))
     representative_payloads: dict[tuple[str, str, str, str, str], dict[str, Any]] = field(default_factory=dict)
@@ -849,10 +1067,16 @@ class ProfilerState:
     participant_apps: dict[tuple[str, str], set[str]] = field(default_factory=lambda: collections.defaultdict(set))
     participant_streams: dict[tuple[str, str], set[str]] = field(default_factory=lambda: collections.defaultdict(set))
     step_alternatives: dict[tuple[str, str], StepAlternativeStats] = field(default_factory=dict)
+    step_temporal_accounting: collections.Counter[tuple[str, str, str, str]] = field(default_factory=collections.Counter)
+    step_temporal_alignment_counts: collections.Counter[tuple[str, str, str, str, str, str, str]] = field(default_factory=collections.Counter)
+    step_temporal_numeric: dict[tuple[str, str, str, str, str, str], FocusedDistributionStats] = field(default_factory=dict)
     focused_distributions: dict[tuple[str, str, str, str, str, str], FocusedDistributionStats] = field(default_factory=dict)
     weight_calibration: dict[tuple[str, str], WeightCalibrationStats] = field(default_factory=dict)
     malformed_item_counts: collections.Counter[tuple[str, str, str, str]] = field(default_factory=collections.Counter)
     malformed_item_participants: dict[tuple[str, str, str, str], set[str]] = field(default_factory=lambda: collections.defaultdict(set))
+    malformed_unique_items: dict[tuple[str, str, str, str], set[str]] = field(default_factory=lambda: collections.defaultdict(set))
+    malformed_unique_item_participants: dict[tuple[str, str, str, str], set[str]] = field(default_factory=lambda: collections.defaultdict(set))
+    malformed_reason_sets: collections.Counter[tuple[str, str, str, str, str]] = field(default_factory=collections.Counter)
     diagnostics: DiagnosticCollector = field(default_factory=DiagnosticCollector)
     outer_schema_issues: list[dict[str, Any]] = field(default_factory=list)
     invalid_files: list[dict[str, Any]] = field(default_factory=list)
@@ -920,6 +1144,25 @@ def merge_profiler_state(target: ProfilerState, source: ProfilerState) -> None:
             target.duplicate_calibration[key] = incoming
         else:
             existing.merge(incoming)
+    target.cross_version_coverage.update(source.cross_version_coverage)
+    for key, incoming in source.cross_version_calibration.items():
+        existing = target.cross_version_calibration.get(key)
+        if existing is None:
+            target.cross_version_calibration[key] = incoming
+        else:
+            existing.merge(incoming)
+    for key, incoming in source.cross_version_examples.items():
+        existing = target.cross_version_examples.get(key)
+        if existing is None:
+            target.cross_version_examples[key] = incoming
+        else:
+            existing.merge(incoming)
+    for key, incoming in source.cross_version_numeric.items():
+        existing = target.cross_version_numeric.get(key)
+        if existing is None:
+            target.cross_version_numeric[key] = incoming
+        else:
+            existing.merge(incoming)
 
     target.schema_counts.update(source.schema_counts)
     for key, participants in source.schema_participants.items():
@@ -960,6 +1203,14 @@ def merge_profiler_state(target: ProfilerState, source: ProfilerState) -> None:
             target.step_alternatives[key] = incoming
         else:
             existing.merge(incoming)
+    target.step_temporal_accounting.update(source.step_temporal_accounting)
+    target.step_temporal_alignment_counts.update(source.step_temporal_alignment_counts)
+    for key, incoming in source.step_temporal_numeric.items():
+        existing = target.step_temporal_numeric.get(key)
+        if existing is None:
+            target.step_temporal_numeric[key] = incoming
+        else:
+            existing.merge(incoming)
     for key, incoming in source.focused_distributions.items():
         existing = target.focused_distributions.get(key)
         if existing is None:
@@ -975,6 +1226,11 @@ def merge_profiler_state(target: ProfilerState, source: ProfilerState) -> None:
     target.malformed_item_counts.update(source.malformed_item_counts)
     for key, participants in source.malformed_item_participants.items():
         target.malformed_item_participants[key].update(participants)
+    for key, item_ids in source.malformed_unique_items.items():
+        target.malformed_unique_items[key].update(item_ids)
+    for key, participants in source.malformed_unique_item_participants.items():
+        target.malformed_unique_item_participants[key].update(participants)
+    target.malformed_reason_sets.update(source.malformed_reason_sets)
 
     target.diagnostics.merge(source.diagnostics)
     target.outer_schema_issues.extend(source.outer_schema_issues)
@@ -992,12 +1248,16 @@ class MixedSourceProfiler:
         self.raw_input = raw_input
         self.state = state
         self._duplicate_seen: dict[tuple[str, str, str, str, str, str], _SeenIdentity] = {}
+        self._cross_version_seen: dict[
+            tuple[str, str, str, str, str], _CrossVersionIdentityGroup
+        ] = {}
 
     def scan_participant(self, participant_files: ParticipantFiles) -> None:
         pid = participant_files.participant_id
         # Duplicate/revision calibration is participant-scoped. Keeping these identity maps out of ProfilerState
         # bounds parent/checkpoint memory.
         self._duplicate_seen = {}
+        self._cross_version_seen = {}
         participant = self.state.participants.setdefault(pid, ParticipantStats(pid))
         participant.export_ended_present = participant_files.export_ended_present
         for invalid in participant_files.invalid_csv_names:
@@ -1022,6 +1282,7 @@ class MixedSourceProfiler:
             self.state.total_files += 1
             self.state.total_source_bytes += file.size_bytes
             self._scan_file(file, participant)
+        self._finalize_cross_version_calibration(pid)
         if not participant_files.export_ended_present:
             self.state.diagnostics.add("export_ended_missing", {"participant_id": pid})
         self.state.completed_participants.add(pid)
@@ -1088,6 +1349,210 @@ class MixedSourceProfiler:
                 "current_month": canonical_month,
             },
         )
+
+    def _observe_cross_version_candidate(
+        self, *, raw_source: str, source_key: str, feature: str, version: str, candidate: str,
+        identity_value: Mapping[str, Any] | None, content_value: Mapping[str, Any] | None,
+        canonical_month: str, context: Mapping[str, Any],
+    ) -> None:
+        coverage_prefix = (raw_source, source_key, feature, version, candidate)
+        self.state.cross_version_coverage[(*coverage_prefix, "observations")] += 1
+        if identity_value is None:
+            self.state.cross_version_coverage[(*coverage_prefix, "missing_identity")] += 1
+            return
+        if content_value is None:
+            self.state.cross_version_coverage[(*coverage_prefix, "missing_content")] += 1
+            return
+        self.state.cross_version_coverage[(*coverage_prefix, "normalized")] += 1
+
+        identity_digest = _fingerprint(identity_value)
+        content_digest = _fingerprint(content_value)
+        group_key = (raw_source, source_key, feature, candidate, identity_digest)
+        group = self._cross_version_seen.get(group_key)
+        if group is None:
+            group = _CrossVersionIdentityGroup(identity_value=dict(identity_value))
+            self._cross_version_seen[group_key] = group
+        evidence = group.versions.setdefault(version, _CrossVersionEvidence())
+        evidence.observation_count += 1
+        evidence.months.add(canonical_month)
+        evidence.content_fingerprints.add(content_digest)
+        evidence.content_examples.setdefault(content_digest, dict(content_value))
+
+        representative = {
+            key: value
+            for key, value in dict(context).items() if key != "source_file"
+        }
+        representative["normalized_identity"] = dict(identity_value)
+        representative["normalized_content"] = dict(content_value)
+        rank = stable_rank(representative)
+        content_rank = evidence.content_representative_ranks.get(content_digest)
+        if content_rank is None or rank < content_rank:
+            evidence.content_representative_ranks[content_digest] = rank
+            evidence.content_representative_contexts[content_digest] = representative
+        if evidence.representative_rank is None or rank < evidence.representative_rank:
+            evidence.representative_rank = rank
+            evidence.representative_context = representative
+
+    def _observe_cross_version_numeric(
+        self, *, raw_source: str, source_key: str, feature: str, candidate: str, version_a: str, version_b: str,
+        metric: str, participant_id: str, value: float, context: str,
+    ) -> None:
+        key = (
+            raw_source, source_key, feature, candidate, version_a, version_b, metric,
+        )
+        stats = self.state.cross_version_numeric.get(key)
+        if stats is None:
+            stats = FocusedDistributionStats(
+                values=NumericSketch(sample_size=self.state.config.numeric_sample_size)
+            )
+            self.state.cross_version_numeric[key] = stats
+        stats.count += 1
+        stats.participants.add(participant_id)
+        stats.values.add(value, context)
+
+    def _finalize_cross_version_calibration(self, participant_id: str) -> None:
+        for group_key, group in self._cross_version_seen.items():
+            raw_source, source_key, feature, candidate, identity_digest = group_key
+            versions = sorted(group.versions)
+            if len(versions) < 2:
+                continue
+            for version_a, version_b in combinations(versions, 2):
+                evidence_a = group.versions[version_a]
+                evidence_b = group.versions[version_b]
+                contents_a = evidence_a.content_fingerprints
+                contents_b = evidence_b.content_fingerprints
+                shared = contents_a & contents_b
+                divergent = contents_a ^ contents_b
+                if shared and not divergent:
+                    classification = "exact_only"
+                elif shared:
+                    classification = "shared_and_divergent"
+                else:
+                    classification = "divergent_only"
+
+                stats_key = (
+                    raw_source, source_key, feature, candidate, version_a, version_b,
+                )
+                stats = self.state.cross_version_calibration.get(stats_key)
+                if stats is None:
+                    stats = CrossVersionCalibrationStats()
+                    self.state.cross_version_calibration[stats_key] = stats
+                stats.identity_groups += 1
+                stats.observations_version_a += evidence_a.observation_count
+                stats.observations_version_b += evidence_b.observation_count
+                stats.distinct_content_version_a += len(contents_a)
+                stats.distinct_content_version_b += len(contents_b)
+                stats.shared_content_fingerprints += len(shared)
+                stats.exact_content_overlap_groups += int(bool(shared))
+                stats.divergent_content_groups += int(bool(divergent))
+                stats.exact_only_groups += int(classification == "exact_only")
+                stats.shared_and_divergent_groups += int(classification == "shared_and_divergent")
+                stats.divergent_only_groups += int(classification == "divergent_only")
+                same_month = bool(evidence_a.months & evidence_b.months)
+                stats.same_month_overlap_groups += int(same_month)
+                stats.cross_month_only_groups += int(not same_month)
+
+                numeric_a = [
+                    (digest, _numeric_value(content.get("value")))
+                    for digest, content in evidence_a.content_examples.items()
+                ]
+                numeric_b = [
+                    (digest, _numeric_value(content.get("value")))
+                    for digest, content in evidence_b.content_examples.items()
+                ]
+                numeric_a = [(digest, value) for digest, value in numeric_a if value is not None]
+                numeric_b = [(digest, value) for digest, value in numeric_b if value is not None]
+                pairwise_differences: list[tuple[float, float, float, str, str]] = []
+                for digest_a, value_a in numeric_a:
+                    for digest_b, value_b in numeric_b:
+                        difference = value_b - value_a
+                        pairwise_differences.append(
+                            (difference, value_a, value_b, digest_a, digest_b)
+                        )
+                        self._observe_cross_version_numeric(
+                            raw_source=raw_source,
+                            source_key=source_key,
+                            feature=feature,
+                            candidate=candidate,
+                            version_a=version_a,
+                            version_b=version_b,
+                            metric="all_pairwise_value_difference_b_minus_a",
+                            participant_id=participant_id,
+                            value=difference,
+                            context=(
+                                f"{participant_id}|{identity_digest}|{digest_a}|{digest_b}|"
+                                f"all_pairwise|{difference!r}"
+                            ),
+                        )
+                if pairwise_differences:
+                    nearest = min(
+                        pairwise_differences,
+                        key=lambda item: (abs(item[0]), item[0], item[1], item[2]),
+                    )
+                    nearest_difference = nearest[0]
+                    for metric, value in (
+                        ("nearest_value_difference_b_minus_a", nearest_difference),
+                        ("nearest_absolute_value_difference", abs(nearest_difference)),
+                    ):
+                        self._observe_cross_version_numeric(
+                            raw_source=raw_source,
+                            source_key=source_key,
+                            feature=feature,
+                            candidate=candidate,
+                            version_a=version_a,
+                            version_b=version_b,
+                            metric=metric,
+                            participant_id=participant_id,
+                            value=value,
+                            context=(
+                                f"{participant_id}|{identity_digest}|{nearest[3]}|{nearest[4]}|"
+                                f"{metric}|{value!r}"
+                            ),
+                        )
+
+                example_key = (*stats_key, classification)
+                bucket = self.state.cross_version_examples.get(example_key)
+                if bucket is None:
+                    bucket = RankedExamples(capacity=self.state.config.diagnostic_examples)
+                    self.state.cross_version_examples[example_key] = bucket
+                bucket.add({
+                    "participant_id": participant_id,
+                    "raw_source_label": raw_source,
+                    "source_key": source_key,
+                    "feature": feature,
+                    "candidate_definition": candidate,
+                    "identity_fingerprint": identity_digest,
+                    "normalized_identity": group.identity_value,
+                    "version_a": version_a,
+                    "version_b": version_b,
+                    "classification": classification,
+                    "version_a_observations": evidence_a.observation_count,
+                    "version_b_observations": evidence_b.observation_count,
+                    "version_a_months": sorted(evidence_a.months),
+                    "version_b_months": sorted(evidence_b.months),
+                    "version_a_contents": [
+                        {
+                            "content_fingerprint": digest,
+                            "normalized_content": evidence_a.content_examples[digest],
+                            "representative_context": (
+                                evidence_a.content_representative_contexts.get(digest)
+                            ),
+                        }
+                        for digest in sorted(evidence_a.content_examples)
+                    ],
+                    "version_b_contents": [
+                        {
+                            "content_fingerprint": digest,
+                            "normalized_content": evidence_b.content_examples[digest],
+                            "representative_context": (
+                                evidence_b.content_representative_contexts.get(digest)
+                            ),
+                        }
+                        for digest in sorted(evidence_b.content_examples)
+                    ],
+                    "version_a_representative": evidence_a.representative_context,
+                    "version_b_representative": evidence_b.representative_context,
+                })
 
     def _scan_file(self, file: RawFile, participant: ParticipantStats) -> None:
         try:
@@ -1269,6 +1734,7 @@ class MixedSourceProfiler:
             source_key=source_key,
             feature=feature,
             version=version,
+            outer_datetime=outer_datetime,
             items=items,
         )
         for payload_index, item in enumerate(items):
@@ -1330,6 +1796,7 @@ class MixedSourceProfiler:
             "feature": feature,
             "collecting_method_version": version,
             "outer_id": outer_id,
+            "outer_datetime": outer_datetime,
             "item_schema": signature,
         }
         item_digest = _fingerprint(item)
@@ -1389,21 +1856,73 @@ class MixedSourceProfiler:
             context=item_context,
         )
 
+        if source_key == "googlefitness":
+            calibration_context: dict[str, Any] = {
+                **item_context, "alternative_name": item.get("source"),
+            }
+            if feature == "StepCount":
+                calibration_context.update({
+                    "summary_steps": _bounded_example(item.get("steps")),
+                    "raw_steps": _bounded_example(item.get("raw_steps")),
+                    "alternative_comparison_key": _step_alternative_key(item.get("source")),
+                })
+            elif feature in {"Weight", "Height"}:
+                calibration_context["added_by"] = item.get("added_by")
+            for candidate, identity_value, content_value in _cross_version_candidate_specs(
+                feature, version, item, outer_datetime,
+            ):
+                self._observe_cross_version_candidate(
+                    raw_source=raw_source,
+                    source_key=source_key,
+                    feature=feature,
+                    version=version,
+                    candidate=candidate,
+                    identity_value=identity_value,
+                    content_value=content_value,
+                    canonical_month=file.canonical_month,
+                    context=calibration_context,
+                )
+
         shape_warning = item.get("_payload_shape_warning")
-        if shape_warning not in (None, ""):
+        expected_scalar_payload = (
+            feature == "StepCount"
+            and version == "1.0"
+            and shape_warning == "scalar_payload"
+        )
+        if shape_warning not in (None, "") and not expected_scalar_payload:
             self.state.diagnostics.add("payload_shape_warning", {**item_context, "warning": shape_warning})
         malformed_reasons: set[str] = set()
-        if shape_warning and not (feature == "StepCount" and version == "1.0" and shape_warning == "scalar_payload"):
+        if shape_warning and not expected_scalar_payload:
             malformed_reasons.add(str(shape_warning))
         if feature in {"Weight", "Height"} and _numeric_value(item.get("value")) is None:
             malformed_reasons.add("missing_or_nonnumeric_value")
-        for malformed_reason in sorted(malformed_reasons):
-            malformed_key = (raw_source, feature, version, malformed_reason)
-            self.state.malformed_item_counts[malformed_key] += 1
-            self.state.malformed_item_participants[malformed_key].add(file.participant_id)
+        if malformed_reasons:
+            occurrence_identity = {
+                "participant_id": file.participant_id,
+                "canonical_month": file.canonical_month,
+                "outer_id": outer_id,
+                "row_number": row_number,
+                "payload_index": payload_index,
+            }
+            occurrence_fingerprint = _fingerprint(occurrence_identity)
+            summary_key = (raw_source, source_key, feature, version)
+            self.state.malformed_unique_items[summary_key].add(occurrence_fingerprint)
+            self.state.malformed_unique_item_participants[summary_key].add(file.participant_id)
+            reason_set = ";".join(sorted(malformed_reasons))
+            self.state.malformed_reason_sets[(*summary_key, reason_set)] += 1
+            for malformed_reason in sorted(malformed_reasons):
+                malformed_key = (raw_source, feature, version, malformed_reason)
+                self.state.malformed_item_counts[malformed_key] += 1
+                self.state.malformed_item_participants[malformed_key].add(file.participant_id)
             self.state.diagnostics.add(
                 "malformed_payload_item",
-                {**item_context, "reason": malformed_reason, "item": _bounded_example(item)},
+                {
+                    **item_context,
+                    "reasons": sorted(malformed_reasons),
+                    "reason_count": len(malformed_reasons),
+                    "occurrence_fingerprint": occurrence_fingerprint,
+                    "item": _bounded_example(item),
+                },
             )
 
         self._walk_value(
@@ -1913,12 +2432,387 @@ class MixedSourceProfiler:
                 context=f"{context_base}|weight_duration|{duration!r}",
             )
 
+    def _record_step_temporal_count(
+        self, *, raw_source: str, source_key: str, version: str, observation_level: str,
+        alternative_name: str, relationship: str, value: Any, count: int = 1,
+    ) -> None:
+        self.state.step_temporal_alignment_counts[
+            (raw_source, source_key, version, observation_level, alternative_name, relationship, str(value),)
+        ] += count
+
+    def _record_step_temporal_numeric(
+        self, *, raw_source: str, source_key: str, version: str, observation_level: str, alternative_name: str,
+        metric: str, participant_id: str, value: float, context: str,
+    ) -> None:
+        key = (raw_source, source_key, version, observation_level, alternative_name, metric,)
+        stats = self.state.step_temporal_numeric.get(key)
+        if stats is None:
+            stats = FocusedDistributionStats(
+                values=NumericSketch(sample_size=self.state.config.numeric_sample_size)
+            )
+            self.state.step_temporal_numeric[key] = stats
+        stats.count += 1
+        stats.participants.add(participant_id)
+        stats.values.add(value, context)
+
+    def _profile_step_temporal(
+        self, *, file: RawFile, row_number: int, raw_source: str, source_key: str, version: str,
+        outer_datetime: str, items: list[dict[str, Any]],
+    ) -> None:
+        accounting_prefix = (raw_source, source_key, version)
+        self.state.step_temporal_accounting[(*accounting_prefix, "outer_rows")] += 1
+        self.state.step_temporal_accounting[(*accounting_prefix, "aggregation_alternatives")] += len(items)
+        outer_info = parse_time_info(outer_datetime)
+        all_summary_dates: set[str] = set()
+        all_raw_intervals: set[tuple[str, str]] = set()
+
+        for item_index, item in enumerate(items):
+            alternative_name = str(
+                item.get("source")
+                or ("legacy_scalar" if version == "1.0" else "<missing>")
+            )
+            summary_entries = _step_summary_entries(item)
+            raw_entries = [
+                (index, entry)
+                for index, entry in enumerate(item.get("raw_steps") or [])
+                if isinstance(entry, Mapping)
+            ] if isinstance(item.get("raw_steps"), list) else []
+            self.state.step_temporal_accounting[(*accounting_prefix, "summary_entries")] += len(summary_entries)
+            self.state.step_temporal_accounting[(*accounting_prefix, "raw_interval_entries")] += len(raw_entries)
+            self._record_step_temporal_count(
+                raw_source=raw_source,
+                source_key=source_key,
+                version=version,
+                observation_level="aggregation_alternative",
+                alternative_name=alternative_name,
+                relationship="summary_entry_count",
+                value=len(summary_entries),
+            )
+            self._record_step_temporal_count(
+                raw_source=raw_source,
+                source_key=source_key,
+                version=version,
+                observation_level="aggregation_alternative",
+                alternative_name=alternative_name,
+                relationship="raw_interval_entry_count",
+                value=len(raw_entries),
+            )
+
+            summary_dates = [entry[1] for entry in summary_entries]
+            all_summary_dates.update(value.isoformat() for value in summary_dates)
+            self._record_step_temporal_count(
+                raw_source=raw_source,
+                source_key=source_key,
+                version=version,
+                observation_level="aggregation_alternative",
+                alternative_name=alternative_name,
+                relationship="distinct_summary_date_count",
+                value=len(set(summary_dates)),
+            )
+            for _, summary_date, _ in summary_entries:
+                if outer_info is not None:
+                    for anchor_name, anchor_date in (
+                        ("outer_utc", outer_info.utc.date()),
+                        ("outer_local", outer_info.local.date()),
+                    ):
+                        delta = _signed_day_delta(anchor_date, summary_date)
+                        self._record_step_temporal_count(
+                            raw_source=raw_source,
+                            source_key=source_key,
+                            version=version,
+                            observation_level="aggregation_alternative",
+                            alternative_name=alternative_name,
+                            relationship=f"summary_date_to_{anchor_name}_date_delta_days",
+                            value=delta,
+                        )
+
+            valid_raw: list[tuple[int, ParsedTime, ParsedTime, Mapping[str, Any]]] = []
+            for raw_index, raw_entry in raw_entries:
+                start_info = parse_time_info(raw_entry.get("start_date"))
+                end_info = parse_time_info(raw_entry.get("end_date"))
+                if start_info is None or end_info is None:
+                    self.state.step_temporal_accounting[(*accounting_prefix, "invalid_raw_intervals")] += 1
+                    self._record_step_temporal_count(
+                        raw_source=raw_source,
+                        source_key=source_key,
+                        version=version,
+                        observation_level="raw_interval",
+                        alternative_name=alternative_name,
+                        relationship="parse_status",
+                        value="invalid",
+                    )
+                    continue
+                self.state.step_temporal_accounting[(*accounting_prefix, "valid_raw_intervals")] += 1
+                valid_raw.append((raw_index, start_info, end_info, raw_entry))
+                start_text = start_info.utc.isoformat(timespec="milliseconds")
+                end_text = end_info.utc.isoformat(timespec="milliseconds")
+                all_raw_intervals.add((start_text, end_text))
+                duration = (end_info.utc - start_info.utc).total_seconds()
+                context = (
+                    f"{file.participant_id}|{file.canonical_month}|{row_number}|"
+                    f"{item_index}|{raw_index}|{alternative_name}"
+                )
+                self._record_step_temporal_numeric(
+                    raw_source=raw_source,
+                    source_key=source_key,
+                    version=version,
+                    observation_level="raw_interval",
+                    alternative_name=alternative_name,
+                    metric="duration_seconds",
+                    participant_id=file.participant_id,
+                    value=duration,
+                    context=context + f"|duration|{duration!r}",
+                )
+                self._record_step_temporal_count(
+                    raw_source=raw_source,
+                    source_key=source_key,
+                    version=version,
+                    observation_level="raw_interval",
+                    alternative_name=alternative_name,
+                    relationship="duration_bucket",
+                    value=_duration_bucket(duration),
+                )
+                self._record_step_temporal_count(
+                    raw_source=raw_source,
+                    source_key=source_key,
+                    version=version,
+                    observation_level="raw_interval",
+                    alternative_name=alternative_name,
+                    relationship="start_to_end_utc_date_delta_days",
+                    value=_signed_day_delta(start_info.utc.date(), end_info.utc.date()),
+                )
+                for point_name, parsed in (("start", start_info), ("end", end_info)):
+                    offset = parsed.offset_minutes if parsed.offset_explicit else "<not_explicit>"
+                    self._record_step_temporal_count(
+                        raw_source=raw_source,
+                        source_key=source_key,
+                        version=version,
+                        observation_level="raw_interval",
+                        alternative_name=alternative_name,
+                        relationship=f"raw_{point_name}_timezone_offset_minutes",
+                        value=offset,
+                    )
+                    if outer_info is not None:
+                        for anchor_name, anchor_date in (
+                            ("outer_utc", outer_info.utc.date()),
+                            ("outer_local", outer_info.local.date()),
+                        ):
+                            self._record_step_temporal_count(
+                                raw_source=raw_source,
+                                source_key=source_key,
+                                version=version,
+                                observation_level="raw_interval",
+                                alternative_name=alternative_name,
+                                relationship=(
+                                    f"{anchor_name}_date_to_raw_{point_name}_utc_date_delta_days"
+                                ),
+                                value=_signed_day_delta(anchor_date, parsed.utc.date()),
+                            )
+                        outer_offset_seconds = (
+                            parsed.utc - outer_info.utc
+                        ).total_seconds()
+                        self._record_step_temporal_numeric(
+                            raw_source=raw_source,
+                            source_key=source_key,
+                            version=version,
+                            observation_level="raw_interval",
+                            alternative_name=alternative_name,
+                            metric=f"raw_{point_name}_minus_outer_utc_seconds",
+                            participant_id=file.participant_id,
+                            value=outer_offset_seconds,
+                            context=(
+                                context
+                                + f"|raw_{point_name}_minus_outer_utc|"
+                                + repr(outer_offset_seconds)
+                            ),
+                        )
+
+            if not summary_dates or not valid_raw:
+                pairing_mode = "no_pair_available"
+                pairs: list[tuple[date, tuple[int, ParsedTime, ParsedTime, Mapping[str, Any]]]] = []
+            elif len(summary_dates) == len(valid_raw):
+                pairing_mode = "index_aligned"
+                pairs = list(zip(summary_dates, valid_raw))
+            elif len(summary_dates) == 1:
+                pairing_mode = "one_summary_to_all_raw_intervals"
+                pairs = [(summary_dates[0], raw) for raw in valid_raw]
+            elif len(valid_raw) == 1:
+                pairing_mode = "one_raw_interval_to_all_summaries"
+                pairs = [(summary_date, valid_raw[0]) for summary_date in summary_dates]
+            else:
+                pairing_mode = "index_aligned_with_unpaired_entries"
+                pairs = list(zip(summary_dates, valid_raw))
+
+            self._record_step_temporal_count(
+                raw_source=raw_source,
+                source_key=source_key,
+                version=version,
+                observation_level="aggregation_alternative",
+                alternative_name=alternative_name,
+                relationship="summary_raw_pairing_mode",
+                value=pairing_mode,
+            )
+            self.state.step_temporal_accounting[(*accounting_prefix, "paired_summary_raw_comparisons")] += len(pairs)
+            self.state.step_temporal_accounting[(*accounting_prefix, "unpaired_summary_entries")] += max(0, len(summary_dates) - len(pairs))
+            self.state.step_temporal_accounting[(*accounting_prefix, "unpaired_raw_intervals")] += max(0, len(valid_raw) - len(pairs))
+
+            for summary_date, (raw_index, start_info, end_info, raw_entry) in pairs:
+                day_start = datetime.combine(summary_date, datetime.min.time(), tzinfo=timezone.utc)
+                day_end = day_start + timedelta(days=1)
+                duration = (end_info.utc - start_info.utc).total_seconds()
+                start_offset = (start_info.utc - day_start).total_seconds()
+                end_offset = (end_info.utc - day_start).total_seconds()
+                overlap = max(
+                    0.0,
+                    (min(end_info.utc, day_end) - max(start_info.utc, day_start)).total_seconds(),
+                )
+                relation = _step_interval_relation(start_info.utc, end_info.utc, summary_date)
+                context = (
+                    f"{file.participant_id}|{file.canonical_month}|{row_number}|"
+                    f"{item_index}|{raw_index}|{alternative_name}|{summary_date.isoformat()}"
+                )
+                for metric, value in (
+                    ("raw_start_minus_summary_midnight_utc_seconds", start_offset),
+                    ("raw_end_minus_summary_midnight_utc_seconds", end_offset),
+                    ("raw_overlap_with_summary_day_utc_seconds", overlap),
+                    ("raw_interval_duration_seconds", duration),
+                ):
+                    self._record_step_temporal_numeric(
+                        raw_source=raw_source,
+                        source_key=source_key,
+                        version=version,
+                        observation_level="raw_interval",
+                        alternative_name=alternative_name,
+                        metric=metric,
+                        participant_id=file.participant_id,
+                        value=value,
+                        context=context + f"|{metric}|{value!r}",
+                    )
+                for relationship, value in (
+                    (
+                        "summary_date_to_raw_start_utc_date_delta_days",
+                        _signed_day_delta(start_info.utc.date(), summary_date),
+                    ),
+                    (
+                        "summary_date_to_raw_end_utc_date_delta_days",
+                        _signed_day_delta(end_info.utc.date(), summary_date),
+                    ),
+                    ("raw_interval_relation_to_summary_day_utc", relation),
+                    ("raw_interval_overlaps_summary_day_utc", int(overlap > 0)),
+                    ("raw_interval_contains_summary_midnight_utc", int(start_info.utc <= day_start < end_info.utc)),
+                    ("raw_interval_contains_summary_day_end_utc", int(start_info.utc < day_end <= end_info.utc)),
+                ):
+                    self._record_step_temporal_count(
+                        raw_source=raw_source,
+                        source_key=source_key,
+                        version=version,
+                        observation_level="raw_interval",
+                        alternative_name=alternative_name,
+                        relationship=relationship,
+                        value=value,
+                    )
+                if relation != "contained_within_summary_day_utc":
+                    self.state.diagnostics.add(
+                        "stepcount_raw_interval_not_contained_in_summary_utc_day",
+                        {
+                            "participant_id": file.participant_id,
+                            "canonical_month": file.canonical_month,
+                            "row_number": row_number,
+                            "item_index": item_index,
+                            "raw_step_index": raw_index,
+                            "alternative_name": alternative_name,
+                            "summary_date": summary_date.isoformat(),
+                            "raw_start_utc": start_info.utc.isoformat(),
+                            "raw_end_utc": end_info.utc.isoformat(),
+                            "relation": relation,
+                            "origin_data_source_id": raw_entry.get("origin_data_source_id"),
+                        },
+                    )
+
+        self._record_step_temporal_count(
+            raw_source=raw_source,
+            source_key=source_key,
+            version=version,
+            observation_level="outer_row",
+            alternative_name="<outer_row>",
+            relationship="aggregation_alternative_count",
+            value=len(items),
+        )
+        self._record_step_temporal_count(
+            raw_source=raw_source,
+            source_key=source_key,
+            version=version,
+            observation_level="outer_row",
+            alternative_name="<outer_row>",
+            relationship="distinct_summary_date_count",
+            value=len(all_summary_dates),
+        )
+        self._record_step_temporal_count(
+            raw_source=raw_source,
+            source_key=source_key,
+            version=version,
+            observation_level="outer_row",
+            alternative_name="<outer_row>",
+            relationship="distinct_raw_interval_count",
+            value=len(all_raw_intervals),
+        )
+        self._record_step_temporal_count(
+            raw_source=raw_source,
+            source_key=source_key,
+            version=version,
+            observation_level="outer_row",
+            alternative_name="<outer_row>",
+            relationship="all_alternatives_same_summary_date",
+            value=(
+                "<not_available>"
+                if not all_summary_dates
+                else int(len(all_summary_dates) == 1)
+            ),
+        )
+        self._record_step_temporal_count(
+            raw_source=raw_source,
+            source_key=source_key,
+            version=version,
+            observation_level="outer_row",
+            alternative_name="<outer_row>",
+            relationship="all_alternatives_same_raw_interval",
+            value=(
+                "<not_available>"
+                if not all_raw_intervals
+                else int(len(all_raw_intervals) == 1)
+            ),
+        )
+        if outer_info is not None and len(all_summary_dates) == 1:
+            summary_date = date.fromisoformat(next(iter(all_summary_dates)))
+            for anchor_name, anchor_date in (
+                ("outer_utc", outer_info.utc.date()),
+                ("outer_local", outer_info.local.date()),
+            ):
+                self._record_step_temporal_count(
+                    raw_source=raw_source,
+                    source_key=source_key,
+                    version=version,
+                    observation_level="outer_row",
+                    alternative_name="<outer_row>",
+                    relationship=f"common_summary_date_to_{anchor_name}_date_delta_days",
+                    value=_signed_day_delta(anchor_date, summary_date),
+                )
+
     def _profile_step_alternatives(
         self, *, file: RawFile, row_number: int, raw_source: str, source_key: str, feature: str,
-        version: str, items: list[dict[str, Any]],
+        version: str, outer_datetime: str, items: list[dict[str, Any]],
     ) -> None:
         if source_key != "googlefitness" or feature != "StepCount":
             return
+        self._profile_step_temporal(
+            file=file,
+            row_number=row_number,
+            raw_source=raw_source,
+            source_key=source_key,
+            version=version,
+            outer_datetime=outer_datetime,
+            items=items,
+        )
         stats = self.state.step_alternatives.setdefault(
             (raw_source, version),
             StepAlternativeStats(
