@@ -21,7 +21,7 @@ adopting those would be a positive endorsement rather than a withdrawal, and is 
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
-from wearable_project.processing.registry import get_feature_spec
+from wearable_project.processing.apple_healthkit.registry import get_feature_spec
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ def _curation_declaration(feature: str, column: str) -> Any | None:
 
     # Imported here so that importing a loader never pulls the curation package; by the time a result is
     # described or harmonized, get_data has already loaded it.
-    from wearable_project.curation.registry import get_policy
+    from wearable_project.curation.apple_healthkit.registry import get_policy
 
     try:
         policy = get_policy(feature, allow_fallback=False)

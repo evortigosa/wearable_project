@@ -8,9 +8,7 @@ from __future__ import annotations
 import glob
 import os
 import shutil
-import warnings
 from pathlib import Path
-import numpy as np
 import pandas as pd
 import pytest
 from wearable_project.DataLoaders import DataLoaderStateError, LoaderData
@@ -23,10 +21,10 @@ from wearable_project.DataLoaders.SleepLoader import SleepLoader
 from wearable_project.DataLoaders.StepCountLoader import StepCountLoader
 from wearable_project.DataLoaders.WeightLoader import WeightLoader
 from wearable_project.exceptions import DataLoaderConfigurationError
-from wearable_project.processing.registry import get_feature_spec
+from wearable_project.processing.apple_healthkit.registry import get_feature_spec
 from wearable_project.DataLoaders._units import stored_unit  # noqa: E402
-from wearable_project.curation.registry import get_policy  # noqa: E402
-from wearable_project.processing.registry import SPECS  # noqa: E402
+from wearable_project.curation.apple_healthkit.registry import get_policy  # noqa: E402
+from wearable_project.processing.apple_healthkit.registry import SPECS  # noqa: E402
 
 
 CURATED_SAMPLE = Path(os.environ.get(

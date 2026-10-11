@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
 import numpy as np
 import pandas as pd
-from wearable_project.curation.guidance import get_feature_guide
+from wearable_project.curation.apple_healthkit.guidance import get_feature_guide
 from wearable_project.exceptions import DataLoaderConfigurationError
 from wearable_project.utils import data_statistics as ds
 from wearable_project.utils import data_summaries as sm

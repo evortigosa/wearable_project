@@ -27,15 +27,15 @@ import time
 from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 from tqdm import tqdm
-from wearable_project.curation.decisions import (
+from wearable_project.curation.apple_healthkit.decisions import (
     decisions_fingerprint, decisions_payload, get_decision, known_decisions,
 )
-from wearable_project.curation.environment import environment_manifest
-from wearable_project.curation.pipeline import validate_native_input_root
-from wearable_project.curation.guidance import get_feature_guide, guidance_fingerprint
-from wearable_project.curation.models import PolicyMaturity
+from wearable_project.curation.apple_healthkit.environment import environment_manifest
+from wearable_project.curation.apple_healthkit.pipeline import validate_native_input_root
+from wearable_project.curation.apple_healthkit.guidance import get_feature_guide, guidance_fingerprint
+from wearable_project.curation.apple_healthkit.models import PolicyMaturity
 from wearable_project.exceptions import InputLayoutError
-from wearable_project.curation.registry import (
+from wearable_project.curation.apple_healthkit.registry import (
     CURATION_POLICIES, CURATION_REGISTRY_VERSION, get_policy, registry_fingerprint,
 )
 

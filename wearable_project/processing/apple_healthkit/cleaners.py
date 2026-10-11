@@ -14,8 +14,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import pandas as pd
-from wearable_project.processing.parser import canonical_json
-from wearable_project.processing.registry import DedupStrategy, FeatureFamily, FeatureSpec, get_feature_spec
+from wearable_project.processing.apple_healthkit.parser import canonical_json
+from wearable_project.processing.apple_healthkit.registry import DedupStrategy, FeatureFamily, FeatureSpec, get_feature_spec
 
 
 FLATTENED_METADATA_KEYS = {

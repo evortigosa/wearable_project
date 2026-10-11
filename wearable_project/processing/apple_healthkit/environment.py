@@ -1,14 +1,16 @@
 """
 Wearable Data Processing and Modeling project
-Reproducibility and import-source diagnostics for curation releases.
+Reproducibility diagnostics for Phase 1 native processing. The native processing state stores semantic
+parser and registry versions. This module reports the code that is currently imported so users can
+distinguish a real state-version mismatch from an invocation mismatch such as:
+    python -m wearable_project process       # local checkout on sys.path
+    wearable-project process-scan            # installed wheel console script
 """
-
 
 from __future__ import annotations
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from importlib import metadata
-import json
 from pathlib import Path
 import platform
 import site
@@ -16,34 +18,25 @@ import subprocess
 import sys
 import sysconfig
 from typing import Any, Mapping
-import pandas as pd
 import wearable_project
-from wearable_project.curation.decisions import decisions_fingerprint
-from wearable_project.curation.guidance import guidance_fingerprint
-from wearable_project.curation.registry import registry_fingerprint
+from wearable_project.processing.apple_healthkit.pipeline import PARSER_VERSION
+from wearable_project.processing.apple_healthkit.registry import REGISTRY_VERSION
+from wearable_project.utils.release_manifest import EXPECTED_CORE_PROCESSING_MODULE_SHA256
 
 
-_TRACKED_MODULES = (
-    "audit.py",
-    "curate_cli.py",
-    "decisions.py",
-    "engine.py",
-    "environment.py",
-    "evidence.py",
-    "explain.py",
-    "guidance.py",
-    "models.py",
+_TRACKED_CORE_MODULES = (
+    "__init__.py",
+    "cleaners.py",
+    "parser.py",
     "pipeline.py",
     "registry.py",
-    "rules.py",
-    "state.py",
-    "strategies.py",
-    "unit_resolution.py",
+    "resampling.py",
+    "tracker.py",
+    "writer.py",
 )
 
-
 @dataclass(frozen=True, slots=True)
-class EnvironmentManifest:
+class ProcessingEnvironmentManifest:
     package_version: str
     package_release_label: str
     imported_package_path: str
@@ -53,17 +46,14 @@ class EnvironmentManifest:
     distribution_root: str | None
     distribution_package_path: str | None
     distribution_candidates: tuple[Mapping[str, str | None], ...]
-    site_package_roots: tuple[str, ...]
     import_source_kind: str
     python_version: str
-    pandas_version: str
     platform: str
-    registry_fingerprint: str
-    guidance_fingerprint: str
-    decisions_fingerprint: str
-    module_sha256: Mapping[str, str]
-    expected_module_sha256: Mapping[str, str]
-    module_integrity: Mapping[str, bool]
+    parser_version: str
+    registry_version: str
+    core_module_sha256: Mapping[str, str]
+    expected_core_module_sha256: Mapping[str, str]
+    core_module_integrity: Mapping[str, bool]
     git_commit: str | None
     git_dirty: bool | None
     warnings: tuple[str, ...]
@@ -74,6 +64,14 @@ class EnvironmentManifest:
 
 def _hash(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _git_info(root: Path) -> tuple[str | None, bool | None]:
@@ -91,21 +89,13 @@ def _git_info(root: Path) -> tuple[str | None, bool | None]:
         return None, None
 
 
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-def environment_manifest() -> EnvironmentManifest:
+def processing_environment_manifest() -> ProcessingEnvironmentManifest:
     module_file = wearable_project.__file__
     if module_file is None:
         raise RuntimeError("wearable_project has no __file__ (namespace package?)")
     package_path = Path(module_file).resolve()
     package_root = package_path.parent
-    curation_root = package_root / "curation"
+    processing_root = package_root / "processing" / "apple_healthkit"
     source_root = package_root.parent
     candidates: list[dict[str, str | None]] = []
     for candidate in metadata.distributions():
@@ -137,17 +127,17 @@ def environment_manifest() -> EnvironmentManifest:
         value = sysconfig.get_paths().get(key)
         if value:
             roots.add(Path(value).resolve())
-    site_roots = tuple(sorted(str(item) for item in roots))
 
     cwd = Path.cwd().resolve()
-    local_checkout = (cwd / "pyproject.toml").is_file() and (cwd / "wearable_project" / "__init__.py").is_file() and (package_path == (cwd / "wearable_project" / "__init__.py").resolve())
+    local_checkout = (
+        (cwd / "pyproject.toml").is_file()
+        and (cwd / "wearable_project" / "__init__.py").is_file()
+        and package_path == (cwd / "wearable_project" / "__init__.py").resolve()
+    )
     in_site_packages = any(_is_relative_to(package_path, root) for root in roots)
     if local_checkout:
         source_kind = "local_checkout"
     elif dist_package is not None and package_path == dist_package:
-        # The imported package is exactly the package registered by the installed distribution. This is true for
-        # a normal wheel install and for isolated --target validation directories, even when the target is not
-        # one of Python's conventional site-packages roots.
         source_kind = "installed_distribution"
     elif in_site_packages:
         source_kind = "installed_distribution"
@@ -157,52 +147,39 @@ def environment_manifest() -> EnvironmentManifest:
         source_kind = "local_source_shadowing_installed_distribution"
 
     actual = {
-        name: _hash(curation_root / name) for name in _TRACKED_MODULES if (curation_root / name).is_file()
+        name: _hash(processing_root / name)
+        for name in _TRACKED_CORE_MODULES if (processing_root / name).is_file()
     }
-    try:
-        from wearable_project.utils.release_manifest import (
-            EXPECTED_CURATION_MODULE_SHA256,
-            EXPECTED_DECISIONS_FINGERPRINT,
-            EXPECTED_GUIDANCE_FINGERPRINT,
-            EXPECTED_REGISTRY_FINGERPRINT,
-        )
-        expected = dict(EXPECTED_CURATION_MODULE_SHA256)
-    except Exception:
-        expected = {}
-        EXPECTED_REGISTRY_FINGERPRINT = None
-        EXPECTED_GUIDANCE_FINGERPRINT = None
-        EXPECTED_DECISIONS_FINGERPRINT = None
+    expected = dict(EXPECTED_CORE_PROCESSING_MODULE_SHA256)
     integrity = {
-        name: actual.get(name) == expected_hash for name, expected_hash in expected.items()
+        name: actual.get(name) == expected_hash
+        for name, expected_hash in expected.items()
     }
+
     warnings: list[str] = []
     if source_kind in {"local_checkout", "local_source_shadowing_installed_distribution"}:
         warnings.append(
-            "Commands are importing the local checkout rather than a site-packages wheel. Run from outside the checkout to test the wheel itself."
+            "Commands are importing a local checkout rather than the installed wheel. "
+            "Using `python -m wearable_project ...` from a repository can therefore differ "
+            "from the `wearable-project ...` console script."
         )
     mismatched = sorted(name for name, valid in integrity.items() if not valid)
     if mismatched:
-        warnings.append("Curation source differs from the release manifest: " + ", ".join(mismatched))
+        warnings.append(
+            "Core native processing source differs from the frozen release: "
+            + ", ".join(mismatched)
+        )
     if dist_version is not None and dist_version != wearable_project.__version__:
         warnings.append(
-            f"Imported package version {wearable_project.__version__} differs from installed distribution {dist_version}."
-        )
-    current_registry = registry_fingerprint()
-    current_guidance = guidance_fingerprint()
-    current_decisions = decisions_fingerprint()
-    if EXPECTED_REGISTRY_FINGERPRINT and current_registry != EXPECTED_REGISTRY_FINGERPRINT:
-        warnings.append("Registry fingerprint differs from the release manifest.")
-    if EXPECTED_GUIDANCE_FINGERPRINT and current_guidance != EXPECTED_GUIDANCE_FINGERPRINT:
-        warnings.append("Guidance fingerprint differs from the release manifest.")
-    if EXPECTED_DECISIONS_FINGERPRINT and current_decisions != EXPECTED_DECISIONS_FINGERPRINT:
-        warnings.append("Calibration-decision fingerprint differs from the release manifest.")
-    git_commit, git_dirty = _git_info(source_root)
-    if git_dirty:
-        warnings.append(
-            "The enclosing Git working tree has uncommitted changes; imported package module integrity is reported separately."
+            f"Imported package version {wearable_project.__version__} differs from "
+            f"installed distribution {dist_version}."
         )
 
-    return EnvironmentManifest(
+    git_commit, git_dirty = _git_info(source_root)
+    if git_dirty and source_kind != "installed_distribution":
+        warnings.append("The imported processing source is from a Git working tree with uncommitted changes.")
+
+    return ProcessingEnvironmentManifest(
         package_version=wearable_project.__version__,
         package_release_label=getattr(wearable_project, "__release_label__", wearable_project.__version__),
         imported_package_path=str(package_path),
@@ -212,22 +189,15 @@ def environment_manifest() -> EnvironmentManifest:
         distribution_root=str(dist_root) if dist_root is not None else None,
         distribution_package_path=str(dist_package) if dist_package is not None else None,
         distribution_candidates=tuple(candidates),
-        site_package_roots=site_roots,
         import_source_kind=source_kind,
         python_version=sys.version.split()[0],
-        pandas_version=pd.__version__,
         platform=platform.platform(),
-        registry_fingerprint=current_registry,
-        guidance_fingerprint=current_guidance,
-        decisions_fingerprint=current_decisions,
-        module_sha256=actual,
-        expected_module_sha256=expected,
-        module_integrity=integrity,
+        parser_version=PARSER_VERSION,
+        registry_version=REGISTRY_VERSION,
+        core_module_sha256=actual,
+        expected_core_module_sha256=expected,
+        core_module_integrity=integrity,
         git_commit=git_commit,
         git_dirty=git_dirty,
         warnings=tuple(warnings),
     )
-
-
-def environment_json() -> str:
-    return json.dumps(environment_manifest().as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"

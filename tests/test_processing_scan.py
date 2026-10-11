@@ -13,7 +13,7 @@ import subprocess
 import sys
 import sqlite3
 from pathlib import Path
-from wearable_project.processing.scan import scan_processing_plan
+from wearable_project.processing.apple_healthkit.scan import scan_processing_plan
 
 
 def write_month(root: Path, participant: str, filename: str, *, value: float = 100,) -> None:

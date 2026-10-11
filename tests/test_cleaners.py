@@ -3,7 +3,7 @@ Wearable Data Processing and Modeling project
 """
 
 
-from wearable_project.processing.cleaners import clean_feature
+from wearable_project.processing.apple_healthkit.cleaners import clean_feature
 
 
 def base(**updates):

@@ -7,7 +7,7 @@ feature from redefining the meaning of a warning.
 
 
 from __future__ import annotations
-from wearable_project.curation.models import InclusionEffect, RuleClass, RuleDefinition, Severity, StatusEffect
+from wearable_project.curation.apple_healthkit.models import InclusionEffect, RuleClass, RuleDefinition, Severity, StatusEffect
 
 
 RULES: dict[str, RuleDefinition] = {}

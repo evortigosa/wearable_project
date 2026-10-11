@@ -4,10 +4,10 @@ Wearable Data Processing and Modeling project
 
 
 from pathlib import Path
-from wearable_project.processing.parser import SourceFile
-from wearable_project.processing.pipeline import PARSER_VERSION, PlanAction, plan_participant
-from wearable_project.processing.registry import REGISTRY_VERSION
-from wearable_project.processing.writer import StoredParticipantState
+from wearable_project.processing.apple_healthkit.parser import SourceFile
+from wearable_project.processing.apple_healthkit.pipeline import PARSER_VERSION, PlanAction, plan_participant
+from wearable_project.processing.apple_healthkit.registry import REGISTRY_VERSION
+from wearable_project.processing.apple_healthkit.writer import StoredParticipantState
 
 
 def source(month, digest):

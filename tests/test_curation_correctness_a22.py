@@ -7,10 +7,10 @@ from __future__ import annotations
 import csv
 import math
 from pathlib import Path
-from wearable_project.curation.engine import curate_feature_file
-from wearable_project.curation.pipeline import curate_dataset
-from wearable_project.curation.state import load_curation_report
-from wearable_project.curation.unit_resolution import build_participant_unit_context
+from wearable_project.curation.apple_healthkit.engine import curate_feature_file
+from wearable_project.curation.apple_healthkit.pipeline import curate_dataset
+from wearable_project.curation.apple_healthkit.state import load_curation_report
+from wearable_project.curation.apple_healthkit.unit_resolution import build_participant_unit_context
 
 
 BASE_FIELDS = [

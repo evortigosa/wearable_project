@@ -8,7 +8,7 @@ import csv
 import hashlib
 import json
 from pathlib import Path
-from wearable_project.curation.audit import run_curation_audit
+from wearable_project.curation.apple_healthkit.audit import run_curation_audit
 
 
 def _write(path: Path, rows: list[dict[str, object]]) -> None:
@@ -97,7 +97,7 @@ def test_audit_is_read_only_and_emits_calibration_tables(tmp_path: Path) -> None
 
 
 def test_audit_refuses_nested_output(tmp_path: Path) -> None:
-    from wearable_project.curation.audit import AuditError
+    from wearable_project.curation.apple_healthkit.audit import AuditError
     native = _native_fixture(tmp_path / "native")
     try:
         run_curation_audit(native, native / "audit", workers=1, allow_unmanaged_native_root=True)

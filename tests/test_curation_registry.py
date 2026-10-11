@@ -9,14 +9,13 @@ import hashlib
 import io
 import json
 from pathlib import Path
-import pytest
-from wearable_project.curation.models import CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport
-from wearable_project.curation.registry import (
+from wearable_project.curation.apple_healthkit.models import CurationStatus, InclusionPolicy, PolicyMaturity, ResamplingSupport
+from wearable_project.curation.apple_healthkit.registry import (
     COHORT_OBSERVED_FEATURES, CURATION_POLICIES, CURATION_REGISTRY_VERSION, UNKNOWN_POLICY,
     get_policy, known_curation_features, matrix_csv, registry_fingerprint, registry_payload, validate_registry,
 )
-from wearable_project.curation.models import EvidenceGrade, PolicyExecutionMode
-from wearable_project.curation.environment import environment_manifest
+from wearable_project.curation.apple_healthkit.models import EvidenceGrade, PolicyExecutionMode
+from wearable_project.curation.apple_healthkit.environment import environment_manifest
 from wearable_project.utils.release_manifest import EXPECTED_CORE_PROCESSING_MODULE_SHA256
 
 
@@ -157,7 +156,7 @@ def test_matrix_csv_contains_one_row_per_feature() -> None:
 
 
 def test_milestone_one_processing_modules_are_byte_frozen() -> None:
-    processing = Path(__file__).parents[1] / "wearable_project" / "processing"
+    processing = Path(__file__).parents[1] / "wearable_project" / "processing" / "apple_healthkit"
     actual = {
         name: hashlib.sha256((processing / name).read_bytes()).hexdigest()
         for name in EXPECTED_CORE_PROCESSING_MODULE_SHA256

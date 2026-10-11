@@ -41,7 +41,7 @@ from typing import Any
 import pandas as pd
 from wearable_project import __release_label__, __version__
 from wearable_project.utils.data_statistics import protected_roots
-from wearable_project.curation import schema
+from wearable_project.curation.apple_healthkit import schema
 from wearable_project.DataLoaders import available_features
 from wearable_project.DataLoaders._base import (
     _PHASE_STATE_FILES, DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, AppleHealthFeatureLoader, _account_name,

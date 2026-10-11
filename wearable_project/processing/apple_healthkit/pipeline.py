@@ -18,13 +18,13 @@ from pathlib import Path
 from typing import Any, Iterable
 from tqdm import tqdm
 from wearable_project.exceptions import InputLayoutError, ParticipantProcessingError
-from wearable_project.processing.parser import (
+from wearable_project.processing.apple_healthkit.parser import (
     ParseResult, SourceFile, canonical_month_from_name, discover_month_files,
     merge_parse_results, parse_month_file, sha256_file,
 )
-from wearable_project.processing.registry import REGISTRY_VERSION, get_feature_spec, is_registered_feature
-from wearable_project.processing.tracker import peak_rss_bytes
-from wearable_project.processing.writer import (
+from wearable_project.processing.apple_healthkit.registry import REGISTRY_VERSION, get_feature_spec, is_registered_feature
+from wearable_project.processing.apple_healthkit.tracker import peak_rss_bytes
+from wearable_project.processing.apple_healthkit.writer import (
     DirectorySwap, FeatureOutputInfo, StateDatabase, atomic_write_csv, drop_file_cache, existing_output_is_usable,
     load_csv_records, prepare_stage, safe_feature_filename, source_signature, validate_participant_stage,
 )
@@ -272,7 +272,7 @@ def build_participant(task: ParticipantTask) -> BuildResult:
     try:
         # Keep pandas and feature-cleaning machinery out of the parent process. Under spawn, this materially reduces
         # peak memory because only workers import the heavy tabular stack.
-        from wearable_project.processing.cleaners import clean_feature
+        from wearable_project.processing.apple_healthkit.cleaners import clean_feature
 
         incremental = task.action == PlanAction.INCREMENTAL.value
         prepare_stage(task.stage_dir, task.existing_dir, incremental)

@@ -11,8 +11,8 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 from typing import Iterable
-from wearable_project.curation.evidence import EVIDENCE
-from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES, get_policy
+from wearable_project.curation.apple_healthkit.evidence import EVIDENCE
+from wearable_project.curation.apple_healthkit.registry import COHORT_OBSERVED_FEATURES, get_policy
 
 
 GUIDANCE_VERSION = "0.2.0a2.2-guidance-4"

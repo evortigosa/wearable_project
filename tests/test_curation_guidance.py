@@ -4,13 +4,12 @@ Wearable Data Processing and Modeling project
 
 
 from __future__ import annotations
-import json
-from wearable_project.curation.evidence import EVIDENCE
-from wearable_project.curation.explain import (
-    evidence_for_feature, feature_explanation, render_all_guides_markdown, render_feature_text,
+from wearable_project.curation.apple_healthkit.evidence import EVIDENCE
+from wearable_project.curation.apple_healthkit.explain import (
+    feature_explanation, render_all_guides_markdown, render_feature_text,
 )
-from wearable_project.curation.guidance import FEATURE_GUIDES, get_feature_guide, guidance_fingerprint
-from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES
+from wearable_project.curation.apple_healthkit.guidance import FEATURE_GUIDES, guidance_fingerprint
+from wearable_project.curation.apple_healthkit.registry import COHORT_OBSERVED_FEATURES
 
 
 def test_guidance_covers_exactly_the_full_cohort_features() -> None:

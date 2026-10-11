@@ -14,12 +14,12 @@ import warnings
 from pathlib import Path
 import pandas as pd
 import pytest
-from wearable_project.curation import schema as S
-from wearable_project.curation.schema import ColumnRole
-from wearable_project.processing.cleaners import (
+from wearable_project.curation.apple_healthkit import schema as S
+from wearable_project.curation.apple_healthkit.schema import ColumnRole
+from wearable_project.processing.apple_healthkit.cleaners import (
     AUDIT_COLUMNS, CONTEXT_COLUMNS, PROVENANCE_COLUMNS, UNIT_COLUMNS,
 )
-from wearable_project.processing.registry import SPECS
+from wearable_project.processing.apple_healthkit.registry import SPECS
 from wearable_project.DataLoaders.ActivitySummaryLoader import ActivitySummaryLoader
 from wearable_project.DataLoaders.BloodGlucoseLoader import BloodGlucoseLoader
 from wearable_project.DataLoaders.BloodPressureLoader import BloodPressureLoader

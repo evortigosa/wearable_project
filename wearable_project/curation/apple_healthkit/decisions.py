@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 from typing import Any, Mapping
-from wearable_project.curation.models import EvidenceGrade, PolicyExecutionMode, PolicyMaturity
+from wearable_project.curation.apple_healthkit.models import EvidenceGrade, PolicyExecutionMode, PolicyMaturity
 
 
 DECISION_SET_VERSION = "0.2.0a1.2-decisions-1"

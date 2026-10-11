@@ -12,10 +12,10 @@ import json
 import sys
 from pathlib import Path
 from wearable_project import __version__
-from wearable_project.processing.pipeline import process_dataset
-from wearable_project.processing.registry import REGISTRY_VERSION, known_features
-from wearable_project.processing.tracker import format_processing_report, load_processing_report
-from wearable_project.curation.curate_cli import add_curation_commands, handle_curation_command
+from wearable_project.processing.apple_healthkit.pipeline import process_dataset
+from wearable_project.processing.apple_healthkit.registry import REGISTRY_VERSION, known_features
+from wearable_project.processing.apple_healthkit.tracker import format_processing_report, load_processing_report
+from wearable_project.curation.cli import add_curation_commands, handle_curation_command
 
 
 def participant_selection(path: Path | None) -> set[str] | None:
@@ -186,11 +186,11 @@ def main(argv: list[str] | None = None) -> int:
         return handled
 
     if args.command == "describe-feature":
-        from wearable_project.curation.explain import (
+        from wearable_project.curation.apple_healthkit.explain import (
             feature_explanation, render_all_guides_markdown, render_feature_markdown,
             render_feature_text, render_json,
         )
-        from wearable_project.curation.guidance import known_guides
+        from wearable_project.curation.apple_healthkit.guidance import known_guides
         if args.all and args.feature:
             print("ERROR: provide either FEATURE or --all, not both", file=sys.stderr)
             return 2
@@ -243,8 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "evidence":
-        from wearable_project.curation.evidence import EVIDENCE, evidence_by_kind
-        from wearable_project.curation.explain import evidence_for_feature, render_json
+        from wearable_project.curation.apple_healthkit.evidence import EVIDENCE
+        from wearable_project.curation.apple_healthkit.explain import evidence_for_feature, render_json
         try:
             sources = list(evidence_for_feature(args.feature)) if args.feature else list(EVIDENCE.values())
         except KeyError as exc:
@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "explain-rule":
-        from wearable_project.curation.explain import render_json, rule_explanation
+        from wearable_project.curation.apple_healthkit.explain import render_json, rule_explanation
         try:
             payload = rule_explanation(args.rule_id)
         except KeyError as exc:
@@ -305,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "explain-unit-policy":
-        from wearable_project.curation.explain import render_json, unit_policy_explanation
+        from wearable_project.curation.apple_healthkit.explain import render_json, unit_policy_explanation
         try:
             payload = unit_policy_explanation(args.feature)
         except KeyError as exc:
@@ -327,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "processing-environment":
-        from wearable_project.processing.environment import processing_environment_manifest
+        from wearable_project.processing.apple_healthkit.environment import processing_environment_manifest
         payload = processing_environment_manifest().as_dict()
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -351,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if payload.get("warnings") else 0
 
     if args.command == "curation-environment":
-        from wearable_project.curation.environment import environment_manifest
+        from wearable_project.curation.apple_healthkit.environment import environment_manifest
         payload = environment_manifest().as_dict()
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -374,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if payload.get("warnings") else 0
 
     if args.command == "policy-decisions":
-        from wearable_project.curation.decisions import (
+        from wearable_project.curation.apple_healthkit.decisions import (
             decisions_fingerprint, get_decision, known_decisions, validate_decisions,
         )
         selected = tuple(args.decision_features or known_decisions())
@@ -426,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if errors else 0
 
     if args.command == "curation-audit":
-        from wearable_project.curation.audit import (
+        from wearable_project.curation.apple_healthkit.audit import (
             AuditError, format_audit_summary, run_curation_audit,
         )
         try:
@@ -448,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if summary.participants_failed else 0
 
     if args.command == "curation-registry":
-        from wearable_project.curation.registry import (
+        from wearable_project.curation.apple_healthkit.registry import (
             get_policy, matrix_csv, matrix_table, registry_payload, validate_registry,
         )
 
@@ -499,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "process-scan":
-        from wearable_project.processing.scan import format_processing_scan, scan_processing_plan
+        from wearable_project.processing.apple_healthkit.scan import format_processing_scan, scan_processing_plan
         try:
             scan = scan_processing_plan(
                 args.input, args.output, workers=args.workers, mode=args.mode,
@@ -555,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
             report_payload["participants"]["failed"] or report_payload["participants"]["blocked"]
         ) else 0
 
-    from wearable_project.processing.environment import processing_environment_manifest
+    from wearable_project.processing.apple_healthkit.environment import processing_environment_manifest
     processing_env = processing_environment_manifest()
     for warning in processing_env.warnings:
         print(f"PROCESSING ENVIRONMENT WARNING: {warning}", file=sys.stderr)

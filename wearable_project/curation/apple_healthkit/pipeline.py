@@ -20,18 +20,18 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 from tqdm import tqdm
-from wearable_project.curation.decisions import decisions_fingerprint
-from wearable_project.curation.engine import CuratedFeatureInfo, curate_feature_file
-from wearable_project.curation.registry import get_policy, registry_fingerprint
-from wearable_project.curation.state import (
+from wearable_project.curation.apple_healthkit.decisions import decisions_fingerprint
+from wearable_project.curation.apple_healthkit.engine import CuratedFeatureInfo, curate_feature_file
+from wearable_project.curation.apple_healthkit.registry import get_policy, registry_fingerprint
+from wearable_project.curation.apple_healthkit.state import (
     CURATION_ENGINE_VERSION, CuratedOutputState, CurationRunSummary, CurationStateDatabase,
     NativeFileState, format_curation_report,
 )
-from wearable_project.curation.unit_resolution import build_participant_unit_context
-from wearable_project.exceptions import CurationError, InputLayoutError, OutputValidationError
-from wearable_project.processing.parser import sha256_file
-from wearable_project.processing.tracker import peak_rss_bytes
-from wearable_project.processing.writer import DirectorySwap, drop_file_cache
+from wearable_project.curation.apple_healthkit.unit_resolution import build_participant_unit_context
+from wearable_project.exceptions import InputLayoutError, OutputValidationError
+from wearable_project.processing.apple_healthkit.parser import sha256_file
+from wearable_project.processing.apple_healthkit.tracker import peak_rss_bytes
+from wearable_project.processing.apple_healthkit.writer import DirectorySwap
 
 
 def _raise_csv_field_limit() -> None:

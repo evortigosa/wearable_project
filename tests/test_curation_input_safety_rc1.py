@@ -8,8 +8,8 @@ import csv
 from pathlib import Path
 import pytest
 from wearable_project.cli import main
-from wearable_project.curation.audit import AuditError, run_curation_audit
-from wearable_project.curation.pipeline import (
+from wearable_project.curation.apple_healthkit.audit import AuditError, run_curation_audit
+from wearable_project.curation.apple_healthkit.pipeline import (
     CURATION_STATE_FILENAME, NATIVE_STATE_FILENAME, curate_dataset, validate_native_input_root,
 )
 from wearable_project.exceptions import InputLayoutError

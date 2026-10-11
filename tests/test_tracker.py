@@ -137,7 +137,7 @@ def test_processing_tracker_reports_run_and_snapshot_metrics(tmp_path: Path) -> 
 
 
 def test_tracker_migrates_v011_state_database_in_place(tmp_path: Path) -> None:
-    from wearable_project.processing.writer import StateDatabase
+    from wearable_project.processing.apple_healthkit.writer import StateDatabase
 
     state_file = tmp_path / ".wearable_state.sqlite"
     with sqlite3.connect(state_file) as connection:

@@ -7,17 +7,14 @@ Transactional SQLite state and reporting for curated participant outputs.
 from __future__ import annotations
 import json
 import sqlite3
-import time
 import uuid
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from wearable_project.curation.decisions import decisions_fingerprint
-from wearable_project.curation.registry import registry_fingerprint
-from wearable_project.processing.parser import sha256_file
-
+from wearable_project.curation.apple_healthkit.decisions import decisions_fingerprint
+from wearable_project.curation.apple_healthkit.registry import registry_fingerprint
 
 CURATION_ENGINE_VERSION = "curation-engine-0.2.0a2.3"
 CURATION_STATE_SCHEMA_VERSION = 3

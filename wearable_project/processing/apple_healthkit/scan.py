@@ -24,13 +24,13 @@ from typing import Any, Iterable
 from tqdm import tqdm
 from wearable_project import __version__
 from wearable_project.exceptions import InputLayoutError
-from wearable_project.processing.parser import SourceFile, canonical_month_from_name, discover_month_files
-from wearable_project.processing.environment import processing_environment_manifest
-from wearable_project.processing.pipeline import (
+from wearable_project.processing.apple_healthkit.parser import SourceFile, canonical_month_from_name, discover_month_files
+from wearable_project.processing.apple_healthkit.environment import processing_environment_manifest
+from wearable_project.processing.apple_healthkit.pipeline import (
     PARSER_VERSION, PlanAction, discover_participants, plan_participant, resolve_export_root,
 )
-from wearable_project.processing.registry import REGISTRY_VERSION
-from wearable_project.processing.writer import (
+from wearable_project.processing.apple_healthkit.registry import REGISTRY_VERSION
+from wearable_project.processing.apple_healthkit.writer import (
     FeatureOutputInfo, StoredParticipantState, existing_output_is_usable, source_signature,
 )
 

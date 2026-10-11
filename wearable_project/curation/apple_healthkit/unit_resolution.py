@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from wearable_project.curation.registry import get_policy
+from wearable_project.curation.apple_healthkit.registry import get_policy
 
 
 def _raise_csv_field_limit() -> None:

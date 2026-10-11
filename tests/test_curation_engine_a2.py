@@ -4,11 +4,10 @@ Wearable Data Processing and Modeling project
 
 
 import csv
-import json
 from pathlib import Path
-from wearable_project.curation.engine import curate_feature_file
-from wearable_project.curation.pipeline import curate_dataset
-from wearable_project.curation.unit_resolution import build_participant_unit_context
+from wearable_project.curation.apple_healthkit.engine import curate_feature_file
+from wearable_project.curation.apple_healthkit.pipeline import curate_dataset
+from wearable_project.curation.apple_healthkit.unit_resolution import build_participant_unit_context
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:

@@ -34,14 +34,14 @@ from wearable_project.DataLoaders._base import (
 from wearable_project.DataLoaders._profile import ACQUISITION_CAVEAT
 from wearable_project.DataLoaders._units import _curation_declaration, stored_unit
 from wearable_project.exceptions import DataLoaderConfigurationError
-from wearable_project.curation import schema
-from wearable_project.curation.decisions import decisions_fingerprint
-from wearable_project.curation.evidence import EVIDENCE
-from wearable_project.curation.guidance import GUIDANCE_VERSION, get_feature_guide, guidance_fingerprint
-from wearable_project.curation.registry import (
+from wearable_project.curation.apple_healthkit import schema
+from wearable_project.curation.apple_healthkit.decisions import decisions_fingerprint
+from wearable_project.curation.apple_healthkit.evidence import EVIDENCE
+from wearable_project.curation.apple_healthkit.guidance import GUIDANCE_VERSION, get_feature_guide, guidance_fingerprint
+from wearable_project.curation.apple_healthkit.registry import (
     COHORT_OBSERVED_FEATURES, CURATION_REGISTRY_VERSION, get_policy, registry_fingerprint,
 )
-from wearable_project.processing.registry import (
+from wearable_project.processing.apple_healthkit.registry import (
     REGISTRY_VERSION as PROCESSING_REGISTRY_VERSION, FeatureSpec, get_feature_spec,
 )
 

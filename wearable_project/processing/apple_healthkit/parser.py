@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 from wearable_project.exceptions import DuplicateMonthError, ParticipantProcessingError, PayloadDecodeError
-from wearable_project.processing.registry import get_feature_spec, is_registered_feature
+from wearable_project.processing.apple_healthkit.registry import get_feature_spec, is_registered_feature
 
 
 APPLE_SOURCE = "applehealthkit"

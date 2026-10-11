@@ -13,7 +13,7 @@ from wearable_project.DataLoaders.ActivitySummaryLoader import ActivitySummaryLo
 from wearable_project.DataLoaders.StepCountLoader import StepCountLoader
 from wearable_project.DataLoaders.WeightLoader import WeightLoader
 from wearable_project.exceptions import DataLoaderConfigurationError, DataLoaderPathError, DataLoaderReadError
-from wearable_project.curation.registry import COHORT_OBSERVED_FEATURES
+from wearable_project.curation.apple_healthkit.registry import COHORT_OBSERVED_FEATURES
 from wearable_project import DataLoaders
 
 

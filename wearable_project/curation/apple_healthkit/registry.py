@@ -13,9 +13,9 @@ import csv
 import io
 import json
 from typing import Iterable, Mapping
-from wearable_project.curation.evidence import EVIDENCE, EvidenceSource
-from wearable_project.curation.decisions import POLICY_CALIBRATION_DECISIONS, validate_decisions
-from wearable_project.curation.models import (
+from wearable_project.curation.apple_healthkit.evidence import EVIDENCE
+from wearable_project.curation.apple_healthkit.decisions import POLICY_CALIBRATION_DECISIONS, validate_decisions
+from wearable_project.curation.apple_healthkit.models import (
     AcquisitionMethod,
     ConflictBehavior,
     ConversionConfidence,
@@ -53,8 +53,8 @@ from wearable_project.curation.models import (
     UserEnteredHandling,
     to_primitive,
 )
-from wearable_project.curation.rules import RULES, rule_execution_kind
-from wearable_project.curation.strategies import ALL_STRATEGY_CATALOGS
+from wearable_project.curation.apple_healthkit.rules import RULES, rule_execution_kind
+from wearable_project.curation.apple_healthkit.strategies import ALL_STRATEGY_CATALOGS
 
 
 CURATION_REGISTRY_VERSION = "0.2.0a2.2-policy-5"

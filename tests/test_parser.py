@@ -3,8 +3,8 @@ Wearable Data Processing and Modeling project
 """
 
 
-from wearable_project.processing.parser import decode_payload, normalize_metadata
-from wearable_project.processing.parser import SourceFile, build_event_record
+from wearable_project.processing.apple_healthkit.parser import decode_payload, normalize_metadata
+from wearable_project.processing.apple_healthkit.parser import SourceFile, build_event_record
 from pathlib import Path
 
 def test_decode_repeated_layers():
@@ -63,7 +63,7 @@ def test_decode_json_escaped_structured_string_still_uses_layered_fallback():
 def test_parse_month_file_handles_quoted_python_payload_with_escaped_newline(tmp_path):
     import csv
 
-    from wearable_project.processing.parser import SourceFile, parse_month_file, sha256_file
+    from wearable_project.processing.apple_healthkit.parser import SourceFile, parse_month_file, sha256_file
 
     path = tmp_path / "2020-6.csv"
     inner = (

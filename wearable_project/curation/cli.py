@@ -10,10 +10,10 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from wearable_project.curation.pipeline import curate_dataset, format_summary
-from wearable_project.curation.state import format_curation_report, load_curation_report
-from wearable_project.processing.pipeline import process_dataset
-from wearable_project.processing.tracker import format_processing_report
+from wearable_project.curation.apple_healthkit.pipeline import curate_dataset, format_summary
+from wearable_project.curation.apple_healthkit.state import format_curation_report, load_curation_report
+from wearable_project.processing.apple_healthkit.pipeline import process_dataset
+from wearable_project.processing.apple_healthkit.tracker import format_processing_report
 
 
 def _participants(path: Path | None) -> set[str] | None:

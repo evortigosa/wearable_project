@@ -30,7 +30,7 @@ from wearable_project.exceptions import (
 )
 from wearable_project.DataLoaders._profile import ProfileReport, format_bytes, render_profile_text
 from wearable_project.DataLoaders._units import stored_unit
-from wearable_project.processing.registry import get_feature_spec
+from wearable_project.processing.apple_healthkit.registry import get_feature_spec
 
 
 ProcessingPhase = Literal["native", "curated"]
@@ -139,7 +139,7 @@ def _projection_schema() -> Any:
 
     global _PROJECTION_SCHEMA
     if _PROJECTION_SCHEMA is None:
-        from wearable_project.curation import schema
+        from wearable_project.curation.apple_healthkit import schema
         _PROJECTION_SCHEMA = schema
     return _PROJECTION_SCHEMA
 
@@ -1218,7 +1218,7 @@ class AppleHealthFeatureLoader:
         ``"1.10"`` keeps its stored text, and a column whose cells are all empty is not typed as a number.
         """
 
-        from wearable_project.curation import schema
+        from wearable_project.curation.apple_healthkit import schema
 
         text_columns = {column: str for column in schema.categorical_columns(self.feature_name)}
         try:
@@ -1248,8 +1248,8 @@ class AppleHealthFeatureLoader:
     def _numeric_columns(self) -> set[str]:
         """Columns that hold numbers: the feature's numeric measurements, canonical values, whole-number columns."""
 
-        from wearable_project.curation import schema
-        from wearable_project.processing.registry import get_feature_spec
+        from wearable_project.curation.apple_healthkit import schema
+        from wearable_project.processing.apple_healthkit.registry import get_feature_spec
 
         categorical = schema.categorical_columns(self.feature_name)
         measurements = {
@@ -1266,7 +1266,7 @@ class AppleHealthFeatureLoader:
         only examine columns that did not already parse cleanly, so clean files cost nothing.
         """
 
-        from wearable_project.curation import schema
+        from wearable_project.curation.apple_healthkit import schema
 
         for column in sorted(self._numeric_columns() & set(frame.columns)):
             values = frame[column]
@@ -1436,7 +1436,7 @@ class AppleHealthFeatureLoader:
     def _installed_policy_fingerprint(self) -> str | None:
         """The installed curation policy fingerprint for this feature, or None when it has no policy."""
 
-        from wearable_project.curation.registry import get_policy
+        from wearable_project.curation.apple_healthkit.registry import get_policy
 
         try:
             return str(get_policy(self.feature_name, allow_fallback=False).fingerprint())

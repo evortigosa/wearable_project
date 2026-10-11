@@ -8,10 +8,10 @@ import csv
 import math
 import sqlite3
 from pathlib import Path
-from wearable_project.curation.engine import curate_feature_file, validate_engine_rule_coverage
-from wearable_project.curation.pipeline import curate_dataset
-from wearable_project.curation.state import CurationStateDatabase
-from wearable_project.curation.unit_resolution import build_participant_unit_context
+from wearable_project.curation.apple_healthkit.engine import curate_feature_file, validate_engine_rule_coverage
+from wearable_project.curation.apple_healthkit.pipeline import curate_dataset
+from wearable_project.curation.apple_healthkit.state import CurationStateDatabase
+from wearable_project.curation.apple_healthkit.unit_resolution import build_participant_unit_context
 
 
 BASE_FIELDS = [

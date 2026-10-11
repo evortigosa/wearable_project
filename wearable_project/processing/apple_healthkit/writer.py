@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from wearable_project.exceptions import OutputValidationError
-from wearable_project.processing.parser import SourceFile, sha256_file
-from wearable_project.processing.registry import FeatureFamily, get_feature_spec
-from wearable_project.processing.tracker import ProcessingTracker
+from wearable_project.processing.apple_healthkit.parser import SourceFile, sha256_file
+from wearable_project.processing.apple_healthkit.registry import FeatureFamily, get_feature_spec
+from wearable_project.processing.apple_healthkit.tracker import ProcessingTracker
 
 
 @dataclass(frozen=True, slots=True)

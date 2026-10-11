@@ -5,16 +5,15 @@ Read-only explanation helpers for feature policies, rules, units and evidence.
 
 
 from __future__ import annotations
-from dataclasses import asdict
 import json
 from typing import Iterable
-from wearable_project.curation.evidence import EVIDENCE, EvidenceSource
-from wearable_project.curation.guidance import (
-    FEATURE_GUIDES, FeatureGuide, get_feature_guide, guidance_fingerprint,
+from wearable_project.curation.apple_healthkit.evidence import EVIDENCE, EvidenceSource
+from wearable_project.curation.apple_healthkit.guidance import (
+    FEATURE_GUIDES, get_feature_guide, guidance_fingerprint,
 )
-from wearable_project.curation.models import FeaturePolicy, RuleDefinition, to_primitive
-from wearable_project.curation.registry import get_policy, registry_fingerprint
-from wearable_project.curation.rules import RULES, get_rule
+from wearable_project.curation.apple_healthkit.models import FeaturePolicy, to_primitive
+from wearable_project.curation.apple_healthkit.registry import get_policy, registry_fingerprint
+from wearable_project.curation.apple_healthkit.rules import RULES, get_rule
 
 
 def _policy_evidence_refs(policy: FeaturePolicy) -> tuple[str, ...]:

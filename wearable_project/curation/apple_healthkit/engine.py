@@ -20,17 +20,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from wearable_project.curation.models import (
-    CurationStatus, EventKind, InclusionEffect, InclusionPolicy, PolicyExecutionMode,
+from wearable_project.curation.apple_healthkit.models import (
+    EventKind, InclusionEffect, InclusionPolicy, PolicyExecutionMode,
     StatusEffect, UnresolvedUnitAction,
 )
-from wearable_project.curation.registry import get_policy, known_curation_features
-from wearable_project.curation.rules import RULES, RUNTIME_RULE_IDS
-from wearable_project.curation.unit_resolution import (
+from wearable_project.curation.apple_healthkit.registry import get_policy, known_curation_features
+from wearable_project.curation.apple_healthkit.rules import RULES, RUNTIME_RULE_IDS
+from wearable_project.curation.apple_healthkit.unit_resolution import (
     ParticipantUnitContext, UnitAnnotation, fixed_unit_annotation,
 )
-from wearable_project.processing.parser import sha256_file
-from wearable_project.processing.writer import drop_file_cache, link_or_copy
+from wearable_project.processing.apple_healthkit.parser import sha256_file
+from wearable_project.processing.apple_healthkit.writer import drop_file_cache, link_or_copy
 
 
 def _raise_csv_field_limit() -> None:

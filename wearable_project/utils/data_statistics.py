@@ -48,12 +48,12 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 from wearable_project import __release_label__, __version__
-from wearable_project.curation import schema
-from wearable_project.curation.registry import get_policy
+from wearable_project.curation.apple_healthkit import schema
+from wearable_project.curation.apple_healthkit.registry import get_policy
 from wearable_project.DataLoaders import available_features
 from wearable_project.DataLoaders._base import DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, _PHASE_STATE_FILES
-from wearable_project.exceptions import DataLoaderConfigurationError, DataLoaderError
-from wearable_project.processing.registry import get_feature_spec
+from wearable_project.exceptions import DataLoaderConfigurationError
+from wearable_project.processing.apple_healthkit.registry import get_feature_spec
 
 
 PHASES = ("curated", "native")
@@ -1009,11 +1009,11 @@ def _provenance(phase: str, root: Path) -> dict[str, Any]:
 
     import hashlib
 
-    from wearable_project.curation.decisions import decisions_fingerprint
-    from wearable_project.curation.guidance import GUIDANCE_VERSION, guidance_fingerprint
-    from wearable_project.curation.registry import CURATION_REGISTRY_VERSION, registry_fingerprint
+    from wearable_project.curation.apple_healthkit.decisions import decisions_fingerprint
+    from wearable_project.curation.apple_healthkit.guidance import GUIDANCE_VERSION, guidance_fingerprint
+    from wearable_project.curation.apple_healthkit.registry import CURATION_REGISTRY_VERSION, registry_fingerprint
     from wearable_project.DataLoaders._base import _PHASE_STATE_FILES
-    from wearable_project.processing.registry import REGISTRY_VERSION
+    from wearable_project.processing.apple_healthkit.registry import REGISTRY_VERSION
 
     database = root / _PHASE_STATE_FILES[phase]
     checksum = hashlib.sha256(database.read_bytes()).hexdigest() if database.is_file() else None

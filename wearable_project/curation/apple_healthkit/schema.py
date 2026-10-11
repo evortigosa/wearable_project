@@ -13,7 +13,7 @@ Scope and guarantees
 Nothing here reads, writes, or transforms stored data. A projection only decides which stored columns a
 loader returns; ``projection="full"`` always returns every column present in the file, so no information
 is reachable only through this module.
-Dependencies are deliberately limited to the standard library and ``wearable_project.processing.registry``,
+Dependencies are deliberately limited to the standard library and ``wearable_project.processing.apple_healthkit.registry``,
 which is itself a pure data module. The curation policy stack is not imported here.
 
 Unknown columns
@@ -29,7 +29,7 @@ test or a release check can catch the omission.
 from __future__ import annotations
 from enum import Enum
 from typing import Iterable, Mapping
-from wearable_project.processing.registry import SPECS, FeatureFamily, get_feature_spec
+from wearable_project.processing.apple_healthkit.registry import SPECS, FeatureFamily, get_feature_spec
 
 
 SCHEMA_VERSION = "2026-09-dataloader-projection-1"
