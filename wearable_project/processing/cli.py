@@ -228,7 +228,7 @@ def _processing_environment_apple_healthkit(args: argparse.Namespace) -> int:
 
 
 def _report_apple_healthkit(args: argparse.Namespace) -> int:
-    from wearable_project.processing.apple_healthkit.tracker import load_processing_report
+    from wearable_project.processing.apple_healthkit.tracker import format_processing_report, load_processing_report
 
     state_file = args.state_file or (args.output.expanduser().resolve() / ".wearable_state.sqlite")
     try:
