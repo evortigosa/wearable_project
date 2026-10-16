@@ -2,8 +2,9 @@
 Wearable Data Processing and Modeling project
 Version-aware parser for cumulative Google Fitness CSV exports. WP2 converts supported outer rows into
 native-shaped candidate records while preserving source-occurrence lineage and closing candidate accounting
-exactly. It does not reconcile duplicates, choose revisions, write feature files, infer units, or select
-preferred StepCount alternatives. Those responsibilities belong to later Google Fitness processing work packages.
+exactly. WP3 adds a parallel candidate-lineage ledger so reconciliation can distinguish physical repetitions
+without widening the registered CSV schemas. The parser still does not reconcile duplicates, choose revisions,
+write feature files, infer units, or select preferred StepCount alternatives.
 """
 
 
@@ -25,7 +26,8 @@ from wearable_project.processing.google_fitness.candidate_decoders import (
     _CandidateContext, _CandidateOutcome, _candidate_items_for_contract, _decode_candidate, _unique_sorted,
 )
 from wearable_project.processing.google_fitness.models import (
-    PARSER_VERSION, MalformedCandidate, ParseDiagnostic, ParseResult, SourceFile, SourceOccurrence,
+    PARSER_VERSION, CandidateLineage, MalformedCandidate, ParseDiagnostic, ParseResult, SourceFile,
+    SourceOccurrence,
 )
 from wearable_project.processing.google_fitness.registry import (
     NORMALIZED_RAW_SOURCE, OUTER_SCHEMA_COLUMNS, UNREGISTERED_ACTIVITY_POLICY, get_source_feature_version_spec,
@@ -172,9 +174,33 @@ def _sha256_text(value: str) -> str:
 def _validate_row_error_policy(row_error_policy: str) -> None:
     if row_error_policy not in ROW_ERROR_POLICIES:
         raise ValueError(
-            f"row_error_policy must be one of {sorted(ROW_ERROR_POLICIES)}, "
-            f"not {row_error_policy!r}"
+            f"row_error_policy must be one of {sorted(ROW_ERROR_POLICIES)}, not {row_error_policy!r}"
         )
+
+
+def _make_source_occurrence(
+    *, source: SourceFile, participant_id: str, row_number: int, outer: dict[str, Any], outer_id: str,
+    outer_participant_id: str, raw_source_label: str, feature: str, version: str, outer_datetime_raw: str,
+    raw_payload_sha256: str, decoded_payload_sha256: str | None, payload_item_count: int | None,
+) -> SourceOccurrence:
+    return SourceOccurrence(
+        participant_id=participant_id,
+        outer_participant_id=outer_participant_id,
+        raw_source_label=raw_source_label,
+        source_feature=feature,
+        collecting_method_version=version,
+        outer_id=outer_id,
+        outer_datetime_raw=outer_datetime_raw,
+        created_at_raw=str(outer.get("created_at") or ""),
+        updated_at_raw=str(outer.get("updated_at") or ""),
+        source_file=source.path.name,
+        canonical_month=source.canonical_month,
+        source_file_sha256=source.sha256,
+        outer_row_number=row_number,
+        raw_payload_sha256=raw_payload_sha256,
+        decoded_payload_sha256=decoded_payload_sha256,
+        payload_item_count=payload_item_count,
+    )
 
 
 def parse_month_file(
@@ -191,8 +217,13 @@ def parse_month_file(
     _csv_field_limit()
     if result is None:
         result = ParseResult()
-    elif not isinstance(result.records_by_feature, defaultdict):
-        result.records_by_feature = defaultdict(list, result.records_by_feature)
+    else:
+        if not isinstance(result.records_by_feature, defaultdict):
+            result.records_by_feature = defaultdict(list, result.records_by_feature)
+        if not isinstance(result.candidate_lineage_by_feature, defaultdict):
+            result.candidate_lineage_by_feature = defaultdict(
+                list, result.candidate_lineage_by_feature
+            )
 
     seen_diagnostics: set[tuple[Any, ...]] = set()
 
@@ -252,9 +283,7 @@ def parse_month_file(
         fieldnames = reader.fieldnames or []
         missing = EXPECTED_COLUMNS.difference(fieldnames)
         if missing:
-            raise ParticipantProcessingError(
-                f"{source.path} is missing outer columns: {sorted(missing)}"
-            )
+            raise ParticipantProcessingError(f"{source.path} is missing outer columns: {sorted(missing)}")
         extras = sorted(set(fieldnames).difference(EXPECTED_COLUMNS))
         if extras:
             add_diagnostic(
@@ -289,20 +318,17 @@ def parse_month_file(
             if not outer_id:
                 result.unsupported_outer_rows += 1
                 result.source_occurrences.append(
-                    SourceOccurrence(
+                    _make_source_occurrence(
+                        source=source,
                         participant_id=participant_id,
+                        row_number=row_number,
+                        outer=outer,
+                        outer_id=outer_id,
                         outer_participant_id=outer_participant_id,
                         raw_source_label=raw_source_label,
-                        source_feature=feature,
-                        collecting_method_version=version,
-                        outer_id=outer_id,
+                        feature=feature,
+                        version=version,
                         outer_datetime_raw=outer_datetime_raw,
-                        created_at_raw=str(outer.get("created_at") or ""),
-                        updated_at_raw=str(outer.get("updated_at") or ""),
-                        source_file=source.path.name,
-                        canonical_month=source.canonical_month,
-                        source_file_sha256=source.sha256,
-                        outer_row_number=row_number,
                         raw_payload_sha256=raw_payload_sha256,
                         decoded_payload_sha256=None,
                         payload_item_count=None,
@@ -324,20 +350,17 @@ def parse_month_file(
             if outer_participant_id and outer_participant_id != participant_id:
                 result.unsupported_outer_rows += 1
                 result.source_occurrences.append(
-                    SourceOccurrence(
+                    _make_source_occurrence(
+                        source=source,
                         participant_id=participant_id,
+                        row_number=row_number,
+                        outer=outer,
+                        outer_id=outer_id,
                         outer_participant_id=outer_participant_id,
                         raw_source_label=raw_source_label,
-                        source_feature=feature,
-                        collecting_method_version=version,
-                        outer_id=outer_id,
+                        feature=feature,
+                        version=version,
                         outer_datetime_raw=outer_datetime_raw,
-                        created_at_raw=str(outer.get("created_at") or ""),
-                        updated_at_raw=str(outer.get("updated_at") or ""),
-                        source_file=source.path.name,
-                        canonical_month=source.canonical_month,
-                        source_file_sha256=source.sha256,
-                        outer_row_number=row_number,
                         raw_payload_sha256=raw_payload_sha256,
                         decoded_payload_sha256=None,
                         payload_item_count=None,
@@ -363,20 +386,17 @@ def parse_month_file(
                 result.unsupported_outer_rows += 1
                 result.unsupported_contracts.add(contract_key)
                 result.source_occurrences.append(
-                    SourceOccurrence(
+                    _make_source_occurrence(
+                        source=source,
                         participant_id=participant_id,
+                        row_number=row_number,
+                        outer=outer,
+                        outer_id=outer_id,
                         outer_participant_id=outer_participant_id,
                         raw_source_label=raw_source_label,
-                        source_feature=feature,
-                        collecting_method_version=version,
-                        outer_id=outer_id,
+                        feature=feature,
+                        version=version,
                         outer_datetime_raw=outer_datetime_raw,
-                        created_at_raw=str(outer.get("created_at") or ""),
-                        updated_at_raw=str(outer.get("updated_at") or ""),
-                        source_file=source.path.name,
-                        canonical_month=source.canonical_month,
-                        source_file_sha256=source.sha256,
-                        outer_row_number=row_number,
                         raw_payload_sha256=raw_payload_sha256,
                         decoded_payload_sha256=None,
                         payload_item_count=None,
@@ -400,26 +420,21 @@ def parse_month_file(
 
             try:
                 payload = decode_payload(raw_payload)
-                items, envelope_reasons = _candidate_items_for_contract(
-                    payload, feature, version
-                )
+                items, envelope_reasons = _candidate_items_for_contract(payload, feature, version)
             except PayloadDecodeError as exc:
                 result.payload_decode_failures += 1
                 result.source_occurrences.append(
-                    SourceOccurrence(
+                    _make_source_occurrence(
+                        source=source,
                         participant_id=participant_id,
+                        row_number=row_number,
+                        outer=outer,
+                        outer_id=outer_id,
                         outer_participant_id=outer_participant_id,
                         raw_source_label=raw_source_label,
-                        source_feature=feature,
-                        collecting_method_version=version,
-                        outer_id=outer_id,
+                        feature=feature,
+                        version=version,
                         outer_datetime_raw=outer_datetime_raw,
-                        created_at_raw=str(outer.get("created_at") or ""),
-                        updated_at_raw=str(outer.get("updated_at") or ""),
-                        source_file=source.path.name,
-                        canonical_month=source.canonical_month,
-                        source_file_sha256=source.sha256,
-                        outer_row_number=row_number,
                         raw_payload_sha256=raw_payload_sha256,
                         decoded_payload_sha256=None,
                         payload_item_count=None,
@@ -439,26 +454,23 @@ def parse_month_file(
 
             result.payloads_decoded += 1
             decoded_payload_sha256 = _sha256_text(canonical_json(payload))
-            result.source_occurrences.append(
-                SourceOccurrence(
-                    participant_id=participant_id,
-                    outer_participant_id=outer_participant_id,
-                    raw_source_label=raw_source_label,
-                    source_feature=feature,
-                    collecting_method_version=version,
-                    outer_id=outer_id,
-                    outer_datetime_raw=outer_datetime_raw,
-                    created_at_raw=str(outer.get("created_at") or ""),
-                    updated_at_raw=str(outer.get("updated_at") or ""),
-                    source_file=source.path.name,
-                    canonical_month=source.canonical_month,
-                    source_file_sha256=source.sha256,
-                    outer_row_number=row_number,
-                    raw_payload_sha256=raw_payload_sha256,
-                    decoded_payload_sha256=decoded_payload_sha256,
-                    payload_item_count=len(items),
-                )
+            source_occurrence = _make_source_occurrence(
+                source=source,
+                participant_id=participant_id,
+                row_number=row_number,
+                outer=outer,
+                outer_id=outer_id,
+                outer_participant_id=outer_participant_id,
+                raw_source_label=raw_source_label,
+                feature=feature,
+                version=version,
+                outer_datetime_raw=outer_datetime_raw,
+                raw_payload_sha256=raw_payload_sha256,
+                decoded_payload_sha256=decoded_payload_sha256,
+                payload_item_count=len(items),
             )
+            result.source_occurrences.append(source_occurrence)
+            source_occurrence_key_value = source_occurrence.occurrence_key
 
             if not items:
                 result.schema_warning_features.add(feature)
@@ -493,9 +505,7 @@ def parse_month_file(
                     outcome = _CandidateOutcome(
                         native_feature=None,
                         record=None,
-                        reason_codes=_unique_sorted(
-                            [*envelope_reasons, *outcome.reason_codes]
-                        ),
+                        reason_codes=_unique_sorted([*envelope_reasons, *outcome.reason_codes]),
                     )
                 if outcome.record is None or outcome.native_feature is None:
                     reasons = _unique_sorted(
@@ -537,6 +547,14 @@ def parse_month_file(
                 result.valid_candidates += 1
                 result.source_contract_valid_candidates[contract_key] += 1
                 result.records_by_feature[outcome.native_feature].append(outcome.record)
+                result.candidate_lineage_by_feature[outcome.native_feature].append(
+                    CandidateLineage(
+                        source_occurrence_key=source_occurrence_key_value,
+                        outer_id=outer_id,
+                        payload_index=payload_index,
+                        collecting_method_version=version,
+                    )
+                )
                 result.native_feature_candidates[outcome.native_feature] += 1
                 if feature == "Activities":
                     result.activity_items_routed += 1
@@ -611,8 +629,11 @@ def merge_parse_results(results: Sequence[ParseResult]) -> ParseResult:
         merged.schema_warning_features.update(result.schema_warning_features)
         for feature, feature_records in result.records_by_feature.items():
             records[feature].extend(feature_records)
+        for feature, feature_lineage in result.candidate_lineage_by_feature.items():
+            merged.candidate_lineage_by_feature[feature].extend(feature_lineage)
 
     merged.records_by_feature = dict(records)
+    merged.candidate_lineage_by_feature = dict(merged.candidate_lineage_by_feature)
     return merged
 
 

@@ -1,12 +1,19 @@
 """
 Wearable Data Processing and Modeling project
-Google Fitness native-processing contracts and version-aware candidate parser. WP1 defines the immutable registry
-and native schemas. WP2 parses supported source/version envelopes into native-shaped candidates with exact accounting
-and source-occurrence lineage.
+Google Fitness native-processing contracts, parser, and native cleaner. WP1 defines immutable schemas and
+routes. WP2 parses supported source/version envelopes into native-shaped candidates with exact accounting.
+WP3 adds parallel candidate lineage, deterministic duplicate/revision/conflict reconciliation, and stable
+native row ordering.
 """
 
+
+from wearable_project.processing.google_fitness.cleaners import (
+    CLEANER_VERSION, CleanedRowAudit, FeatureCleanResult, ParticipantCleanResult, ReconciliationAction,
+    ReconciliationDecision, ReconciliationStage, clean_feature, clean_parse_result,
+)
 from wearable_project.processing.google_fitness.models import (
-    PARSER_VERSION, MalformedCandidate, ParseDiagnostic, ParseResult, SourceFile, SourceOccurrence,
+    CANDIDATE_LINEAGE_VERSION, PARSER_VERSION, CandidateLineage, MalformedCandidate, ParseDiagnostic,
+    ParseResult, SourceFile, SourceOccurrence,
 )
 from wearable_project.processing.google_fitness.parser import (
     canonical_month_from_name, decode_payload, discover_month_files, merge_parse_results, parse_month_file,
@@ -23,15 +30,24 @@ from wearable_project.processing.google_fitness.registry import (
 __all__ = [
     "ACTIVITY_ROUTE_BY_LABEL",
     "ACTIVITY_ROUTES",
+    "CANDIDATE_LINEAGE_VERSION",
+    "CLEANER_VERSION",
+    "CandidateLineage",
+    "CleanedRowAudit",
     "EXPECTED_REGISTRY_FINGERPRINT",
+    "FeatureCleanResult",
     "MalformedCandidate",
     "NATIVE_FEATURE_SPECS",
     "NORMALIZED_RAW_SOURCE",
     "PARSER_VERSION",
+    "ParticipantCleanResult",
     "ParseDiagnostic",
     "ParseResult",
     "RAW_SOURCE_LABELS",
     "REGISTRY_VERSION",
+    "ReconciliationAction",
+    "ReconciliationDecision",
+    "ReconciliationStage",
     "SLEEP_STATE_MAPPING",
     "SOURCE_FEATURE_VERSION_BY_KEY",
     "SOURCE_FEATURE_VERSION_SPECS",
@@ -41,6 +57,8 @@ __all__ = [
     "UNREGISTERED_ACTIVITY_POLICY",
     "activity_feature_names",
     "canonical_month_from_name",
+    "clean_feature",
+    "clean_parse_result",
     "decode_payload",
     "discover_month_files",
     "feature_names",
