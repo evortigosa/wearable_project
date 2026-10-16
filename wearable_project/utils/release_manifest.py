@@ -39,3 +39,17 @@ EXPECTED_CORE_PROCESSING_MODULE_SHA256 = {
     "tracker.py": "9106a05b7447babad4a9f6e92a7b2dd3e5824f283b30f83a4673a3ddb53de1a7",
     "writer.py": "3a4ddfa5a9c035e50ddfb1621eca847fd9e2bf3428c38a5513810de8cd8ade9c",
 }
+GFIT_EXPECTED_MODULE_SHA256 = {
+    '__init__.py': 'ac1adb3bd6088a7b59b15de50ceee1778b990dac23b4ae1a9c7a361e051ae01b',
+    'registry.py': '14189e0a880e499fee3a42256c1169e6ea8d5ec6392281ee3a0f7051de8b526a',
+    'models.py': '1a41dfaea08f2dc0fd0e035ea83d4a67adaebeaec7d59ca2aaf08787f894a05e',
+    'candidate_decoders.py': '8134c7ea467fce879d854d8d287046d6c41940a35a0f86a03b6ec00634ac7f8c',
+    'parser.py': '656ab0af06c62b04ed76461e7bd07d720871f8c1ca9c60dd66c3153aec70903a',
+    'cleaners.py': 'c4eb2f7703fe2f78ae577d94b154eaa7c49ea81f1626bca46118e2c4de81c4bd',
+    'writer.py': '8f756b14e6e80299b2996fe09268a393c19bc9a055d0c6e5920853fbbe342062',
+    'tracker.py': '93a4f214adeb32996a41eee6fb16e60a34bd7746133baf7703386fba1bbd54f0',
+    'pipeline.py': '56fb3cdda8ebea1bfa025ed5d561050134eff076ec6443757918f2f0314e1329',
+    'scan.py': '6c4da92588665b17c90d112fb9a6bd2e7779fc27a1f522040a5300ae5a509d6b',
+    'environment.py': 'd1350644ab32a05d19cf59be48dc2819e5e320277a98b76c76d1aa11d04c632b',
+    'resampling.py': 'fb91541d75ca5fbbf40ae782cc72d124ead71cb9d56945f59ba1788cc4629d4c',
+}

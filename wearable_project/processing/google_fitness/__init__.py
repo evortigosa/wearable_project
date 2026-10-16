@@ -3,7 +3,8 @@ Wearable Data Processing and Modeling project
 Google Fitness native-processing contracts, parser, and native cleaner. WP1 defines immutable schemas and
 routes. WP2 parses supported source/version envelopes into native-shaped candidates with exact accounting.
 WP3 adds parallel candidate lineage, deterministic duplicate/revision/conflict reconciliation, and stable
-native row ordering.
+native row ordering. WP4 adds validated writing, source-qualified state, incremental planning,
+participant transactions, multiprocessing, and source-aware CLI integration.
 """
 
 
@@ -19,6 +20,15 @@ from wearable_project.processing.google_fitness.parser import (
     canonical_month_from_name, decode_payload, discover_month_files, merge_parse_results, parse_month_file,
     parse_participant_directory,
 )
+from wearable_project.processing.google_fitness.pipeline import (
+    PIPELINE_VERSION, PlanAction, RunSummary, process_dataset,
+)
+from wearable_project.processing.google_fitness.scan import (
+    ProcessingScanReport, scan_processing_plan,
+)
+from wearable_project.processing.google_fitness.writer import (
+    STATE_FILENAME, STATE_SCHEMA_VERSION, FeatureOutputInfo,
+)
 from wearable_project.processing.google_fitness.registry import (
     ACTIVITY_ROUTE_BY_LABEL, ACTIVITY_ROUTES, EXPECTED_REGISTRY_FINGERPRINT, NATIVE_FEATURE_SPECS,
     NORMALIZED_RAW_SOURCE, RAW_SOURCE_LABELS, REGISTRY_VERSION, SLEEP_STATE_MAPPING, SOURCE_FEATURE_VERSION_BY_KEY,
@@ -26,6 +36,7 @@ from wearable_project.processing.google_fitness.registry import (
     feature_names, get_activity_route, get_feature_spec, get_source_feature_version_spec, registry_fingerprint,
     registry_payload, validate_registry,
 )
+
 
 __all__ = [
     "ACTIVITY_ROUTE_BY_LABEL",
@@ -71,4 +82,13 @@ __all__ = [
     "registry_fingerprint",
     "registry_payload",
     "validate_registry",
+    "PIPELINE_VERSION",
+    "PlanAction",
+    "ProcessingScanReport",
+    "RunSummary",
+    "STATE_FILENAME",
+    "STATE_SCHEMA_VERSION",
+    "FeatureOutputInfo",
+    "process_dataset",
+    "scan_processing_plan",
 ]
