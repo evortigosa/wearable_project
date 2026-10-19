@@ -245,3 +245,106 @@ def test_state_source_guard_rejects_other_source(tmp_path: Path) -> None:
     connection.close()
     with pytest.raises(OutputValidationError):
         StateDatabase(path)
+
+
+def test_scan_and_process_reports_record_hash_validation_mode(tmp_path: Path) -> None:
+    raw = _fixture(tmp_path)
+    output = tmp_path / "cleaned"
+    first = process_dataset(raw, output, workers=2, max_in_flight=2)
+    assert first.failed == 0
+
+    scan = scan_processing_plan(
+        raw,
+        output,
+        workers=2,
+        verify_existing_hashes=True,
+        show_progress=False,
+    )
+    scan_payload = scan.as_dict()
+    assert scan_payload["configuration"]["verify_existing_hashes"] is True
+    assert scan_payload["validation"] == {
+        "source_files": "sha256",
+        "existing_outputs": "file_set_size_and_sha256",
+    }
+
+    noop = process_dataset(
+        raw,
+        output,
+        workers=2,
+        max_in_flight=2,
+        verify_existing_hashes=True,
+    ).as_dict()
+    assert noop["configuration"]["verify_existing_hashes"] is True
+    assert (
+        noop["configuration"]["existing_output_validation"]
+        == "file_set_size_and_sha256"
+    )
+    assert noop["actions"]["planned_counts"] == {"skip": 2}
+    assert noop["actions"]["completed_counts"] == {
+        "skip": 2,
+        "incremental": 0,
+        "rebuild": 0,
+        "block": 0,
+    }
+    assert noop["summary"]["planned_rebuilds"] == 0
+    assert noop["summary"]["completed_rebuilds"] == 0
+
+
+def test_report_distinguishes_run_and_current_state_diagnostics(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    _write_month(
+        raw,
+        "P1",
+        "2024-1.csv",
+        [
+            _row(
+                "W2",
+                "P1",
+                "GoogleFitness",
+                "Weight",
+                "2.0",
+                [None],
+            )
+        ],
+    )
+    output = tmp_path / "cleaned"
+    first = process_dataset(raw, output, workers=1, max_in_flight=1).as_dict()
+
+    assert first["accounting"]["malformed_candidates"] == 1
+    assert first["diagnostics"] == {
+        "run_total": 1,
+        "run_by_code": {"malformed_candidate": 1},
+        "run_breakdown_available": True,
+        "current_state_total": 1,
+        "current_state_by_code": {"malformed_candidate": 1},
+    }
+    assert first["malformed_candidates"] == {
+        "run_total": 1,
+        "current_state_total": 1,
+        "current_state_by_contract_and_reason": [
+            {
+                "source_feature": "Weight",
+                "collecting_method_version": "2.0",
+                "reason_codes": [
+                    "missing_or_nonnumeric_value",
+                    "non_dict_list_item",
+                ],
+                "count": 1,
+            }
+        ],
+    }
+
+    noop = process_dataset(raw, output, workers=1, max_in_flight=1).as_dict()
+    assert noop["diagnostics"]["run_total"] == 0
+    assert noop["diagnostics"]["run_by_code"] == {}
+    assert noop["diagnostics"]["current_state_by_code"] == {"malformed_candidate": 1}
+    assert noop["malformed_candidates"]["run_total"] == 0
+    assert noop["malformed_candidates"]["current_state_total"] == 1
+
+
+def test_central_release_manifest_tracks_google_processing_modules() -> None:
+    from wearable_project.utils.regenerate_manifest import compute
+    from wearable_project.utils.release_manifest import EXPECTED_GFIT_MODULE_SHA256
+
+    computed = compute()
+    assert computed["GFIT_EXPECTED_MODULE_SHA256"] == dict(sorted(EXPECTED_GFIT_MODULE_SHA256.items()))
