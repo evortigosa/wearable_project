@@ -1,7 +1,7 @@
 """
 Wearable Data Processing and Modeling project
 Generated integrity manifest for the 0.3.0 release.
-Regenerate with `python -m wearable_project.utils.regenerate_manifest`; do not edit by hand.
+Regenerate with `python -m wearable_project.utils.regenerate_manifest --write`; do not edit by hand.
 """
 
 
@@ -13,6 +13,7 @@ EXPECTED_RELEASE_LABEL = "0.3.0"
 EXPECTED_REGISTRY_FINGERPRINT = "cd1d3dfea41ccfd938bac3afaf938e4c321036bd1a961135836e8bea3042d909"
 EXPECTED_GUIDANCE_FINGERPRINT = "88ce26e4f209e4d0d36fc66050ef2d0beb51419b5047513d2484944d5911da0e"
 EXPECTED_DECISIONS_FINGERPRINT = "4fb8d41e4cc73488922486006b1eecc183f8352c77e9ea3c37171ca4a889adb5"
+
 EXPECTED_CURATION_MODULE_SHA256 = {
     "audit.py": "e89101ac679fb7e26a907a3a0c9cc586d8a34f44a3fb1b9f9ef08683ce421be2",
     "decisions.py": "e4445ef5ac464b09e309676e88d08295149366ff3e683ae33eb9de5d3888ee33",
@@ -29,6 +30,7 @@ EXPECTED_CURATION_MODULE_SHA256 = {
     "strategies.py": "9f3124dbd13f1743def043e29dec32a0e607303a9284929de08db97d57fa5d94",
     "unit_resolution.py": "801ff66437bfe416cd0801d7eb04674a833da874ea58bf2045458afcb23f4816",
 }
+
 EXPECTED_CORE_PROCESSING_MODULE_SHA256 = {
     "__init__.py": "2a580f10a4ce3b91631a7b6558c14b45e4343d069918ab8fb726600023221762",
     "cleaners.py": "a44c5605e7f3fe8415e0c5e20d98599c259e769ceb1702f0c4ff52c7f23f2f62",
@@ -36,20 +38,22 @@ EXPECTED_CORE_PROCESSING_MODULE_SHA256 = {
     "pipeline.py": "b7a1bb115e23f58127a3410713c4703ce25cf4735aabb60f9ad21cdaf38319f7",
     "registry.py": "2ebdd1950e1342396b85eb25633447463f692ae945493a570e04c2c1ec543049",
     "resampling.py": "c4612c58727c4a9664b7e424591b188e60fcf9bb56e9586f241dd0f87235583e",
+    "scan.py": "fc4ec870a4b8015e473f18467d5e25f140d6ca8caf0f8fc42b511b2fd1ddb0ec",
     "tracker.py": "9106a05b7447babad4a9f6e92a7b2dd3e5824f283b30f83a4673a3ddb53de1a7",
     "writer.py": "3a4ddfa5a9c035e50ddfb1621eca847fd9e2bf3428c38a5513810de8cd8ade9c",
 }
-GFIT_EXPECTED_MODULE_SHA256 = {
-    '__init__.py': 'ac1adb3bd6088a7b59b15de50ceee1778b990dac23b4ae1a9c7a361e051ae01b',
-    'registry.py': '14189e0a880e499fee3a42256c1169e6ea8d5ec6392281ee3a0f7051de8b526a',
-    'models.py': '1a41dfaea08f2dc0fd0e035ea83d4a67adaebeaec7d59ca2aaf08787f894a05e',
-    'candidate_decoders.py': '8134c7ea467fce879d854d8d287046d6c41940a35a0f86a03b6ec00634ac7f8c',
-    'parser.py': '656ab0af06c62b04ed76461e7bd07d720871f8c1ca9c60dd66c3153aec70903a',
-    'cleaners.py': 'c4eb2f7703fe2f78ae577d94b154eaa7c49ea81f1626bca46118e2c4de81c4bd',
-    'writer.py': '8f756b14e6e80299b2996fe09268a393c19bc9a055d0c6e5920853fbbe342062',
-    'tracker.py': '93a4f214adeb32996a41eee6fb16e60a34bd7746133baf7703386fba1bbd54f0',
-    'pipeline.py': '56fb3cdda8ebea1bfa025ed5d561050134eff076ec6443757918f2f0314e1329',
-    'scan.py': '6c4da92588665b17c90d112fb9a6bd2e7779fc27a1f522040a5300ae5a509d6b',
-    'environment.py': 'd1350644ab32a05d19cf59be48dc2819e5e320277a98b76c76d1aa11d04c632b',
-    'resampling.py': 'fb91541d75ca5fbbf40ae782cc72d124ead71cb9d56945f59ba1788cc4629d4c',
+
+EXPECTED_GFIT_MODULE_SHA256 = {
+    "__init__.py": "f646720ad59cbea99dcc8bbd73867f5417e582ec5a9129d357822f71fa7139a8",
+    "candidate_decoders.py": "a4849b5e9df74748ad564ffd9b9d8c27b817f0de08d1b53a71d40b6a3b4cb597",
+    "cleaners.py": "7655cd01f0db1680bb51bb6db7e370642b70b33e5a5f5dca09181151888c9ff5",
+    "environment.py": "25841a0cc27fc0612ae72680e7ff69fedfa45d508e777249fa1483a753ea5d82",
+    "models.py": "6eb5891b3e28121e05f93e24a81785a9aba34339b9decddc5b6e5415ee279271",
+    "parser.py": "123daad39cbf0c1fb80e2fcde8d0d366b204136c522d7254ce2b1688131cc252",
+    "pipeline.py": "b021eeebdfe9f256c6d2abafae322e740da3d8b2b37acd8b0540e36ae2859245",
+    "registry.py": "0bbde80cd14dc13804c4296ae3ca65751b7cef3447da6f364d9a82f1c60cc6e8",
+    "resampling.py": "16289799fdfcc231f52203524f35b268ac20c9d2a51fb6222913e844cda09a0c",
+    "scan.py": "13bd8fd783bc23dc6b9d17423e1ceb88db227500dc8da219bf4d57929276adec",
+    "tracker.py": "0bee8bbb600011a952ec793b2fa0c731c64e82cee741d86ff5dfa05299afb434",
+    "writer.py": "58c6a9f1cade7c3fba2d1c07f2ee00ad400b81c23155930766dba5c0233366df",
 }

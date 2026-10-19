@@ -17,8 +17,24 @@ from wearable_project.processing.google_fitness.cleaners import CLEANER_VERSION
 from wearable_project.processing.google_fitness.models import PARSER_VERSION
 from wearable_project.processing.google_fitness.pipeline import PIPELINE_VERSION
 from wearable_project.processing.google_fitness.registry import REGISTRY_VERSION, registry_fingerprint
-from wearable_project.utils.release_manifest import GFIT_EXPECTED_MODULE_SHA256
+from wearable_project.utils.release_manifest import EXPECTED_GFIT_MODULE_SHA256
 from wearable_project.processing.google_fitness.writer import STATE_SCHEMA_VERSION
+
+
+_TRACKED_CORE_MODULES = (
+    "__init__.py",
+    "candidate_decoders.py",
+    "cleaners.py",
+    "environment.py",
+    "models.py",
+    "parser.py",
+    "pipeline.py",
+    "registry.py",
+    "resampling.py",
+    "scan.py",
+    "tracker.py",
+    "writer.py",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,17 +103,21 @@ def processing_environment_manifest() -> ProcessingEnvironmentManifest:
 
     actual: dict[str, str | None] = {}
     integrity: dict[str, bool] = {}
-    for name, expected in sorted(GFIT_EXPECTED_MODULE_SHA256.items()):
+    for name in _TRACKED_CORE_MODULES:
         path = source_root / name
+        expected = EXPECTED_GFIT_MODULE_SHA256.get(name)
         observed = _hash(path) if path.is_file() else None
         actual[name] = observed
-        integrity[name] = observed == expected
+        integrity[name] = expected is not None and observed == expected
 
     commit, dirty = _git_info(repository_root)
     warnings: list[str] = []
     invalid = [name for name, valid in integrity.items() if not valid]
     if invalid:
         warnings.append("Google Fitness WP4 source differs from its release manifest: " + ", ".join(invalid))
+    manifest_only = sorted(set(EXPECTED_GFIT_MODULE_SHA256) - set(_TRACKED_CORE_MODULES))
+    if manifest_only:
+        warnings.append("Google Fitness release manifest contains untracked modules: " + ", ".join(manifest_only))
     if registry_fingerprint() == "":
         warnings.append("Google Fitness registry fingerprint is empty")
     imported = Path(wearable_project.__file__).resolve()

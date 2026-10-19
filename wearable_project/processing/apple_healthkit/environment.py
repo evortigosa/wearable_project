@@ -31,6 +31,7 @@ _TRACKED_CORE_MODULES = (
     "pipeline.py",
     "registry.py",
     "resampling.py",
+    "scan.py",
     "tracker.py",
     "writer.py",
 )

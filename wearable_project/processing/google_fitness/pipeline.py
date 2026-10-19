@@ -6,6 +6,7 @@ Participant-owned Google Fitness native-processing orchestration for WP4.
 
 from __future__ import annotations
 import concurrent.futures
+from collections import Counter
 import ctypes
 import gc
 import multiprocessing as mp
@@ -104,6 +105,7 @@ class BuildResult:
     conflict_rows: int = 0
     source_occurrences: int = 0
     diagnostics: int = 0
+    diagnostics_by_code: dict[str, int] = field(default_factory=dict)
     unknown_activity_labels: list[str] = field(default_factory=list)
     unsupported_contracts: list[str] = field(default_factory=list)
     runtime_seconds: float | None = None
@@ -136,6 +138,7 @@ class BuildResult:
             "conflict_rows": self.conflict_rows,
             "source_occurrences": self.source_occurrences,
             "diagnostics": self.diagnostics,
+            "diagnostics_by_code": dict(sorted(self.diagnostics_by_code.items())),
             "feature_files": len(self.output_infos),
             "output_size_bytes": sum(item.size_bytes for item in self.output_infos),
             "runtime_seconds": self.runtime_seconds,
@@ -158,6 +161,7 @@ class RunSummary:
     failed: int = 0
     blocks: dict[str, str] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
+    configuration: dict[str, Any] = field(default_factory=dict)
     report: dict[str, Any] | None = None
 
     def basic_dict(self) -> dict[str, Any]:
@@ -173,6 +177,7 @@ class RunSummary:
             "failed": self.failed,
             "blocks": dict(self.blocks),
             "failures": dict(self.failures),
+            "configuration": dict(self.configuration),
         }
 
     def as_dict(self) -> dict[str, Any]:
@@ -448,6 +453,9 @@ def build_participant(task: ParticipantTask) -> BuildResult:
         result.conflict_rows = cleaned.conflict_rows
         result.source_occurrences = len(parsed.source_occurrences)
         result.diagnostics = len(parsed.diagnostics)
+        result.diagnostics_by_code = dict(
+            sorted(Counter(item.code for item in parsed.diagnostics).items())
+        )
         result.unknown_activity_labels = sorted(parsed.unknown_activity_labels)
         result.unsupported_contracts = sorted(parsed.unsupported_contracts)
         result.empty = not output_infos
@@ -526,9 +534,28 @@ def process_dataset(
 
     participants = discover_participants(input_root, selected_participants)
     run_id = uuid.uuid4().hex
-    summary = RunSummary(run_id=run_id, discovered=len(participants))
     run_started = time.perf_counter()
     concurrency = max(1, min(max_in_flight or workers, workers, max(1, len(participants))))
+    summary = RunSummary(
+        run_id=run_id,
+        discovered=len(participants),
+        configuration={
+            "mode": mode,
+            "snapshot_policy": snapshot_policy,
+            "row_error_policy": row_error_policy,
+            "verify_existing_hashes": bool(verify_existing_hashes),
+            "existing_output_validation": (
+                "file_set_size_and_sha256"
+                if verify_existing_hashes
+                else "file_set_and_size"
+            ),
+            "source_validation": "sha256_all_discovered_month_files",
+            "workers_requested": workers,
+            "max_in_flight_requested": max_in_flight,
+            "max_in_flight_effective": concurrency,
+            "fail_fast": bool(fail_fast),
+        },
+    )
 
     temp_root = output_root.parent / f".{output_root.name}.wp4_tmp" / run_id
     stage_root = temp_root / "stage"

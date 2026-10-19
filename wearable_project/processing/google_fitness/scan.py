@@ -44,6 +44,11 @@ class ProcessingScanReport:
     output_root: str
     state_file: str
     participants_discovered: int
+    mode: str
+    snapshot_policy: str
+    verify_existing_hashes: bool
+    workers_requested: int
+    workers_effective: int
     counts: dict[str, int]
     safe_to_process: bool
     processing_needed: bool
@@ -58,6 +63,21 @@ class ProcessingScanReport:
             "output_root": self.output_root,
             "state_file": self.state_file,
             "participants_discovered": self.participants_discovered,
+            "configuration": {
+                "mode": self.mode,
+                "snapshot_policy": self.snapshot_policy,
+                "verify_existing_hashes": self.verify_existing_hashes,
+                "workers_requested": self.workers_requested,
+                "workers_effective": self.workers_effective,
+            },
+            "validation": {
+                "source_files": "sha256",
+                "existing_outputs": (
+                    "file_set_size_and_sha256"
+                    if self.verify_existing_hashes
+                    else "file_set_and_size"
+                ),
+            },
             "counts": dict(self.counts),
             "safe_to_process": self.safe_to_process,
             "processing_needed": self.processing_needed,
@@ -218,6 +238,11 @@ def scan_processing_plan(
         output_root=str(output_root),
         state_file=str(state_file),
         participants_discovered=len(participants),
+        mode=mode,
+        snapshot_policy=snapshot_policy,
+        verify_existing_hashes=bool(verify_existing_hashes),
+        workers_requested=workers,
+        workers_effective=(min(workers, len(participants)) if participants else 0),
         counts=dict(sorted(counts.items())),
         safe_to_process=safe,
         processing_needed=needed,
@@ -234,6 +259,13 @@ def format_processing_scan(report: ProcessingScanReport | dict[str, Any], *, max
         f"Input: {payload['input_root']}",
         f"Output: {payload['output_root']}",
         f"Participants: {payload['participants_discovered']}",
+        "Configuration: "
+        f"mode={payload.get('configuration', {}).get('mode')}, "
+        f"snapshot_policy={payload.get('configuration', {}).get('snapshot_policy')}, "
+        f"verify_existing_hashes={payload.get('configuration', {}).get('verify_existing_hashes')}",
+        "Validation: "
+        f"source_files={payload.get('validation', {}).get('source_files')}, "
+        f"existing_outputs={payload.get('validation', {}).get('existing_outputs')}",
         "Actions: " + ", ".join(f"{name}={count}" for name, count in sorted(payload.get("counts", {}).items())),
         f"Safe to process: {payload['safe_to_process']}",
         f"Processing needed: {payload['processing_needed']}",
