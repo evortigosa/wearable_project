@@ -17,7 +17,7 @@ from typing import Mapping
 from .models import EvidenceGrade, to_primitive
 
 
-EXPECTED_EVIDENCE_FINGERPRINT = "820f23c43c7cade8a287595393ca6ec61cdb469af60b392f59915c990c507e44"
+EXPECTED_EVIDENCE_FINGERPRINT = "8067a7129313d53ae80dfee9047e954ccac06b35e9c7883601fd330c8059b1e2"
 
 
 class EvidenceKind(str, Enum):
@@ -117,7 +117,8 @@ _SOURCES = (
         EvidenceKind.OFFICIAL_USAGE_GUIDANCE,
         "Google for Developers",
         EvidenceGrade.A_DIRECT,
-        "Google documents estimated_steps as the derived source used to reproduce the Fit app daily total; daily boundaries use the device current timezone.",
+        "Google documents estimated_steps as the derived source used to reproduce the Fit app daily total; daily boundaries "
+        "use the device current timezone.",
         ("estimated_steps_preference_evidence", "local_day_context"),
         ("The cohort export does not retain enough timezone context to reconstruct one defensible canonical calendar day for every row.",),
         url="https://developers.google.com/fit/scenarios/read-daily-step-total",
@@ -209,7 +210,8 @@ _SOURCES = (
         EvidenceKind.PROJECT_CENSUS,
         "HPP wearable project",
         EvidenceGrade.A_DIRECT,
-        "Outer datetime, summary date and raw interval are distinct temporal evidence; summary dates sometimes differ from raw interval dates.",
+        "Outer datetime, summary date and raw interval are distinct temporal evidence; summary dates sometimes differ "
+        "from raw interval dates.",
         ("step_count_multiple_time_contexts", "block_canonical_day"),
         (),
         artifact="stepcount_temporal_alignment_counts.csv",
@@ -275,10 +277,14 @@ _SOURCES = (
         EvidenceKind.PROJECT_NATIVE_ACCEPTANCE,
         "HPP wearable project",
         EvidenceGrade.A_DIRECT,
-        "The accepted native root contains 13,476,849 rows in 32,707 feature files with exact raw-to-native accounting and no silent candidate loss.",
+        "Each accepted Google Fitness native snapshot is state-backed and must demonstrate exact raw-to-native accounting "
+        "with no silent candidate loss.",
         ("native_product_stability", "curation_input_contract"),
-        (),
-        artifact="google_fitness_native_first_acceptance.json",
+        (
+            "Participant, file and row counts are snapshot-specific and must be read from the native state and CWP2 "
+            "native_snapshot.json at audit time; they are not permanent policy constants.",
+        ),
+        artifact="accepted native processing report, .wearable_state.sqlite and CWP2 native_snapshot.json",
     ),
     EvidenceSource(
         "project_native_malformed_weight",
@@ -286,10 +292,14 @@ _SOURCES = (
         EvidenceKind.PROJECT_LIMITATION,
         "HPP wearable project",
         EvidenceGrade.A_DIRECT,
-        "Four malformed Weight 2.0 source items have no numeric native row and remain in the native state audit ledger.",
+        "Malformed Weight source items that cannot form numeric native rows remain in the native state audit ledger and "
+        "are excluded from curation row input.",
         ("malformed_weight_not_curated",),
-        (),
-        artifact=".wearable_state.sqlite malformed_candidates",
+        (
+            "The count and reason-code distribution are snapshot-specific and must be read from the native state and "
+            "CWP2 native_snapshot.json.",
+        ),
+        artifact=".wearable_state.sqlite malformed_candidates and CWP2 native_snapshot.json",
     ),
     EvidenceSource(
         "project_curation_invariant",
