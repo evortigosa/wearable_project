@@ -10,18 +10,28 @@ from .evidence import EVIDENCE, EvidenceKind, EvidenceSource, evidence_fingerpri
 from .guidance import FEATURE_GUIDES, FeatureGuide, get_feature_guide, guidance_fingerprint, known_guides
 from .models import CurationStatus, DecisionStatus, EvidenceGrade, PolicyExecutionMode, PolicyMaturity
 from .rules import RULES, RuleDefinition, get_rule, known_rules, rules_fingerprint
+from .pipeline import PIPELINE_VERSION, curate_dataset, format_summary
+from .registry import (
+    CURATION_POLICIES, CURATION_REGISTRY_VERSION, POLICY_CONTRACT_VERSION, UNKNOWN_POLICY, get_policy,
+    known_curation_features, registry_fingerprint, registry_payload, validate_registry,
+)
 from .engine import (
     ENGINE_VERSION, CuratedFeatureInfo, FeatureCurationResult, curate_feature_file, feature_policy_fingerprint,
     validate_curated_feature_file, validate_engine_contract,
 )
-from .registry import (
-    CURATION_POLICIES, CURATION_REGISTRY_VERSION, POLICY_CONTRACT_VERSION, UNKNOWN_POLICY, get_policy,
-    known_curation_features, registry_fingerprint, registry_payload, validate_registry,
+from .state import (
+    CURATION_STATE_FILENAME, CURATION_STATE_SCHEMA_VERSION, CurationRunSummary, CurationStateDatabase,
+    format_curation_report, load_curation_report,
 )
 
 
 __all__ = [
     "AUDIT_VERSION",
+    "PIPELINE_VERSION",
+    "CURATION_STATE_FILENAME",
+    "CURATION_STATE_SCHEMA_VERSION",
+    "CurationRunSummary",
+    "CurationStateDatabase",
     "ENGINE_VERSION",
     "CuratedFeatureInfo",
     "FeatureCurationResult",
@@ -45,9 +55,12 @@ __all__ = [
     "UNKNOWN_POLICY",
     "CalibrationDecision",
     "curate_feature_file",
+    "curate_dataset",
     "decisions_fingerprint",
     "evidence_fingerprint",
     "feature_policy_fingerprint",
+    "format_curation_report",
+    "format_summary",
     "get_decision",
     "get_evidence",
     "get_feature_guide",
@@ -59,6 +72,7 @@ __all__ = [
     "known_evidence",
     "known_guides",
     "known_rules",
+    "load_curation_report",
     "registry_fingerprint",
     "registry_payload",
     "rules_fingerprint",

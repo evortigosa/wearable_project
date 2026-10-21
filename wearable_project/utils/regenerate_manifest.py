@@ -39,11 +39,17 @@ _SCALAR_NAMES = (
     "EXPECTED_REGISTRY_FINGERPRINT",
     "EXPECTED_GUIDANCE_FINGERPRINT",
     "EXPECTED_DECISIONS_FINGERPRINT",
+    "EXPECTED_GFIT_CURATION_REGISTRY_FINGERPRINT",
+    "EXPECTED_GFIT_CURATION_EVIDENCE_FINGERPRINT",
+    "EXPECTED_GFIT_CURATION_RULES_FINGERPRINT",
+    "EXPECTED_GFIT_CURATION_DECISIONS_FINGERPRINT",
+    "EXPECTED_GFIT_CURATION_GUIDANCE_FINGERPRINT",
 )
 _MAPPING_NAMES = (
     "EXPECTED_CURATION_MODULE_SHA256",
     "EXPECTED_CORE_PROCESSING_MODULE_SHA256",
     "EXPECTED_GFIT_MODULE_SHA256",
+    "EXPECTED_GFIT_CURATION_MODULE_SHA256",
 )
 _MANIFEST_NAMES = frozenset((*_SCALAR_NAMES, *_MAPPING_NAMES))
 
@@ -70,6 +76,12 @@ def compute(release_label: str | None = None) -> dict[str, Any]:
     from wearable_project.curation.apple_healthkit.registry import registry_fingerprint
     from wearable_project.processing.apple_healthkit import environment as apple_processing_environment
     from wearable_project.processing.google_fitness import environment as google_processing_environment
+    from wearable_project.curation.google_fitness import environment as google_curation_environment
+    from wearable_project.curation.google_fitness.decisions import decisions_fingerprint as gfit_decisions_fingerprint
+    from wearable_project.curation.google_fitness.evidence import evidence_fingerprint as gfit_evidence_fingerprint
+    from wearable_project.curation.google_fitness.guidance import guidance_fingerprint as gfit_guidance_fingerprint
+    from wearable_project.curation.google_fitness.registry import registry_fingerprint as gfit_registry_fingerprint
+    from wearable_project.curation.google_fitness.rules import rules_fingerprint as gfit_rules_fingerprint
 
     module_file = wearable_project.__file__
     if module_file is None:
@@ -82,6 +94,11 @@ def compute(release_label: str | None = None) -> dict[str, Any]:
         "EXPECTED_REGISTRY_FINGERPRINT": registry_fingerprint(),
         "EXPECTED_GUIDANCE_FINGERPRINT": guidance_fingerprint(),
         "EXPECTED_DECISIONS_FINGERPRINT": decisions_fingerprint(),
+        "EXPECTED_GFIT_CURATION_REGISTRY_FINGERPRINT": gfit_registry_fingerprint(),
+        "EXPECTED_GFIT_CURATION_EVIDENCE_FINGERPRINT": gfit_evidence_fingerprint(),
+        "EXPECTED_GFIT_CURATION_RULES_FINGERPRINT": gfit_rules_fingerprint(),
+        "EXPECTED_GFIT_CURATION_DECISIONS_FINGERPRINT": gfit_decisions_fingerprint(),
+        "EXPECTED_GFIT_CURATION_GUIDANCE_FINGERPRINT": gfit_guidance_fingerprint(),
         "EXPECTED_CURATION_MODULE_SHA256": _module_hashes(
             package / "curation" / "apple_healthkit",
             curation_environment._TRACKED_MODULES,
@@ -96,6 +113,11 @@ def compute(release_label: str | None = None) -> dict[str, Any]:
             package / "processing" / "google_fitness",
             google_processing_environment._TRACKED_CORE_MODULES,
             label="Google Fitness processing",
+        ),
+        "EXPECTED_GFIT_CURATION_MODULE_SHA256": _module_hashes(
+            package / "curation" / "google_fitness",
+            google_curation_environment._TRACKED_MODULES,
+            label="Google Fitness curation",
         ),
     }
 
@@ -120,7 +142,7 @@ def render_manifest(values: Mapping[str, Any]) -> str:
         "Wearable Data Processing and Modeling project\n"
         f"Generated integrity manifest for the {values['EXPECTED_RELEASE_LABEL']} release.\n"
         "Regenerate with `python -m wearable_project.utils.regenerate_manifest --write`; do not edit by hand.\n"
-        '"""\n\n\n'
+        '"""\n\n'
         "from __future__ import annotations\n\n\n"
         f"{scalars}\n\n"
         f"{mappings}\n"
