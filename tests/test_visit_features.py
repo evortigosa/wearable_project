@@ -41,6 +41,13 @@ def test_window_is_inclusive_and_repeats_a_day_in_overlapping_windows():
     assert windowed.loc[windowed["local_date"] == "2019-01-01", "days_from_visit"].item() == -365
 
 
+def test_window_days_narrows_the_window_inclusively():
+    v = visits(("10K_1", "00_00_visit", "2020-01-01"))
+    days = daily(["2019-07-02", "2019-07-03", "2020-07-01", "2020-07-02"])
+    windowed = vf.attach_windows(days, v, "local_date", window_days=182)
+    assert windowed["local_date"].tolist() == ["2019-07-03", "2020-07-01"]
+
+
 def test_window_ignores_other_participants():
     v = visits(("10K_2", "00_00_visit", "2020-01-01"))
     assert vf.attach_windows(daily(["2020-01-01"]), v, "local_date").empty

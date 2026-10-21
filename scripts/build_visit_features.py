@@ -1,7 +1,7 @@
 """
 Wearable Data Processing and Modeling project
 Per-visit wearable summary features: one row per participant and HPP visit, summarizing the days within
-WINDOW_DAYS of the visit date. Reads a written daily-statistics run and a written domain-metrics run (sleep nights);
+WINDOW_DAYS of the visit date (--window-days narrows or widens it for sensitivity analyses). Reads a written daily-statistics run and a written domain-metrics run (sleep nights);
 visit dates come from the pheno snapshot's clinic-visit tables.
 Outliers are handled in three layers, each counted in outlier_audit.csv: days dominated by implausible readings are
 dropped; days with too little coverage, or beyond a physiological cap, are dropped (never clipped); and a
@@ -9,6 +9,8 @@ participant-visit is reported only with enough valid days, then flagged, never r
 
 Usage:
     python scripts/build_visit_features.py --daily-run RUN/daily --domain-run RUN/domain --out RUN/features
+    python scripts/build_visit_features.py --daily-run RUN/daily --domain-run RUN/domain --out RUN/features_182 \
+        --window-days 182
 """
 
 
@@ -97,17 +99,19 @@ def load_visit_dates(snapshot: Path = SNAPSHOT) -> pd.DataFrame:
     return visits
 
 
-def attach_windows(days: pd.DataFrame, visits: pd.DataFrame, date_column: str) -> pd.DataFrame:
+def attach_windows(days: pd.DataFrame, visits: pd.DataFrame, date_column: str,
+                   window_days: int = WINDOW_DAYS) -> pd.DataFrame:
     """Each day once per visit whose window contains it, with research_stage and days_from_visit."""
 
     dated = days.assign(_date=pd.to_datetime(days[date_column]))
     joined = dated.merge(visits, on="RegistrationCode", how="inner")
     joined["days_from_visit"] = (joined["_date"] - joined["visit_date"]).dt.days
-    inside = joined["days_from_visit"].abs() <= WINDOW_DAYS
+    inside = joined["days_from_visit"].abs() <= window_days
     return joined.loc[inside].drop(columns="_date").reset_index(drop=True)
 
 
-def read_windowed_daily(daily_run: Path, feature: str, visits: pd.DataFrame) -> pd.DataFrame:
+def read_windowed_daily(daily_run: Path, feature: str, visits: pd.DataFrame,
+                        window_days: int = WINDOW_DAYS) -> pd.DataFrame:
     """A feature's daily rows within any visit window, read one participant at a time to bound memory."""
 
     with_visits = set(visits["RegistrationCode"])
@@ -116,7 +120,7 @@ def read_windowed_daily(daily_run: Path, feature: str, visits: pd.DataFrame) -> 
         if participant["RegistrationCode"].iloc[0] not in with_visits:
             continue
         columns = [c for c in DAILY_COLUMNS if c in participant.columns]
-        windowed = attach_windows(participant[columns], visits, "local_date")
+        windowed = attach_windows(participant[columns], visits, "local_date", window_days)
         if not windowed.empty:
             frames.append(windowed)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -279,8 +283,8 @@ def audit_days(feature: str, days: pd.DataFrame, reported: dict[tuple[str, str],
     return audit.reset_index().assign(feature=feature)
 
 
-def build_visit_features(daily_run: Path, domain_run: Path,
-                         visits: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_visit_features(daily_run: Path, domain_run: Path, visits: pd.DataFrame,
+                         window_days: int = WINDOW_DAYS) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     summaries: dict[tuple[str, str], dict[str, float]] = {}
     audits = []
 
@@ -299,7 +303,7 @@ def build_visit_features(daily_run: Path, domain_run: Path,
 
     step_days = pd.DataFrame()
     for feature in (*TOTAL_FEATURES, *LEVEL_FEATURES):
-        days = read_windowed_daily(daily_run, feature, visits)
+        days = read_windowed_daily(daily_run, feature, visits, window_days)
         if days.empty:
             continue
         if feature == FLIGHTS_FEATURE:
@@ -314,12 +318,12 @@ def build_visit_features(daily_run: Path, domain_run: Path,
 
     recorded_step_days = step_days.groupby(KEY).size().astype(float).to_dict()
 
-    mindful = read_windowed_daily(daily_run, "Mindful", visits)
+    mindful = read_windowed_daily(daily_run, "Mindful", visits, window_days)
     if not mindful.empty:
         for key, window in mindful.groupby(KEY):
             add(key, summarize_mindful_window(window, recorded_step_days.get(key, 0.0)))
 
-    nights = attach_windows(dm.read_domain_table(domain_run, "sleep_nights"), visits, "night_date")
+    nights = attach_windows(dm.read_domain_table(domain_run, "sleep_nights"), visits, "night_date", window_days)
     summarize_family("SleepNight", nights.assign(drop_reason=night_drop_reason(nights)), summarize_sleep_window,
                      "sleep_valid_nights")
     summarize_family("SleepInBed", nights.assign(drop_reason=in_bed_drop_reason(nights)), summarize_in_bed_window,
@@ -395,11 +399,11 @@ def describe_column(column: str) -> tuple[str, str]:
     return "", ""
 
 
-def write_dictionary(columns: list[str], out: Path) -> None:
+def write_dictionary(columns: list[str], out: Path, window_days: int = WINDOW_DAYS) -> None:
     rows = [{"column": c, "definition": d, "unit": u} for c in columns for d, u in [describe_column(c)]]
     pd.DataFrame(rows).to_csv(out / "feature_dictionary.csv", index=False)
     rules = {
-        "window_days": WINDOW_DAYS, "max_out_of_range_share": MAX_OUT_OF_RANGE_SHARE,
+        "window_days": window_days, "max_out_of_range_share": MAX_OUT_OF_RANGE_SHARE,
         "min_observed_minutes_for_totals": MIN_OBSERVED_MINUTES_FOR_TOTALS, "min_hours_with_data": MIN_HOURS_WITH_DATA,
         "daily_total_bounds": DAILY_TOTAL_BOUNDS, "sleep_period_minutes_bounds": SLEEP_PERIOD_MINUTES_BOUNDS,
         "min_valid_days": MIN_VALID_DAYS, "min_valid_days_by_feature": MIN_VALID_DAYS_BY_FEATURE,
@@ -417,16 +421,18 @@ def main() -> None:
     parser.add_argument("--domain-run", type=Path, required=True, help="out= directory of compute_domain_metrics")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path, default=SNAPSHOT)
+    parser.add_argument("--window-days", type=int, default=WINDOW_DAYS,
+                        help=f"days on each side of the visit date (default {WINDOW_DAYS})")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
     visits = load_visit_dates(args.snapshot)
-    features, audit, flag_counts = build_visit_features(args.daily_run, args.domain_run, visits)
+    features, audit, flag_counts = build_visit_features(args.daily_run, args.domain_run, visits, args.window_days)
     features.to_parquet(args.out / "visit_features.parquet", index=False)
     features.to_csv(args.out / "visit_features.csv", index=False)
     audit.to_csv(args.out / "outlier_audit.csv", index=False)
     flag_counts.to_csv(args.out / "outlier_flags.csv", index=False)
-    write_dictionary(list(features.columns), args.out)
+    write_dictionary(list(features.columns), args.out, args.window_days)
     print(features.groupby("research_stage").size().to_string())
 
 
