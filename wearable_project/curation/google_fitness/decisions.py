@@ -17,7 +17,7 @@ from .models import DecisionStatus, to_primitive
 from .rules import RULES
 
 
-EXPECTED_DECISIONS_FINGERPRINT = "f72b056a228565476ec03221942f000278cec977b321c21f628a6d56e6844108"
+EXPECTED_DECISIONS_FINGERPRINT = "07ee5b732b254c9fb37a27336885251b81f30610bece134188b19400ae8fee8c"
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,12 +138,14 @@ _DECISIONS = (
     CalibrationDecision(
         "step_count_preference",
         "Annotate one default StepCount alternative when evidence permits",
-        DecisionStatus.PROVISIONAL,
-        "Prefer a unique estimated_steps row; otherwise use a unique merge_step_deltas row or sole alternative as reviewable fallback; select none for ambiguous groups.",
+        DecisionStatus.ACCEPTED,
+        "Prefer a unique estimated_steps row; otherwise use a unique merge_step_deltas row or sole alternative as "
+        "reviewable fallback; select none for ambiguous groups.",
         ("always choose the largest value", "always choose merge_step_deltas", "select multiple defaults"),
-        "Official guidance supports estimated_steps for Fit-app daily totals, but fallback behavior must be calibrated against the native cohort.",
+        "Official guidance supports estimated_steps for Fit-app daily totals, and CWP2 0.1.1 found a unique preferred "
+        "or fallback row for every observed version-2 group.",
         ("StepCount",),
-        ("google_fit_daily_step_total", "project_phase0_stepcount_alternatives"),
+        ("google_fit_daily_step_total", "project_phase0_stepcount_alternatives", "project_cwp2_full_native_calibration"),
         (
             "step_count_estimated_preferred",
             "step_count_merge_fallback",
@@ -170,12 +172,13 @@ _DECISIONS = (
     CalibrationDecision(
         "negative_calories_buckets",
         "Retain and classify negative Calories by magnitude",
-        DecisionStatus.PROVISIONAL,
+        DecisionStatus.ACCEPTED,
         "Use tiny, small, material and extreme magnitude buckets; never clip values to zero.",
         ("replace with zero", "drop all negative rows", "treat every negative value identically"),
-        "Phase 0 demonstrated distinct numerical regimes; exact status effects must be reproduced by the curation audit before execution.",
+        "CWP2 0.1.1 reproduced four mutually exclusive, exhaustive magnitude classes over the accepted full native "
+        "root and approved their status and inclusion effects for execution.",
         ("Calories",),
-        ("project_phase0_negative_calories",),
+        ("project_phase0_negative_calories", "project_cwp2_full_native_calibration"),
         (
             "calories_negative_tiny",
             "calories_negative_small",
@@ -298,6 +301,7 @@ _DECISIONS = (
         ("policy_coverage",),
     ),
 )
+
 
 DECISIONS: Mapping[str, CalibrationDecision] = MappingProxyType(
     {item.decision_id: item for item in sorted(_DECISIONS, key=lambda item: item.decision_id)}

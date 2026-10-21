@@ -9,15 +9,22 @@ from .decisions import DECISIONS, CalibrationDecision, decisions_fingerprint, ge
 from .evidence import EVIDENCE, EvidenceKind, EvidenceSource, evidence_fingerprint, get_evidence, known_evidence
 from .guidance import FEATURE_GUIDES, FeatureGuide, get_feature_guide, guidance_fingerprint, known_guides
 from .models import CurationStatus, DecisionStatus, EvidenceGrade, PolicyExecutionMode, PolicyMaturity
+from .rules import RULES, RuleDefinition, get_rule, known_rules, rules_fingerprint
+from .engine import (
+    ENGINE_VERSION, CuratedFeatureInfo, FeatureCurationResult, curate_feature_file, feature_policy_fingerprint,
+    validate_curated_feature_file, validate_engine_contract,
+)
 from .registry import (
     CURATION_POLICIES, CURATION_REGISTRY_VERSION, POLICY_CONTRACT_VERSION, UNKNOWN_POLICY, get_policy,
     known_curation_features, registry_fingerprint, registry_payload, validate_registry,
 )
-from .rules import RULES, RuleDefinition, get_rule, known_rules, rules_fingerprint
 
 
 __all__ = [
     "AUDIT_VERSION",
+    "ENGINE_VERSION",
+    "CuratedFeatureInfo",
+    "FeatureCurationResult",
     "CURATION_POLICIES",
     "CURATION_REGISTRY_VERSION",
     "CurationStatus",
@@ -37,8 +44,10 @@ __all__ = [
     "RuleDefinition",
     "UNKNOWN_POLICY",
     "CalibrationDecision",
+    "curate_feature_file",
     "decisions_fingerprint",
     "evidence_fingerprint",
+    "feature_policy_fingerprint",
     "get_decision",
     "get_evidence",
     "get_feature_guide",
@@ -54,6 +63,8 @@ __all__ = [
     "registry_payload",
     "rules_fingerprint",
     "run_native_calibration_audit",
+    "validate_curated_feature_file",
+    "validate_engine_contract",
     "validate_registry",
 ]
 

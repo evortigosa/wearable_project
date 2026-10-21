@@ -839,6 +839,7 @@ def _audit_participant(task: ParticipantAuditInput) -> ParticipantAuditResult:
         path = root / record.participant_id / record.filename
         _validate_file(path, record, task.verify_native_hashes)
         policy = get_policy(record.feature)
+        active_rule_ids = frozenset(policy.curation.rule_ids)
         expected_header = tuple(policy.native_schema.native_columns)
         result.files_read += 1
         result.bytes_read += record.size_bytes
@@ -866,43 +867,55 @@ def _audit_participant(task: ParticipantAuditInput) -> ParticipantAuditResult:
 
                 start = _parse_datetime(row.get("start_date"))
                 end = _parse_datetime(row.get("end_date"))
+                invalid_native_interval = False
                 if policy.temporal.start_column and policy.temporal.end_column:
                     invalid_native_interval = start is None or end is None or end < start
-                    if invalid_native_interval:
+                    if "native_interval_valid" in active_rule_ids and invalid_native_interval:
                         result.quality_rule_counts[("native_interval_valid", record.feature, version)] += 1
                     if (
-                        policy.event_kind in {EventKind.ACTIVITY_INTERVAL, EventKind.STATE_INTERVAL}
+                        "activity_interval_valid" in active_rule_ids
+                        and policy.event_kind in {EventKind.ACTIVITY_INTERVAL, EventKind.STATE_INTERVAL}
                         and (invalid_native_interval or (start is not None and end is not None and end <= start))
                     ):
                         result.quality_rule_counts[("activity_interval_valid", record.feature, version)] += 1
-                for measurement in policy.measurements:
-                    raw_measurement = row.get(measurement.column)
-                    if raw_measurement not in (None, "") and _float(raw_measurement) is None:
-                        result.quality_rule_counts[("finite_measurement", record.feature, version)] += 1
-                        break
+                if "finite_measurement" in active_rule_ids:
+                    for measurement in policy.measurements:
+                        raw_measurement = row.get(measurement.column)
+                        if raw_measurement not in (None, "") and _float(raw_measurement) is None:
+                            result.quality_rule_counts[("finite_measurement", record.feature, version)] += 1
+                            break
                 if "source_day_label" in row:
                     source_day_label = (row.get("source_day_label") or "").strip()
-                    if source_day_label:
+                    if source_day_label and "source_day_label_context" in active_rule_ids:
                         result.quality_rule_counts[("source_day_label_context", record.feature, version)] += 1
                     relation, _ = _weekday_relation(source_day_label, start, end)
-                    if relation == "unrecognized":
+                    if relation == "unrecognized" and "source_day_label_unrecognized" in active_rule_ids:
                         result.quality_rule_counts[("source_day_label_unrecognized", record.feature, version)] += 1
-                    elif relation == "nonadjacent":
+                    elif relation == "nonadjacent" and "source_day_label_nonadjacent_disagreement" in active_rule_ids:
                         result.quality_rule_counts[("source_day_label_nonadjacent_disagreement", record.feature, version)] += 1
                     _record_source_day(result, record.feature, version, row, start, end)
 
                 if policy.event_kind in {EventKind.ACTIVITY_INTERVAL, EventKind.STATE_INTERVAL}:
-                    result.quality_rule_counts[("activity_tracking_status", record.feature, version)] += 1
-                    result.quality_rule_counts[("activity_provenance_classification", record.feature, version)] += 1
-                    if acquisition == "unknown":
+                    if "activity_tracking_status" in active_rule_ids:
+                        result.quality_rule_counts[("activity_tracking_status", record.feature, version)] += 1
+                    if "activity_provenance_classification" in active_rule_ids:
+                        result.quality_rule_counts[("activity_provenance_classification", record.feature, version)] += 1
+                    if acquisition == "unknown" and "activity_provenance_unknown" in active_rule_ids:
                         result.quality_rule_counts[("activity_provenance_unknown", record.feature, version)] += 1
-                    if "quantity" in row and (row.get("quantity") or "").strip():
+                    if (
+                        "activity_quantity_unresolved" in active_rule_ids
+                        and "quantity" in row
+                        and (row.get("quantity") or "").strip()
+                    ):
                         result.quality_rule_counts[("activity_quantity_unresolved", record.feature, version)] += 1
                     if start and end and start.date() != end.date():
                         result.activity_cross_midnight[record.feature] += 1
                     day = start.date().isoformat() if start else None
                     activity_values = [_float(row.get(name)) for name in ("calories", "distance", "quantity") if name in row]
-                    if any(value is not None and value < 0 for value in activity_values):
+                    if (
+                        "activity_measurements_nonnegative" in active_rule_ids
+                        and any(value is not None and value < 0 for value in activity_values)
+                    ):
                         result.quality_rule_counts[("activity_measurements_nonnegative", record.feature, version)] += 1
                     for measurement in ("calories", "distance"):
                         value = _float(row.get(measurement))
@@ -925,16 +938,24 @@ def _audit_participant(task: ParticipantAuditInput) -> ParticipantAuditResult:
                         if day and quantity is not None:
                             activity_quantity_daily[record.feature][day] += quantity
                     if record.feature == "Sleep":
-                        result.quality_rule_counts[("sleep_no_apple_equivalence", record.feature, version)] += 1
+                        if "sleep_no_apple_equivalence" in active_rule_ids:
+                            result.quality_rule_counts[("sleep_no_apple_equivalence", record.feature, version)] += 1
                         value = (row.get("value") or "").strip()
-                        if value not in policy.native_schema.state_vocabulary:
+                        if value not in policy.native_schema.state_vocabulary and "sleep_state_vocabulary" in active_rule_ids:
                             result.quality_rule_counts[("sleep_state_vocabulary", record.feature, version)] += 1
                         sleep_rows.append(dict(row))
 
-                if record.feature in {"Calories", "Distance", "Weight", "Height"}:
-                    if _float(row.get("value")) is not None:
-                        result.quality_rule_counts[("unit_mapping_pending", record.feature, version)] += 1
-                if record.feature in {"Weight", "Height"} and (row.get("added_by") or "").strip():
+                if (
+                    "unit_mapping_pending" in active_rule_ids
+                    and record.feature in {"Calories", "Distance", "Weight", "Height"}
+                    and _float(row.get("value")) is not None
+                ):
+                    result.quality_rule_counts[("unit_mapping_pending", record.feature, version)] += 1
+                if (
+                    "anthropometric_added_by_context" in active_rule_ids
+                    and record.feature in {"Weight", "Height"}
+                    and (row.get("added_by") or "").strip()
+                ):
                     result.quality_rule_counts[("anthropometric_added_by_context", record.feature, version)] += 1
 
                 if record.feature in {"Calories", "Distance"}:
@@ -953,7 +974,7 @@ def _audit_participant(task: ParticipantAuditInput) -> ParticipantAuditResult:
                         "negative_material": "calories_negative_material",
                         "negative_extreme": "calories_negative_extreme",
                     }.get(bucket)
-                    if bucket_rule:
+                    if bucket_rule and bucket_rule in active_rule_ids:
                         result.quality_rule_counts[(bucket_rule, record.feature, version)] += 1
                     result.sketch(result.negative_calories_values, (version, bucket)).add(
                         row.get("value"), key=f"{row_key}|calories"
@@ -963,9 +984,17 @@ def _audit_participant(task: ParticipantAuditInput) -> ParticipantAuditResult:
                     seconds = (end - start).total_seconds() if start and end else None
                     bucket = _duration_bucket(seconds)
                     result.weight_counts[(version, bucket)] += 1
-                    if seconds is not None and 0 < seconds <= 86400:
+                    if (
+                        "weight_nonpoint_interval" in active_rule_ids
+                        and seconds is not None
+                        and 0 < seconds <= 86400
+                    ):
                         result.quality_rule_counts[("weight_nonpoint_interval", record.feature, version)] += 1
-                    elif seconds is not None and seconds > 86400:
+                    elif (
+                        "weight_long_interval" in active_rule_ids
+                        and seconds is not None
+                        and seconds > 86400
+                    ):
                         result.quality_rule_counts[("weight_long_interval", record.feature, version)] += 1
                     result.sketch(result.weight_duration, version).add(
                         seconds, key=f"{row_key}|weight_duration"
@@ -978,7 +1007,7 @@ def _audit_participant(task: ParticipantAuditInput) -> ParticipantAuditResult:
                         above = value > 1000
                         result.weight_counts[(version, "value_below_source_range")] += int(below)
                         result.weight_counts[(version, "value_above_source_range")] += int(above)
-                        if below or above:
+                        if (below or above) and "weight_source_range" in active_rule_ids:
                             result.quality_rule_counts[("weight_source_range", record.feature, version)] += 1
                     added_by = (row.get("added_by") or "").strip() or "<missing>"
                     result.weight_added_by[(version, added_by)] += 1
@@ -995,26 +1024,47 @@ def _audit_participant(task: ParticipantAuditInput) -> ParticipantAuditResult:
                 if record.feature == "Distance":
                     value = _float(row.get("value"))
                     seconds = (end - start).total_seconds() if start and end else None
-                    if value is not None and value < 0:
+                    if value is not None and value < 0 and "distance_nonnegative" in active_rule_ids:
                         result.quality_rule_counts[("distance_nonnegative", record.feature, version)] += 1
-                    if value is not None and value > 0 and seconds == 0:
+                    if (
+                        "distance_positive_zero_duration" in active_rule_ids
+                        and value is not None
+                        and value > 0
+                        and seconds == 0
+                    ):
                         result.quality_rule_counts[("distance_positive_zero_duration", record.feature, version)] += 1
-                    if value is not None and seconds is not None and seconds > 0 and value / seconds > 100:
+                    if (
+                        "distance_source_rate_limit" in active_rule_ids
+                        and value is not None
+                        and seconds is not None
+                        and seconds > 0
+                        and value / seconds > 100
+                    ):
                         result.quality_rule_counts[("distance_source_rate_limit", record.feature, version)] += 1
                 if record.feature == "Height":
                     value = _float(row.get("value"))
-                    if value is not None and (value < 0 or value > 3):
+                    if (
+                        "height_source_range" in active_rule_ids
+                        and value is not None
+                        and (value < 0 or value > 3)
+                    ):
                         result.quality_rule_counts[("height_source_range", record.feature, version)] += 1
                 if record.feature == "StepCount":
                     value = _float(row.get("value"))
                     if version == "2.0":
-                        result.quality_rule_counts[("step_count_temporal_context", record.feature, version)] += 1
-                        result.quality_rule_counts[("unit_payload_explicit", record.feature, version)] += 1
-                    if value is not None and value < 0:
+                        if "step_count_temporal_context" in active_rule_ids:
+                            result.quality_rule_counts[("step_count_temporal_context", record.feature, version)] += 1
+                        if "unit_payload_explicit" in active_rule_ids:
+                            result.quality_rule_counts[("unit_payload_explicit", record.feature, version)] += 1
+                    if value is not None and value < 0 and "step_count_nonnegative" in active_rule_ids:
                         result.quality_rule_counts[("step_count_nonnegative", record.feature, version)] += 1
                     if version == "2.0" and start and end and value is not None:
                         seconds = (end - start).total_seconds()
-                        if seconds > 0 and value / seconds > 10:
+                        if (
+                            "step_count_source_rate_limit" in active_rule_ids
+                            and seconds > 0
+                            and value / seconds > 10
+                        ):
                             result.quality_rule_counts[("step_count_source_rate_limit", record.feature, version)] += 1
                     step_rows.append(dict(row))
         if row_count != record.row_count:
@@ -1592,8 +1642,8 @@ def _quality_rule_rows(aggregate: ParticipantAuditResult) -> list[dict[str, Any]
                         "parameters": dict(definition.parameters),
                     }
                 )
-    # Rules that are cohort/group context rather than attached to every feature may
-    # still have observed counts. Keep them visible even when no policy row emitted.
+    # Defensive path: if any implementation bug records a rule that is not attached to the feature policy, keep it
+    # visible so the acceptance gate can fail loudly.
     represented = {(row["rule_id"], row["feature"], row["collecting_method_version"]) for row in rows}
     for key, count in sorted(aggregate.quality_rule_counts.items()):
         if key in represented:
@@ -1835,12 +1885,32 @@ def _version_contract_issues(aggregate: ParticipantAuditResult) -> tuple[str, ..
     return tuple(issues)
 
 
+def _quality_rule_policy_alignment_issues(aggregate: ParticipantAuditResult,) -> tuple[str, ...]:
+    """Return nonzero rule counts that are not registered for their feature."""
+
+    issues: list[str] = []
+    for (rule_id, feature, version), count in sorted(aggregate.quality_rule_counts.items()):
+        if count <= 0:
+            continue
+        policy = CURATION_POLICIES.get(feature)
+        if policy is None:
+            issues.append(
+                f"{feature}|{version}: observed {count} trigger(s) for {rule_id!r} without a registered policy"
+            )
+        elif rule_id not in policy.curation.rule_ids:
+            issues.append(
+                f"{feature}|{version}: observed {count} trigger(s) for unregistered rule {rule_id!r}"
+            )
+    return tuple(issues)
+
+
 def _acceptance_payload(
     snapshot: NativeSnapshot, aggregate: ParticipantAuditResult, failures: Sequence[Mapping[str, str]],
     output_dir: Path, *, expected_files: int, expected_rows: int, full_native_coverage: bool,
 ) -> dict[str, Any]:
     policy_issues = _policy_catalog_issues()
     version_issues = _version_contract_issues(aggregate)
+    quality_rule_policy_alignment_issues = _quality_rule_policy_alignment_issues(aggregate)
     feature_totals_rows = sum(int(item["rows"]) for item in snapshot.feature_totals)
     feature_totals_files = sum(int(item["files"]) for item in snapshot.feature_totals)
     checks = [
@@ -1854,6 +1924,11 @@ def _acceptance_payload(
         ("participant_workers", not failures, f"{len(failures)} failure(s)"),
         ("schema_validation", not aggregate.schema_issues, f"{len(aggregate.schema_issues)} issue(s)"),
         ("version_contracts", not version_issues, f"{len(version_issues)} issue(s)"),
+        (
+            "quality_rule_policy_alignment",
+            not quality_rule_policy_alignment_issues,
+            f"{len(quality_rule_policy_alignment_issues)} issue(s)",
+        ),
         (
             "state_feature_file_accounting",
             feature_totals_files == snapshot.feature_file_count,
@@ -1887,6 +1962,7 @@ def _acceptance_payload(
         "checks": records,
         "policy_catalog_issues": list(policy_issues),
         "version_contract_issues": list(version_issues),
+        "quality_rule_policy_alignment_issues": list(quality_rule_policy_alignment_issues),
     }
 
 

@@ -1,9 +1,9 @@
 """
 Wearable Data Processing and Modeling project
-Evidence catalog for Google Fitness curation policy design. The catalog separates official Google data-type
-contracts from project-specific exporter observations. An official data type documents the unit and semantics
-of that Google type; it does not, by itself, prove that every cohort export field was produced from that type.
-That exporter-mapping distinction is a first-class limitation in CWP1.
+Evidence catalog for Google Fitness curation policy design. The catalog separates official Google data-type contracts
+from project-specific exporter observations. An official data type documents the unit and semantics of that Google
+type; it does not, by itself, prove that every cohort export field was produced from that type. That exporter-mapping
+distinction is a first-class limitation in CWP1 and remains explicit in CWP3.
 """
 
 
@@ -17,7 +17,7 @@ from typing import Mapping
 from .models import EvidenceGrade, to_primitive
 
 
-EXPECTED_EVIDENCE_FINGERPRINT = "8067a7129313d53ae80dfee9047e954ccac06b35e9c7883601fd330c8059b1e2"
+EXPECTED_EVIDENCE_FINGERPRINT = "fa7309a5c68cfb3d0154e92c8abe4e05810230a1205bd2d0cc88f22766182221"
 
 
 class EvidenceKind(str, Enum):
@@ -69,8 +69,8 @@ _SOURCES = (
         "The activity data type represents classified activity segments over time intervals.",
         ("activity_interval_semantics", "activity_classification_context"),
         (
-            "The cohort exporter adds calories, distance, quantity, tracking and provenance fields that are not proven to be "
-            "fields of the standard activity-segment type.",
+            "The cohort exporter adds calories, distance, quantity, tracking and provenance fields that are not proven "
+            "to be fields of the standard activity-segment type.",
         ),
         url="https://developers.google.com/fit/datatypes/activity",
         retrieved_date="2026-10-19",
@@ -117,10 +117,13 @@ _SOURCES = (
         EvidenceKind.OFFICIAL_USAGE_GUIDANCE,
         "Google for Developers",
         EvidenceGrade.A_DIRECT,
-        "Google documents estimated_steps as the derived source used to reproduce the Fit app daily total; daily boundaries "
-        "use the device current timezone.",
+        "Google documents estimated_steps as the derived source used to reproduce the Fit app daily total; daily "
+        "boundaries use the device current timezone.",
         ("estimated_steps_preference_evidence", "local_day_context"),
-        ("The cohort export does not retain enough timezone context to reconstruct one defensible canonical calendar day for every row.",),
+        (
+            "The cohort export does not retain enough timezone context to reconstruct one defensible canonical calendar "
+            "day for every row.",
+        ),
         url="https://developers.google.com/fit/scenarios/read-daily-step-total",
         retrieved_date="2026-10-19",
     ),
@@ -277,14 +280,36 @@ _SOURCES = (
         EvidenceKind.PROJECT_NATIVE_ACCEPTANCE,
         "HPP wearable project",
         EvidenceGrade.A_DIRECT,
-        "Each accepted Google Fitness native snapshot is state-backed and must demonstrate exact raw-to-native accounting "
-        "with no silent candidate loss.",
+        "Each accepted Google Fitness native snapshot is state-backed and must demonstrate exact raw-to-native "
+        "accounting with no silent candidate loss.",
         ("native_product_stability", "curation_input_contract"),
         (
             "Participant, file and row counts are snapshot-specific and must be read from the native state and CWP2 "
             "native_snapshot.json at audit time; they are not permanent policy constants.",
         ),
         artifact="accepted native processing report, .wearable_state.sqlite and CWP2 native_snapshot.json",
+    ),
+    EvidenceSource(
+        "project_cwp2_full_native_calibration",
+        "CWP2 0.1.1 full-native Google Fitness calibration audit",
+        EvidenceKind.PROJECT_NATIVE_ACCEPTANCE,
+        "HPP wearable project",
+        EvidenceGrade.A_DIRECT,
+        "The hash-verified full-native audit covered all 32,707 participant-feature files and 13,476,849 native rows, "
+        "validated all 67 policies, and passed all 14 acceptance checks including quality-rule policy alignment.",
+        (
+            "step_count_preference_frozen",
+            "negative_calories_effects_frozen",
+            "weight_nonpoint_policy_confirmed",
+            "source_day_label_context_confirmed",
+            "sleep_state_policy_confirmed",
+            "scalar_unit_mappings_remain_unresolved",
+        ),
+        (
+            "The row and file counts describe the accepted exported-at-2024-12 snapshot; future cumulative snapshots "
+            "must be audited from live state rather than compared as permanent constants.",
+        ),
+        artifact="google_fitness_cwp2_calibration_v0_1_1 and CWP2_0_1_1_FULL_NATIVE_REVIEW.md",
     ),
     EvidenceSource(
         "project_native_malformed_weight",
@@ -313,6 +338,7 @@ _SOURCES = (
         artifact="accepted Apple curation architecture",
     ),
 )
+
 
 EVIDENCE: Mapping[str, EvidenceSource] = MappingProxyType(
     {item.evidence_id: item for item in sorted(_SOURCES, key=lambda item: item.evidence_id)}

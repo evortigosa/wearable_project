@@ -49,9 +49,9 @@ from .models import (
 )
 
 
-CURATION_REGISTRY_VERSION = "2026-10-google-fitness-curation-cwp1"
-POLICY_CONTRACT_VERSION = "1.0.0-cwp1"
-EXPECTED_REGISTRY_FINGERPRINT = "be6f49f3898be939175d8ed8b9f8331e7f6337e8d475b6daecf567a1f8022064"
+CURATION_REGISTRY_VERSION = "2026-10-google-fitness-curation-cwp3"
+POLICY_CONTRACT_VERSION = "1.1.0-cwp3"
+EXPECTED_REGISTRY_FINGERPRINT = "145b55578ac0e7b7c4e118cdfe7e886ccfa33073e0424558eb031c1c5d9696cf"
 
 GLOBAL_STATUS_COLUMNS = (
     "curation_status",
@@ -295,7 +295,7 @@ def _activity_policy(feature: str) -> FeaturePolicy:
             PolicyExecutionMode.CONSERVATIVE_ANNOTATION,
             ("activity_measurement_concordance", "provenance_classification_coverage"),
             ("activity_multimeasurement_rows", "activity_quantity_unresolved", "provenance_dimensions", "provenance_classifier"),
-            ("Activity submeasurement units remain unexecuted in CWP1.",),
+            ("Activity submeasurement canonicalization remains blocked; CWP2 0.1.1 did not establish exporter-unit mappings.",),
         ),
         evidence_refs=(
             "google_fit_activity_segments",
@@ -413,7 +413,7 @@ def _outer_scalar_measurement(
                 mode=PolicyExecutionMode.CONSERVATIVE_ANNOTATION,
                 strategy=CanonicalizationStrategy.WITHHOLD,
                 evidence=evidence,
-                limitations=(f"Decision {decision_id} remains provisional until CWP2 calibration freezes exporter mapping.",),
+                limitations=(f"CWP2 0.1.1 left decision {decision_id} unresolved; canonical values remain withheld.",),
             ),
         ),
         description=f"Native {feature} measurement retained unchanged pending exporter-contract calibration.",
@@ -793,11 +793,8 @@ def _step_count_policy() -> FeaturePolicy:
             EvidenceGrade.A_DIRECT,
             PolicyExecutionMode.SOURCE_SPECIFIC_EXECUTION,
             ("stepcount_preference_audit", "stepcount_cross_version_audit", "stepcount_temporal_audit", "unit_contract_matrix"),
-            (
-                "step_count_preserve_all_rows", "step_count_preference", "step_count_no_canonical_day",
-                "step_count_unit_mapping", "status_inclusion_separate", "provenance_dimensions"
-            ),
-            ("Group-preference outcomes require CWP2 full-native counts before execution.",),
+            ("step_count_preserve_all_rows", "step_count_preference", "step_count_no_canonical_day", "step_count_unit_mapping", "status_inclusion_separate", "provenance_dimensions"),
+            ("CWP2 0.1.1 approved the group-preference roles for execution while preserving every native row.",),
         ),
         evidence_refs=(
             "google_fit_step_count_delta",
@@ -983,9 +980,9 @@ def validate_registry() -> RegistryValidationResult:
         policy = CURATION_POLICIES[feature]
         unit = policy.measurements[0].unit_by_version[0]
         if unit.raw_unit_status is not RawUnitStatus.EXPORTER_MAPPING_PENDING:
-            issues.append(f"{feature} must remain exporter-mapping-pending in CWP1")
+            issues.append(f"{feature} must remain exporter-mapping-pending in CWP3")
         if unit.execution_mode is not PolicyExecutionMode.CONSERVATIVE_ANNOTATION:
-            issues.append(f"{feature} must remain conservative annotation in CWP1")
+            issues.append(f"{feature} must remain conservative annotation in CWP3")
 
     return RegistryValidationResult(tuple(sorted(set(issues))))
 

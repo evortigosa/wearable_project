@@ -104,6 +104,7 @@ class DerivationMethod(StringEnum):
     ESTIMATED = "estimated"
     MERGED = "merged"
     LEGACY_SUMMARY = "legacy_summary"
+    APPLICATION_SUMMARY = "application_summary"
     THIRD_PARTY_AGGREGATE = "third_party_aggregate"
     UNKNOWN = "unknown"
     NOT_APPLICABLE = "not_applicable"

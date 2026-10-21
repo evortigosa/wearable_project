@@ -17,7 +17,7 @@ from .models import EventKind, PolicyExecutionMode, to_primitive
 from .registry import CURATION_POLICIES
 
 
-EXPECTED_GUIDANCE_FINGERPRINT = "32657a51986d45223b884864c289797ada4dda850e25a17baf833ddb3ee37a57"
+EXPECTED_GUIDANCE_FINGERPRINT = "838b3db70d79a5e9074a66467843fe3498ebc654c36cfe8d1a0aa87b0df7da10"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,24 +124,24 @@ def _scalar_guide(feature: str) -> FeatureGuide:
             "Google Fitness interval energy totals",
             "Use as source interval totals. Do not interpret as Apple active energy because the proposed Google contract "
             "includes resting energy.",
-            "Canonical kcal values remain withheld in CWP1 until the exporter mapping is frozen.",
+            "Canonical kcal values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
         ),
         "Distance": (
             "Google Fitness interval distance totals",
             "Use as source interval totals without imposing calendar-day boundaries.",
-            "Canonical meter values remain withheld in CWP1 until the exporter mapping is frozen.",
+            "Canonical meter values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
         ),
         "Weight": (
             "Google Fitness body-weight observations",
             "Preserve both source boundaries and added_by provenance. Positive-duration rows remain intervals and are "
             "not collapsed to points.",
-            "Canonical kilogram values remain withheld in CWP1 until the exporter mapping is frozen.",
+            "Canonical kilogram values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
         ),
         "Height": (
             "Google Fitness height observations",
             "Preserve both source boundaries and added_by provenance. The cohort contains only two native rows, so "
             "calibration evidence is limited.",
-            "Canonical meter values remain withheld in CWP1 until the exporter mapping is frozen.",
+            "Canonical meter values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
         ),
     }
     title, use, projection = descriptions[feature]
@@ -179,8 +179,8 @@ def _step_count_guide() -> FeatureGuide:
         title="Google Fitness StepCount representations",
         row_meaning=policy.native_schema.row_meaning,
         recommended_use=(
-            "Choose a source series explicitly. Version 1 is a separate legacy scalar representation. Version 2 retains e"
-            "very named alternative."
+            "Choose a source series explicitly. Version 1 is a separate legacy scalar representation. Version 2 retains "
+            "every named alternative."
         ),
         default_projection=(
             "Curation may annotate one preferred version-2 row per outer group when evidence permits, but every row "
@@ -198,7 +198,7 @@ def _step_count_guide() -> FeatureGuide:
         limitations=(
             "estimated_steps preference is an analytical default, not a declaration that other alternatives are invalid.",
             "Version 1 and version 2 are not deduplicated or merged by date.",
-            "Fallback preference and disagreement effects remain provisional until CWP2 calibration.",
+            "CWP2 0.1.1 approved the preference and fallback roles for execution; future ambiguous groups remain excluded until reviewed.",
         ),
         evidence_refs=policy.evidence_refs,
     )

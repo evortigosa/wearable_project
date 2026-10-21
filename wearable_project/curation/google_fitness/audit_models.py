@@ -15,8 +15,8 @@ import math
 from typing import Any, Iterable
 
 
-AUDIT_VERSION = "google-fitness-curation-audit-cwp2-0.1.0"
-REPORT_SCHEMA_VERSION = "google-fitness-curation-audit-report-0.1.0"
+AUDIT_VERSION = "google-fitness-curation-audit-cwp2-0.1.1"
+REPORT_SCHEMA_VERSION = "google-fitness-curation-audit-report-0.1.1"
 DEFAULT_SAMPLE_SIZE = 4096
 
 
