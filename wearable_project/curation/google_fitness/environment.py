@@ -13,6 +13,7 @@ import subprocess
 from typing import Any
 import wearable_project
 from wearable_project import __release_label__, __version__
+from .acceptance import ACCEPTANCE_REPORT_SCHEMA_VERSION, ACCEPTANCE_VERSION
 from .audit_models import AUDIT_VERSION, REPORT_SCHEMA_VERSION
 from .decisions import decisions_fingerprint
 from .engine import ENGINE_VERSION
@@ -25,24 +26,22 @@ from .state import CURATION_STATE_SCHEMA_VERSION
 
 try:
     from wearable_project.utils.release_manifest import (
-        GFIT_EXPECTED_CURATION_DECISIONS_FINGERPRINT,
-        GFIT_EXPECTED_CURATION_EVIDENCE_FINGERPRINT,
-        GFIT_EXPECTED_CURATION_GUIDANCE_FINGERPRINT,
-        GFIT_EXPECTED_CURATION_MODULE_SHA256,
-        GFIT_EXPECTED_CURATION_REGISTRY_FINGERPRINT,
-        GFIT_EXPECTED_CURATION_RULES_FINGERPRINT,
+        EXPECTED_GFIT_CURATION_DECISIONS_FINGERPRINT, EXPECTED_GFIT_CURATION_EVIDENCE_FINGERPRINT,
+        EXPECTED_GFIT_CURATION_GUIDANCE_FINGERPRINT, EXPECTED_GFIT_CURATION_MODULE_SHA256,
+        EXPECTED_GFIT_CURATION_REGISTRY_FINGERPRINT, EXPECTED_GFIT_CURATION_RULES_FINGERPRINT,
     )
 except ImportError:  # Allows the centralized generator to add the first Google curation block.
-    GFIT_EXPECTED_CURATION_MODULE_SHA256 = {}
-    GFIT_EXPECTED_CURATION_REGISTRY_FINGERPRINT = ""
-    GFIT_EXPECTED_CURATION_EVIDENCE_FINGERPRINT = ""
-    GFIT_EXPECTED_CURATION_RULES_FINGERPRINT = ""
-    GFIT_EXPECTED_CURATION_DECISIONS_FINGERPRINT = ""
-    GFIT_EXPECTED_CURATION_GUIDANCE_FINGERPRINT = ""
+    EXPECTED_GFIT_CURATION_MODULE_SHA256 = {}
+    EXPECTED_GFIT_CURATION_REGISTRY_FINGERPRINT = ""
+    EXPECTED_GFIT_CURATION_EVIDENCE_FINGERPRINT = ""
+    EXPECTED_GFIT_CURATION_RULES_FINGERPRINT = ""
+    EXPECTED_GFIT_CURATION_DECISIONS_FINGERPRINT = ""
+    EXPECTED_GFIT_CURATION_GUIDANCE_FINGERPRINT = ""
 
 
 _TRACKED_MODULES = (
     "__init__.py",
+    "acceptance.py",
     "audit.py",
     "audit_models.py",
     "context.py",
@@ -71,6 +70,8 @@ class CurationEnvironmentManifest:
     imported_package_path: str
     distribution_package_path: str | None
     import_source_kind: str
+    acceptance_version: str
+    acceptance_report_schema_version: str
     audit_version: str
     audit_report_schema_version: str
     curation_registry_version: str
@@ -130,16 +131,16 @@ def environment_manifest() -> CurationEnvironmentManifest:
     for name in _TRACKED_MODULES:
         path = source_root / name
         observed = _hash(path) if path.is_file() else None
-        expected = GFIT_EXPECTED_CURATION_MODULE_SHA256.get(name)
+        expected = EXPECTED_GFIT_CURATION_MODULE_SHA256.get(name)
         actual[name] = observed
         integrity[name] = expected is not None and observed == expected
 
     semantics = {
-        "registry": registry_fingerprint() == GFIT_EXPECTED_CURATION_REGISTRY_FINGERPRINT,
-        "evidence": evidence_fingerprint() == GFIT_EXPECTED_CURATION_EVIDENCE_FINGERPRINT,
-        "rules": rules_fingerprint() == GFIT_EXPECTED_CURATION_RULES_FINGERPRINT,
-        "decisions": decisions_fingerprint() == GFIT_EXPECTED_CURATION_DECISIONS_FINGERPRINT,
-        "guidance": guidance_fingerprint() == GFIT_EXPECTED_CURATION_GUIDANCE_FINGERPRINT,
+        "registry": registry_fingerprint() == EXPECTED_GFIT_CURATION_REGISTRY_FINGERPRINT,
+        "evidence": evidence_fingerprint() == EXPECTED_GFIT_CURATION_EVIDENCE_FINGERPRINT,
+        "rules": rules_fingerprint() == EXPECTED_GFIT_CURATION_RULES_FINGERPRINT,
+        "decisions": decisions_fingerprint() == EXPECTED_GFIT_CURATION_DECISIONS_FINGERPRINT,
+        "guidance": guidance_fingerprint() == EXPECTED_GFIT_CURATION_GUIDANCE_FINGERPRINT,
     }
     commit, dirty = _git_info(repository_root)
     warnings: list[str] = []
@@ -149,7 +150,7 @@ def environment_manifest() -> CurationEnvironmentManifest:
             "Google Fitness curation source differs from its centralized release manifest: "
             + ", ".join(invalid_modules)
         )
-    manifest_only = sorted(set(GFIT_EXPECTED_CURATION_MODULE_SHA256) - set(_TRACKED_MODULES))
+    manifest_only = sorted(set(EXPECTED_GFIT_CURATION_MODULE_SHA256) - set(_TRACKED_MODULES))
     if manifest_only:
         warnings.append(
             "Google Fitness curation manifest contains untracked modules: "
@@ -182,6 +183,8 @@ def environment_manifest() -> CurationEnvironmentManifest:
         imported_package_path=str(imported),
         distribution_package_path=distribution_path,
         import_source_kind=source_kind,
+        acceptance_version=ACCEPTANCE_VERSION,
+        acceptance_report_schema_version=ACCEPTANCE_REPORT_SCHEMA_VERSION,
         audit_version=AUDIT_VERSION,
         audit_report_schema_version=REPORT_SCHEMA_VERSION,
         curation_registry_version=CURATION_REGISTRY_VERSION,

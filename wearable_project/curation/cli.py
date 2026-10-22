@@ -40,6 +40,18 @@ def _add_apple_only_source(
     return apple
 
 
+def _add_google_only_source(
+    command: argparse.ArgumentParser, *, handler: Callable[[argparse.Namespace], int], help_text: str,
+) -> argparse.ArgumentParser:
+    sources = command.add_subparsers(
+        dest="source", required=True, metavar="{google-fitness}", title="sources",
+        description="Select the source-specific curation implementation.",
+    )
+    google = sources.add_parser(GOOGLE_FITNESS_SOURCE, help=help_text)
+    google.set_defaults(_handler=handler)
+    return google
+
+
 def _add_source_pair(
     command: argparse.ArgumentParser, *, apple_handler: Callable[[argparse.Namespace], int],
     google_handler: Callable[[argparse.Namespace], int], apple_help: str, google_help: str,
@@ -261,6 +273,24 @@ def add_curation_commands(commands: Any) -> None:
     google.add_argument("--no-progress", action="store_true")
     google.add_argument("--json-summary", action="store_true")
 
+    acceptance_command = commands.add_parser(
+        "curation-acceptance", help="Run formal source-specific native-to-curated acceptance checks",
+    )
+    google = _add_google_only_source(
+        acceptance_command, handler=_curation_acceptance_google_fitness,
+        help_text="Accept a Google Fitness native/curated product pair",
+    )
+    google.add_argument("--input-native", type=Path, required=True)
+    google.add_argument("--input-curated", type=Path, required=True)
+    google.add_argument("--output", type=Path, required=True)
+    google.add_argument("--workers", type=int, default=4)
+    google.add_argument("--max-in-flight", type=int)
+    google.add_argument("--reference-manifest", type=Path)
+    google.add_argument("--no-verify-hashes", action="store_true")
+    google.add_argument("--overwrite", action="store_true")
+    google.add_argument("--no-progress", action="store_true")
+    google.add_argument("--json-summary", action="store_true")
+
     environment_command = commands.add_parser("curation-environment", help="Report curation fingerprints and source integrity")
     apple, google = _add_source_pair(
         environment_command,
@@ -282,7 +312,6 @@ def add_curation_commands(commands: Any) -> None:
     )
     _add_decision_arguments(apple)
     _add_decision_arguments(google)
-
 
 def _curate_apple_healthkit(args: argparse.Namespace) -> int:
     from wearable_project.curation.apple_healthkit.pipeline import curate_dataset, format_summary
@@ -776,6 +805,36 @@ def _curate_google_fitness(args: argparse.Namespace) -> int:
         for participant, message in sorted(summary.failures.items()):
             print(f"FAILED {participant}: {message}")
     return 1 if summary.failed else 0
+
+
+def _curation_acceptance_google_fitness(args: argparse.Namespace) -> int:
+    from wearable_project.curation.google_fitness.acceptance import run_acceptance
+
+    try:
+        result = run_acceptance(
+            args.input_native,
+            args.input_curated,
+            args.output,
+            workers=args.workers,
+            max_in_flight=args.max_in_flight,
+            reference_manifest=args.reference_manifest,
+            verify_hashes=not args.no_verify_hashes,
+            overwrite=args.overwrite,
+            no_progress=args.no_progress,
+        )
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if args.json_summary:
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(
+            f"Google Fitness CWP5 acceptance {result['status'].upper()}: "
+            f"{result['passed_check_count']}/{result['check_count']} checks passed; "
+            f"{result['snapshot']['feature_files']} files; "
+            f"{result['snapshot']['curated_rows']} rows"
+        )
+    return 0 if result["status"] == "pass" else 1
 
 
 def _curation_report_google_fitness(args: argparse.Namespace) -> int:

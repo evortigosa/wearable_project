@@ -142,7 +142,7 @@ def render_manifest(values: Mapping[str, Any]) -> str:
         "Wearable Data Processing and Modeling project\n"
         f"Generated integrity manifest for the {values['EXPECTED_RELEASE_LABEL']} release.\n"
         "Regenerate with `python -m wearable_project.utils.regenerate_manifest --write`; do not edit by hand.\n"
-        '"""\n\n'
+        '"""\n\n\n'
         "from __future__ import annotations\n\n\n"
         f"{scalars}\n\n"
         f"{mappings}\n"

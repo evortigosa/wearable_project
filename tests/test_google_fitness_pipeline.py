@@ -347,4 +347,4 @@ def test_central_release_manifest_tracks_google_processing_modules() -> None:
     from wearable_project.utils.release_manifest import EXPECTED_GFIT_MODULE_SHA256
 
     computed = compute()
-    assert computed["GFIT_EXPECTED_MODULE_SHA256"] == dict(sorted(EXPECTED_GFIT_MODULE_SHA256.items()))
+    assert computed["EXPECTED_GFIT_MODULE_SHA256"] == dict(sorted(EXPECTED_GFIT_MODULE_SHA256.items()))
