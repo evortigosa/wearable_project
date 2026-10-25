@@ -64,14 +64,15 @@ EXPECTED_GFIT_MODULE_SHA256 = {
 }
 
 EXPECTED_GFIT_CURATION_MODULE_SHA256 = {
-    "__init__.py": "0a0b6112ed4e7f91cd19afc03fa646b69c9f08c84ce1ccc40f1ccc4e402b467f",
+    "__init__.py": "a567c8b29952ddd490291ec485a08a7d5bc174775bc8a7efea31abbd01826f3c",
     "acceptance.py": "9ac5225617e749407402eca1cd0a132f7e6a97cff5eb1e228a558a7ee9ed9455",
     "audit.py": "d0dee31c7b9af26b6427b63aa6191a1337269f0c58461793b55c3ea596c90c06",
     "audit_models.py": "7958c69dddb644ce90a3481a82a6fec1feac07e8afca39d5f00ed0df9c6ea38f",
+    "cohort_acceptance.py": "a61dce72a84c187e964b8b3c532c91ae12bb7a71c34d0551a37195d43793fc2e",
     "context.py": "07c8f612fd7c3a86e0c6729af202a66270f76b91be32cdc3f8b19f094a23b554",
     "decisions.py": "5b4d88388908f6d868d899cbe690cee9789417583e065ad88bcecf1cb110763f",
     "engine.py": "37e45dc43731340721c4acca0baebf17af13e081ab1b72eb59ca80f213228518",
-    "environment.py": "7779d7a106c283bcc8089716319c60461634ae953df6f130d1e143d44c6e95e9",
+    "environment.py": "3a0efb99266ce66d5b7f701d6c54775f3d243d1ef3d0dda9c8c01de0ef1f4258",
     "evidence.py": "62b38e64efa96eb1275cd8f7bb16fd49ee2cf93723a4343a011b10b51e0c5450",
     "explain.py": "482ce73af465037f406ee9ab661a2461848058b74c4851c34eb04d055d1e73ea",
     "guidance.py": "f04d4cc8b14bd65342b378af83bdf02bdb134dc71a9f12d698b943d94d5809ec",

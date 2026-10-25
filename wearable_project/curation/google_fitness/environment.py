@@ -14,6 +14,7 @@ from typing import Any
 import wearable_project
 from wearable_project import __release_label__, __version__
 from .acceptance import ACCEPTANCE_REPORT_SCHEMA_VERSION, ACCEPTANCE_VERSION
+from .cohort_acceptance import COHORT_ACCEPTANCE_VERSION, COHORT_REPORT_SCHEMA_VERSION
 from .audit_models import AUDIT_VERSION, REPORT_SCHEMA_VERSION
 from .decisions import decisions_fingerprint
 from .engine import ENGINE_VERSION
@@ -44,6 +45,7 @@ _TRACKED_MODULES = (
     "acceptance.py",
     "audit.py",
     "audit_models.py",
+    "cohort_acceptance.py",
     "context.py",
     "decisions.py",
     "engine.py",
@@ -72,6 +74,8 @@ class CurationEnvironmentManifest:
     import_source_kind: str
     acceptance_version: str
     acceptance_report_schema_version: str
+    cohort_acceptance_version: str
+    cohort_report_schema_version: str
     audit_version: str
     audit_report_schema_version: str
     curation_registry_version: str
@@ -185,6 +189,8 @@ def environment_manifest() -> CurationEnvironmentManifest:
         import_source_kind=source_kind,
         acceptance_version=ACCEPTANCE_VERSION,
         acceptance_report_schema_version=ACCEPTANCE_REPORT_SCHEMA_VERSION,
+        cohort_acceptance_version=COHORT_ACCEPTANCE_VERSION,
+        cohort_report_schema_version=COHORT_REPORT_SCHEMA_VERSION,
         audit_version=AUDIT_VERSION,
         audit_report_schema_version=REPORT_SCHEMA_VERSION,
         curation_registry_version=CURATION_REGISTRY_VERSION,

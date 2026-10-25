@@ -291,6 +291,24 @@ def add_curation_commands(commands: Any) -> None:
     google.add_argument("--no-progress", action="store_true")
     google.add_argument("--json-summary", action="store_true")
 
+    cohort_acceptance_command = commands.add_parser(
+        "curation-cohort-acceptance",
+        help="Run formal full-cohort source-specific native-to-curated acceptance",
+    )
+    google = _add_google_only_source(
+        cohort_acceptance_command, handler=_curation_cohort_acceptance_google_fitness,
+        help_text="Accept a complete Google Fitness native/curated cohort pair",
+    )
+    google.add_argument("--input-native", type=Path, required=True)
+    google.add_argument("--input-curated", type=Path, required=True)
+    google.add_argument("--output", type=Path, required=True)
+    google.add_argument("--expected-snapshot", type=Path, required=True)
+    google.add_argument("--workers", type=int, default=8)
+    google.add_argument("--max-in-flight", type=int)
+    google.add_argument("--overwrite", action="store_true")
+    google.add_argument("--no-progress", action="store_true")
+    google.add_argument("--json-summary", action="store_true")
+
     environment_command = commands.add_parser("curation-environment", help="Report curation fingerprints and source integrity")
     apple, google = _add_source_pair(
         environment_command,
@@ -833,6 +851,35 @@ def _curation_acceptance_google_fitness(args: argparse.Namespace) -> int:
             f"{result['passed_check_count']}/{result['check_count']} checks passed; "
             f"{result['snapshot']['feature_files']} files; "
             f"{result['snapshot']['curated_rows']} rows"
+        )
+    return 0 if result["status"] == "pass" else 1
+
+
+def _curation_cohort_acceptance_google_fitness(args: argparse.Namespace) -> int:
+    from wearable_project.curation.google_fitness.cohort_acceptance import run_cohort_acceptance
+
+    try:
+        result = run_cohort_acceptance(
+            args.input_native,
+            args.input_curated,
+            args.output,
+            expected_snapshot=args.expected_snapshot,
+            workers=args.workers,
+            max_in_flight=args.max_in_flight,
+            overwrite=args.overwrite,
+            no_progress=args.no_progress,
+        )
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if args.json_summary:
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        snapshot = result["product_acceptance"]["snapshot"]
+        print(
+            f"Google Fitness CWP6 cohort acceptance {result['status'].upper()}: "
+            f"{result['passed_check_count']}/{result['check_count']} checks passed; "
+            f"{snapshot['feature_files']} files; {snapshot['curated_rows']} rows"
         )
     return 0 if result["status"] == "pass" else 1
 

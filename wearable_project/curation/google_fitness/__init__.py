@@ -81,6 +81,7 @@ __all__ = [
     "validate_engine_contract",
     "validate_registry",
     "run_curation_acceptance",
+    "run_cohort_acceptance",
 ]
 
 
@@ -98,3 +99,11 @@ def run_curation_acceptance(*args, **kwargs):
     from .acceptance import run_acceptance
 
     return run_acceptance(*args, **kwargs)
+
+
+def run_cohort_acceptance(*args, **kwargs):
+    """Run CWP6 full-cohort acceptance without importing it eagerly."""
+
+    from .cohort_acceptance import run_cohort_acceptance as _run
+
+    return _run(*args, **kwargs)
