@@ -15,8 +15,7 @@ from typing import Mapping
 from .evidence import EVIDENCE
 from .models import InclusionEffect, RuleClass, Severity, StatusEffect, to_primitive
 
-
-EXPECTED_RULES_FINGERPRINT = "9f819581273d7cb066731440cda6c6467980452b73f0710385fb5a6a3ec0ac03"
+EXPECTED_RULES_FINGERPRINT = "eea0cfe8bb82be0c84c5e52b5178ee48074081931fcbe5f20175700510e0e56e"
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +29,7 @@ class RuleDefinition:
     row_local: bool
     evidence_refs: tuple[str, ...]
     description: str
+    materialize_flag: bool = True
     parameters: tuple[tuple[str, object], ...] = ()
 
     def as_dict(self) -> dict[str, object]:
@@ -39,7 +39,7 @@ class RuleDefinition:
 def _r(
     rule_id: str, rule_class: RuleClass, severity: Severity, flag: str, status_effect: StatusEffect,
     inclusion_effect: InclusionEffect, row_local: bool, evidence_refs: tuple[str, ...], description: str,
-    **parameters: object,
+    *, materialize_flag: bool = True, **parameters: object,
 ) -> RuleDefinition:
     return RuleDefinition(
         rule_id=rule_id,
@@ -51,6 +51,7 @@ def _r(
         row_local=row_local,
         evidence_refs=evidence_refs,
         description=description,
+        materialize_flag=materialize_flag,
         parameters=tuple(sorted(parameters.items())),
     )
 
@@ -88,6 +89,7 @@ _RULES = (
         True,
         ("project_phase0_day_labels",),
         "Localized source day labels are context only and never define a canonical event date.",
+        materialize_flag=False,
     ),
     _r(
         "source_day_label_unrecognized",
@@ -154,6 +156,7 @@ _RULES = (
         True,
         ("project_phase0_activity_submeasurements",),
         "Activity quantity lacks a defensible common unit and is excluded from canonical projection without invalidating the interval.",
+        materialize_flag=False,
     ),
     _r(
         "activity_tracking_status",
@@ -165,6 +168,7 @@ _RULES = (
         True,
         ("project_phase0_provenance",),
         "Map the raw tracked field to tracked, untracked or unknown without inferring validity or entry method.",
+        materialize_flag=False,
     ),
     _r(
         "activity_provenance_classification",
@@ -176,6 +180,7 @@ _RULES = (
         True,
         ("project_phase0_provenance",),
         "Classify acquisition and derivation dimensions conservatively while retaining raw identifiers.",
+        materialize_flag=False,
     ),
     _r(
         "activity_provenance_unknown",
@@ -264,6 +269,7 @@ _RULES = (
         True,
         ("google_fit_sleep_states", "project_phase0_sleep_inventory"),
         "Google sleep states remain source-specific and are not remapped to Apple terminology in curation.",
+        materialize_flag=False,
     ),
     _r(
         "calories_negative_tiny",
@@ -410,6 +416,7 @@ _RULES = (
         True,
         ("project_phase0_provenance",),
         "The added_by application is retained as provenance and does not by itself prove user entry or device measurement.",
+        materialize_flag=False,
     ),
     _r(
         "step_count_nonnegative",
@@ -444,6 +451,7 @@ _RULES = (
         True,
         ("project_phase0_stepcount_alternatives",),
         "Version 1 remains a separate legacy scalar representation anchored by outer datetime.",
+        materialize_flag=False,
     ),
     _r(
         "step_count_v2_group_structure",
@@ -466,6 +474,7 @@ _RULES = (
         False,
         ("google_fit_daily_step_total", "project_phase0_stepcount_alternatives"),
         "Exactly one estimated_steps row is the default analytical representative for its version-2 outer group.",
+        materialize_flag=False,
     ),
     _r(
         "step_count_merge_fallback",
@@ -477,6 +486,7 @@ _RULES = (
         False,
         ("project_phase0_stepcount_alternatives",),
         "Use exactly one merge_step_deltas row as fallback only when estimated_steps is absent.",
+        materialize_flag=False,
     ),
     _r(
         "step_count_sole_fallback",
@@ -488,6 +498,7 @@ _RULES = (
         False,
         ("project_phase0_stepcount_alternatives",),
         "A sole version-2 alternative is retained as a reviewable fallback when no preferred source exists.",
+        materialize_flag=False,
     ),
     _r(
         "step_count_parallel_nonpreferred",
@@ -499,6 +510,7 @@ _RULES = (
         False,
         ("google_fit_daily_step_total", "project_phase0_stepcount_alternatives"),
         "Valid alternatives parallel to the selected default remain source evidence but are excluded from the default subset.",
+        materialize_flag=False,
     ),
     _r(
         "step_count_ambiguous_parallel",
@@ -532,6 +544,7 @@ _RULES = (
         True,
         ("google_fit_daily_step_total", "project_phase0_stepcount_temporal"),
         "Preserve outer datetime, summary date and raw interval separately and do not manufacture a canonical day.",
+        materialize_flag=False,
     ),
     _r(
         "step_count_cross_version_separate",
@@ -543,6 +556,7 @@ _RULES = (
         False,
         ("project_phase0_stepcount_alternatives", "project_phase0_stepcount_temporal"),
         "Version 1 and version 2 remain separate analytical series and are not deduplicated by date.",
+        materialize_flag=False,
     ),
     _r(
         "unit_mapping_pending",
@@ -554,6 +568,7 @@ _RULES = (
         True,
         ("google_fit_data_model",),
         "Official Google units are not executed until the exporter-to-data-type mapping is frozen.",
+        materialize_flag=False,
     ),
     _r(
         "unit_payload_explicit",
@@ -565,6 +580,7 @@ _RULES = (
         True,
         ("google_fit_step_count_delta",),
         "A payload-explicit Google data type permits reviewed identity canonicalization.",
+        materialize_flag=False,
     ),
 )
 
@@ -602,7 +618,9 @@ def validate_rules() -> tuple[str, ...]:
         missing = sorted(set(rule.evidence_refs) - set(EVIDENCE))
         if missing:
             issues.append(f"rule {rule_id} references unknown evidence: {missing}")
-        if rule.flag in flags and rule.flag not in {"activity_provenance_unknown",}:
+        if rule.flag in flags and rule.flag not in {
+            "activity_provenance_unknown",
+        }:
             issues.append(f"duplicate rule flag: {rule.flag}")
         flags.add(rule.flag)
     return tuple(sorted(set(issues)))

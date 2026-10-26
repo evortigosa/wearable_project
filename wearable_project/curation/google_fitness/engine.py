@@ -1,17 +1,13 @@
 """
 Wearable Data Processing and Modeling project
-
-Non-destructive Google Fitness feature-file curation engine (CWP3).
-
-The engine consumes one accepted native feature CSV and writes one curated CSV.
-Native columns remain an unchanged prefix, native row order and row count are
-preserved, and only reviewed policy-derived columns are appended.  No row is
-deleted, clipped, repaired, resampled, or imputed.
+Non-destructive Google Fitness feature-file curation engine (CWP3). The engine consumes one accepted native
+feature CSV and writes one curated CSV. Native columns remain an unchanged prefix, native row order and row
+count are preserved, and only reviewed policy-derived columns are appended. No row is deleted, clipped, repaired,
+resampled, or imputed.
 """
 
 
 from __future__ import annotations
-
 from collections import Counter
 import csv
 from dataclasses import asdict, dataclass
@@ -24,10 +20,9 @@ import sys
 import tempfile
 from itertools import zip_longest
 from typing import Iterable, Mapping, Sequence
-
 from wearable_project.exceptions import CurationError
-
 from .context import build_sleep_context, build_step_count_context
+from .contract import MATERIALIZED_COLUMN_ORDER, contract_fingerprint
 from .decisions import decisions_fingerprint, get_decision
 from .evidence import evidence_fingerprint
 from .guidance import guidance_fingerprint
@@ -37,20 +32,8 @@ from .rules import rules_fingerprint
 from .strategies import RowAnnotation, annotate_row, validate_engine_rule_coverage
 
 
-ENGINE_VERSION = "google-fitness-curation-engine-cwp3-0.1.0"
-DERIVED_COLUMN_ORDER: tuple[str, ...] = (
-    "canonical_value",
-    "canonical_unit",
-    "curation_unit_status",
-    "unit_evidence",
-    "acquisition_method",
-    "derivation_method",
-    "tracking_status",
-    "step_count_role",
-    "curation_status",
-    "curation_flags",
-    "include_by_default",
-)
+ENGINE_VERSION = "google-fitness-curation-engine-schema-v2-0.2.0"
+MATERIALIZED_OUTPUT_COLUMN_ORDER: tuple[str, ...] = MATERIALIZED_COLUMN_ORDER
 
 _STATUS_VALUES = frozenset({"pass", "review", "exclude_default", ""})
 _INCLUDE_VALUES = frozenset({"0", "1", ""})
@@ -79,7 +62,7 @@ class CuratedFeatureInfo:
     native_sha256: str
     curated_sha256: str
     size_bytes: int
-    active_derived_columns: tuple[str, ...]
+    active_materialized_columns: tuple[str, ...]
     pass_rows: int
     review_rows: int
     exclude_default_rows: int
@@ -100,6 +83,7 @@ class CuratedFeatureInfo:
     rules_fingerprint: str
     decisions_fingerprint: str
     guidance_fingerprint: str
+    contract_fingerprint: str
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -146,6 +130,11 @@ _REQUIRED_ACCEPTED_DECISIONS: tuple[str, ...] = (
     "step_count_unit_mapping",
     "unknown_feature_fallback",
     "weight_nonpoint_preserved",
+    "curated_schema_v2_normalization",
+    "acquisition_method_materialized",
+    "virtual_policy_projections",
+    "row_flags_findings_only",
+    "sparse_default_encoding",
 )
 _REQUIRED_PROVISIONAL_DECISIONS: tuple[str, ...] = (
     "calories_unit_mapping",
@@ -176,7 +165,7 @@ def _read_header(path: Path) -> tuple[str, ...]:
 
 def _validate_native_header(feature: str, native_fields: tuple[str, ...], policy: FeaturePolicy) -> None:
     if policy.unknown_fallback:
-        collisions = sorted(set(native_fields) & set(policy.derived_columns))
+        collisions = sorted(set(native_fields) & set(policy.materialized_columns))
         if collisions:
             raise CurationError(f"Unknown feature {feature!r} collides with curation columns: {collisions}")
         if not native_fields:
@@ -210,25 +199,22 @@ def _stream_rows(path: Path) -> tuple[tuple[str, ...], Iterable[dict[str, str]]]
 
 
 def _ordered_active_columns(policy: FeaturePolicy, active: set[str]) -> tuple[str, ...]:
-    invalid = sorted(active - set(policy.derived_columns))
+    invalid = sorted(active - set(policy.materialized_columns))
     if invalid:
         raise CurationError(f"Engine produced columns outside policy for {policy.feature}: {invalid}")
-    return tuple(column for column in DERIVED_COLUMN_ORDER if column in active)
+    return tuple(column for column in MATERIALIZED_OUTPUT_COLUMN_ORDER if column in active)
 
 
 def _annotation_values(annotation: RowAnnotation, policy: FeaturePolicy) -> dict[str, str]:
     values = annotation.as_sparse_dict(policy)
-    unexpected = sorted(set(values) - set(policy.derived_columns))
+    unexpected = sorted(set(values) - set(policy.materialized_columns))
     if unexpected:
         raise CurationError(f"Annotation contains undeclared columns for {policy.feature}: {unexpected}")
     return values
 
 
 def _write_projected(
-    native_path: Path,
-    output_path: Path,
-    annotation_path: Path,
-    append_columns: Sequence[str],
+    native_path: Path, output_path: Path, annotation_path: Path, append_columns: Sequence[str],
 ) -> int:
     with native_path.open("r", encoding="utf-8-sig", newline="") as source, \
          annotation_path.open("r", encoding="utf-8") as annotations, \
@@ -251,14 +237,10 @@ def _write_projected(
             payload = json.loads(line)
             if payload.get("index") != index:
                 raise CurationError(f"Annotation index mismatch for {native_path}: {payload.get('index')} != {index}")
-            derived = payload.get("values", {})
-            if "curation_status" in append_columns and "curation_status" not in derived:
-                derived["curation_status"] = "pass"
-            if "include_by_default" in append_columns and "include_by_default" not in derived:
-                derived["include_by_default"] = "1"
+            materialized = payload.get("values", {})
             output = dict(row)
             for column in append_columns:
-                output[column] = derived.get(column, "")
+                output[column] = materialized.get(column, "")
             writer.writerow(output)
             count += 1
         if annotations.readline():
@@ -269,11 +251,8 @@ def _write_projected(
 
 
 def validate_curated_feature_file(
-    native_path: Path,
-    curated_path: Path,
-    feature: str | None = None,
-    *,
-    expected_derived_columns: Sequence[str] | None = None,
+    native_path: Path, curated_path: Path, feature: str | None = None, *,
+    expected_materialized_columns: Sequence[str] | None = None,
 ) -> int:
     """Validate native-prefix, row-order, row-count, and derived-column contracts."""
 
@@ -287,13 +266,13 @@ def validate_curated_feature_file(
         curated_fields = tuple(curated_reader.fieldnames or ())
         if curated_fields[: len(native_fields)] != native_fields:
             raise CurationError(f"Curated native prefix differs for {feature}")
-        derived = curated_fields[len(native_fields):]
-        if expected_derived_columns is not None and tuple(expected_derived_columns) != derived:
+        materialized = curated_fields[len(native_fields):]
+        if expected_materialized_columns is not None and tuple(expected_materialized_columns) != materialized:
             raise CurationError(
-                f"Derived columns differ for {feature}: expected {tuple(expected_derived_columns)}, observed {derived}"
+                f"Materialized columns differ for {feature}: expected {tuple(expected_materialized_columns)}, observed {materialized}"
             )
-        if not set(derived) <= set(policy.derived_columns):
-            raise CurationError(f"Curated file has undeclared derived columns for {feature}: {sorted(set(derived)-set(policy.derived_columns))}")
+        if not set(materialized) <= set(policy.materialized_columns):
+            raise CurationError(f"Curated file has undeclared materialized columns for {feature}: {sorted(set(materialized) - set(policy.materialized_columns))}")
 
         count = 0
         for index, pair in enumerate(zip_longest(native_reader, curated_reader), start=0):
@@ -411,7 +390,7 @@ def curate_feature_file(native_path: Path, destination: Path, feature: str | Non
             native_path,
             output_path,
             feature,
-            expected_derived_columns=ordered_columns,
+            expected_materialized_columns=ordered_columns,
         )
         if curated_rows != native_rows:
             raise CurationError(f"Row-count mismatch for {feature}: native={native_rows}, curated={curated_rows}")
@@ -428,7 +407,7 @@ def curate_feature_file(native_path: Path, destination: Path, feature: str | Non
             native_sha256=native_sha,
             curated_sha256=curated_sha,
             size_bytes=destination.stat().st_size,
-            active_derived_columns=ordered_columns,
+            active_materialized_columns=ordered_columns,
             pass_rows=status_counts["pass"],
             review_rows=status_counts["review"],
             exclude_default_rows=status_counts["exclude_default"],
@@ -449,6 +428,7 @@ def curate_feature_file(native_path: Path, destination: Path, feature: str | Non
             rules_fingerprint=rules_fingerprint(),
             decisions_fingerprint=decisions_fingerprint(),
             guidance_fingerprint=guidance_fingerprint(),
+            contract_fingerprint=contract_fingerprint(),
         )
         return FeatureCurationResult(info)
     except Exception:

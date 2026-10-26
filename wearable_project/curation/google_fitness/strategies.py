@@ -1,30 +1,19 @@
 """
 Wearable Data Processing and Modeling project
-
-Executable CWP3 row and group strategies for Google Fitness curation.
-
-The strategies annotate native rows; they never delete, reorder, clip, repair,
-or resample an observation.  Rules are executed only when registered for the
-feature policy.  Policy-wide context is represented through derived columns
-rather than repeated flags where a flag would duplicate the same fact.
+Executable CWP3 row and group strategies for Google Fitness curation. The strategies annotate native rows; they
+never delete, reorder, clip, repair, or resample an observation. Rules are executed only when registered for the
+feature policy. Policy-wide context is represented through derived columns rather than repeated flags where a
+flag would duplicate the same fact.
 """
 
 
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import math
 from typing import Any, Mapping
-
 from .context import SleepRowContext, StepCountRowContext, finite_float, parse_datetime
-from .models import (
-    CurationStatus,
-    FeaturePolicy,
-    InclusionEffect,
-    InclusionPolicy,
-    StatusEffect,
-)
+from .models import CurationStatus, FeaturePolicy, InclusionEffect, InclusionPolicy, StatusEffect
 from .provenance import classify_provenance
 from .rules import RULES
 from .unit_resolution import resolve_units
@@ -113,8 +102,6 @@ ENGINE_RULE_IMPLEMENTATION: dict[str, str] = {
 }
 
 
-
-
 def _rule_parameters(rule_id: str) -> dict[str, object]:
     """Return the immutable registry parameters as a normal lookup mapping."""
 
@@ -146,11 +133,12 @@ class RowAnnotation:
         if _STATUS_RANK[status] > _STATUS_RANK[self.status]:
             self.status = status
 
-    def apply_rule(self, rule_id: str, active_rule_ids: frozenset[str], *, emit_flag: bool = True) -> None:
+    def apply_rule(self, rule_id: str, active_rule_ids: frozenset[str], *, emit_flag: bool | None = None) -> None:
         if rule_id not in active_rule_ids:
             return
         rule = RULES[rule_id]
-        if emit_flag:
+        should_emit = rule.materialize_flag if emit_flag is None else emit_flag
+        if should_emit:
             self.flags.add(rule.flag)
         if rule.status_effect is StatusEffect.EXCLUDE_DEFAULT:
             self.escalate(CurationStatus.EXCLUDE_DEFAULT)
@@ -166,12 +154,16 @@ class RowAnnotation:
             if RULES[rule_id].flag == flag:
                 self.apply_rule(rule_id, active_rule_ids)
                 return
-        # Context builders only emit registered flags.  Failing loudly protects
+        # Context builders only emit registered flags. Failing loudly protects
         # against a future context/registry drift.
         raise KeyError(f"No active policy rule emits flag {flag!r}")
 
     def as_sparse_dict(self, policy: FeaturePolicy) -> dict[str, str]:
-        result = dict(self.values)
+        materialized = set(policy.output.materialized_columns)
+        result = {
+            key: value for key, value in self.values.items()
+            if key in materialized and value not in (None, "")
+        }
         if self.status is not CurationStatus.PASS:
             result[policy.curation.status_column] = self.status.value
         if not self.include_by_default:

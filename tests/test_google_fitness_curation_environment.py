@@ -15,6 +15,10 @@ def test_google_curation_environment_integrity_is_complete() -> None:
     assert set(manifest.module_integrity) == set(_TRACKED_MODULES)
     assert all(manifest.module_integrity.values())
     assert all(manifest.semantic_integrity.values())
+    assert manifest.cohort_acceptance_version == "google-fitness-curation-cohort-acceptance-schema-v2-0.2.0"
+    assert manifest.cohort_report_schema_version == "google-fitness-curation-cohort-acceptance-report-v2-0.2.0"
+    assert manifest.schema_migration_audit_version == "google-fitness-curation-schema-migration-audit-v2-0.1.0"
+    assert manifest.schema_migration_report_version == "google-fitness-curation-schema-migration-report-v2-0.1.0"
     assert not [warning for warning in manifest.warnings if "release manifest" in warning]
 
 

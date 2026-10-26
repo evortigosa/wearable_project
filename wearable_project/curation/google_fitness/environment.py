@@ -16,11 +16,13 @@ from wearable_project import __release_label__, __version__
 from .acceptance import ACCEPTANCE_REPORT_SCHEMA_VERSION, ACCEPTANCE_VERSION
 from .cohort_acceptance import COHORT_ACCEPTANCE_VERSION, COHORT_REPORT_SCHEMA_VERSION
 from .audit_models import AUDIT_VERSION, REPORT_SCHEMA_VERSION
+from .contract import CURATED_SCHEMA_VERSION, CONTRACT_SCHEMA_VERSION, contract_fingerprint
 from .decisions import decisions_fingerprint
 from .engine import ENGINE_VERSION
 from .evidence import evidence_fingerprint
 from .guidance import guidance_fingerprint
 from .pipeline import PIPELINE_VERSION
+from .schema_migration import SCHEMA_MIGRATION_AUDIT_VERSION, SCHEMA_MIGRATION_REPORT_VERSION
 from .registry import CURATION_REGISTRY_VERSION, POLICY_CONTRACT_VERSION, registry_fingerprint
 from .rules import rules_fingerprint
 from .state import CURATION_STATE_SCHEMA_VERSION
@@ -47,6 +49,7 @@ _TRACKED_MODULES = (
     "audit_models.py",
     "cohort_acceptance.py",
     "context.py",
+    "contract.py",
     "decisions.py",
     "engine.py",
     "environment.py",
@@ -58,6 +61,7 @@ _TRACKED_MODULES = (
     "provenance.py",
     "registry.py",
     "rules.py",
+    "schema_migration.py",
     "state.py",
     "strategies.py",
     "unit_resolution.py",
@@ -76,6 +80,8 @@ class CurationEnvironmentManifest:
     acceptance_report_schema_version: str
     cohort_acceptance_version: str
     cohort_report_schema_version: str
+    schema_migration_audit_version: str
+    schema_migration_report_version: str
     audit_version: str
     audit_report_schema_version: str
     curation_registry_version: str
@@ -83,6 +89,9 @@ class CurationEnvironmentManifest:
     engine_version: str
     pipeline_version: str
     state_schema_version: str
+    curated_schema_version: str
+    contract_schema_version: str
+    contract_fingerprint: str
     registry_fingerprint: str
     evidence_fingerprint: str
     rules_fingerprint: str
@@ -110,10 +119,12 @@ def _hash(path: Path) -> str:
 def _git_info(root: Path) -> tuple[str | None, bool | None]:
     try:
         commit = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
         ).stdout.strip()
         dirty = bool(subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain"], check=True, capture_output=True, text=True,
+            ["git", "-C", str(root), "status", "--porcelain"],
+            check=True, capture_output=True, text=True,
         ).stdout.strip())
         return commit, dirty
     except (OSError, subprocess.SubprocessError):
@@ -191,6 +202,8 @@ def environment_manifest() -> CurationEnvironmentManifest:
         acceptance_report_schema_version=ACCEPTANCE_REPORT_SCHEMA_VERSION,
         cohort_acceptance_version=COHORT_ACCEPTANCE_VERSION,
         cohort_report_schema_version=COHORT_REPORT_SCHEMA_VERSION,
+        schema_migration_audit_version=SCHEMA_MIGRATION_AUDIT_VERSION,
+        schema_migration_report_version=SCHEMA_MIGRATION_REPORT_VERSION,
         audit_version=AUDIT_VERSION,
         audit_report_schema_version=REPORT_SCHEMA_VERSION,
         curation_registry_version=CURATION_REGISTRY_VERSION,
@@ -198,6 +211,9 @@ def environment_manifest() -> CurationEnvironmentManifest:
         engine_version=ENGINE_VERSION,
         pipeline_version=PIPELINE_VERSION,
         state_schema_version=CURATION_STATE_SCHEMA_VERSION,
+        curated_schema_version=CURATED_SCHEMA_VERSION,
+        contract_schema_version=CONTRACT_SCHEMA_VERSION,
+        contract_fingerprint=contract_fingerprint(),
         registry_fingerprint=registry_fingerprint(),
         evidence_fingerprint=evidence_fingerprint(),
         rules_fingerprint=rules_fingerprint(),

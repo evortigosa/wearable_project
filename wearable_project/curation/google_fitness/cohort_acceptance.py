@@ -1,11 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-
-Formal full-cohort Google Fitness curation acceptance (CWP6).
-
-CWP5 proves the native-to-curated contract for every physical participant-feature
-file.  CWP6 composes that product-level audit with cohort-release checks that are
-meaningful only after a complete curation run exists:
+Formal full-cohort Google Fitness curation acceptance (CWP6). CWP5 proves the native-to-curated contract for
+every physical participant-feature file. CWP6 composes that product-level audit with cohort-release checks that
+are meaningful only after a complete curation run exists:
 
 * the native participant-status ledger closes, including ``complete_empty`` rows;
 * the current native snapshot matches an explicit, versioned snapshot manifest;
@@ -15,9 +12,8 @@ meaningful only after a complete curation run exists:
 * current policies classify every participant as ``skip``;
 * the acceptance process is read-only for both state databases.
 
-The module does not load Apple DataLoaders and does not replace the later
-source-aware DataLoader acceptance layer.  It validates the persisted Google
-Fitness products directly from their state databases and physical CSV files.
+The module does not load Apple DataLoaders and does not replace the later source-aware DataLoader acceptance layer.
+It validates the persisted Google Fitness products directly from their state databases and physical CSV files.
 """
 
 
@@ -35,6 +31,7 @@ import tempfile
 import time
 from typing import Any, Mapping, Sequence
 from wearable_project.curation.google_fitness.acceptance import run_acceptance
+from wearable_project.curation.google_fitness.contract import CURATED_SCHEMA_VERSION, contract_fingerprint
 from wearable_project.curation.google_fitness.decisions import decisions_fingerprint
 from wearable_project.curation.google_fitness.engine import ENGINE_VERSION, sha256_file
 from wearable_project.curation.google_fitness.evidence import evidence_fingerprint
@@ -49,9 +46,9 @@ from wearable_project.processing.google_fitness.registry import SOURCE_KEY
 from wearable_project.processing.google_fitness.writer import STATE_FILENAME as NATIVE_STATE_FILENAME
 
 
-COHORT_ACCEPTANCE_VERSION = "google-fitness-curation-cohort-acceptance-cwp6-0.1.0"
-COHORT_REPORT_SCHEMA_VERSION = "google-fitness-curation-cohort-acceptance-report-0.1.0"
-EXPECTED_SNAPSHOT_SCHEMA_VERSION = "google-fitness-curation-expected-native-snapshot-0.1.0"
+COHORT_ACCEPTANCE_VERSION = "google-fitness-curation-cohort-acceptance-schema-v2-0.2.0"
+COHORT_REPORT_SCHEMA_VERSION = "google-fitness-curation-cohort-acceptance-report-v2-0.2.0"
+EXPECTED_SNAPSHOT_SCHEMA_VERSION = "google-fitness-curation-expected-native-snapshot-v2-0.2.0"
 
 
 def _now() -> str:
@@ -64,7 +61,8 @@ def _json_read(path: Path) -> Any:
 
 def _json_write(path: Path, payload: Any) -> None:
     path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -289,6 +287,8 @@ def current_policy_fingerprints() -> dict[str, str]:
         "engine": ENGINE_VERSION,
         "pipeline": PIPELINE_VERSION,
         "state_schema": CURATION_STATE_SCHEMA_VERSION,
+        "curated_schema": CURATED_SCHEMA_VERSION,
+        "contract": contract_fingerprint(),
     }
 
 
@@ -482,7 +482,9 @@ def run_cohort_acceptance(
             and latest_run["verify_existing_hashes"]
         )
         noop_after_build = bool(
-            latest_noop and latest_build and str(latest_run["started_at"]) >= str(latest_build["started_at"])
+            latest_noop
+            and latest_build
+            and str(latest_run["started_at"]) >= str(latest_build["started_at"])
         )
 
         actual_expected_view = _expected_view(native_snapshot, product["fingerprints"])
@@ -592,7 +594,8 @@ def run_cohort_acceptance(
         native_state_after = sha256_file(native_state_path)
         curated_state_after = sha256_file(curated_state_path)
         state_unchanged = (
-            native_state_before == native_state_after and curated_state_before == curated_state_after
+            native_state_before == native_state_after
+            and curated_state_before == curated_state_after
         )
         checks.append(_check(
             "state_databases_unchanged",
@@ -708,7 +711,9 @@ def run_cohort_acceptance(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run formal full-cohort Google Fitness native-to-curated acceptance.")
+    parser = argparse.ArgumentParser(
+        description="Run formal full-cohort Google Fitness native-to-curated acceptance."
+    )
     parser.add_argument("--input-native", type=Path, required=True)
     parser.add_argument("--input-curated", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

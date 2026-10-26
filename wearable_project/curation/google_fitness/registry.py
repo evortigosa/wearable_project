@@ -8,6 +8,7 @@ file is read or written here.
 
 from __future__ import annotations
 import csv
+from dataclasses import replace
 from hashlib import sha256
 import io
 import json
@@ -18,7 +19,6 @@ from wearable_project.processing.google_fitness.registry import (
 )
 from .decisions import DECISIONS
 from .evidence import EVIDENCE
-from .rules import RULES
 from .models import (
     CanonicalizationStrategy,
     CurationPolicy,
@@ -47,43 +47,47 @@ from .models import (
     VersionUnitPolicy,
     to_primitive,
 )
+from .rules import RULES
 
 
-CURATION_REGISTRY_VERSION = "2026-10-google-fitness-curation-cwp3"
-POLICY_CONTRACT_VERSION = "1.1.0-cwp3"
-EXPECTED_REGISTRY_FINGERPRINT = "145b55578ac0e7b7c4e118cdfe7e886ccfa33073e0424558eb031c1c5d9696cf"
+CURATION_REGISTRY_VERSION = "2026-10-google-fitness-curation-schema-v2"
+POLICY_CONTRACT_VERSION = "2.0.0"
+EXPECTED_REGISTRY_FINGERPRINT = "899a973ae17795b3d519d6fb581d18bcc3b0a3773265845ad43bb84d3ca75d7c"
 
-GLOBAL_STATUS_COLUMNS = (
+MATERIALIZED_STATUS_COLUMNS = (
     "curation_status",
     "curation_flags",
     "include_by_default",
 )
-UNIT_COLUMNS = (
-    "canonical_value",
-    "canonical_unit",
-    "curation_unit_status",
-    "unit_evidence",
-)
-PROVENANCE_COLUMNS = (
+MATERIALIZED_PROVENANCE_COLUMNS = (
     "acquisition_method",
+)
+VIRTUAL_PROVENANCE_COLUMNS = (
     "derivation_method",
 )
-ACTIVITY_CONTEXT_COLUMNS = (
-    "acquisition_method",
+VIRTUAL_ACTIVITY_COLUMNS = (
     "derivation_method",
     "tracking_status",
 )
-STEP_COUNT_COLUMNS = (
+VIRTUAL_UNIT_COLUMNS = (
     "canonical_value",
     "canonical_unit",
     "curation_unit_status",
     "unit_evidence",
+)
+STEP_COUNT_MATERIALIZED_COLUMNS = (
     "acquisition_method",
-    "derivation_method",
     "step_count_role",
     "curation_status",
     "curation_flags",
     "include_by_default",
+)
+STEP_COUNT_VIRTUAL_COLUMNS = (
+    "canonical_value",
+    "canonical_unit",
+    "curation_unit_status",
+    "unit_evidence",
+    "derivation_method",
 )
 
 
@@ -135,14 +139,16 @@ def _measurement(
 
 
 def _output(
-    derived: tuple[str, ...], *, fixed: tuple[str, ...] = (), sparse: tuple[str, ...] | None = None,
+    materialized: tuple[str, ...], *, virtual: tuple[str, ...] = (), fixed: tuple[str, ...] = (),
+    sparse: tuple[str, ...] | None = None,
 ) -> OutputPolicy:
     return OutputPolicy(
         preserve_native_prefix=True,
         preserve_row_order=True,
         preserve_row_count=True,
-        derived_columns=derived,
-        sparse_columns=derived if sparse is None else sparse,
+        materialized_columns=materialized,
+        virtual_columns=virtual,
+        sparse_columns=materialized if sparse is None else sparse,
         fixed_columns=fixed,
     )
 
@@ -235,7 +241,9 @@ def _activity_policy(feature: str) -> FeaturePolicy:
     spec = NATIVE_FEATURE_SPECS[feature]
     measurements = tuple(_activity_measurement_policy(column) for column in spec.measurement_columns)
     provenance_raw = tuple(
-        column for column in ("tracked", "device", "source_name", "source_id") if column in spec.column_names
+        column
+        for column in ("tracked", "device", "source_name", "source_id")
+        if column in spec.column_names
     )
     return FeaturePolicy(
         feature=feature,
@@ -260,7 +268,7 @@ def _activity_policy(feature: str) -> FeaturePolicy:
         ),
         provenance=ProvenancePolicy(
             raw_columns=provenance_raw,
-            output_dimensions=ACTIVITY_CONTEXT_COLUMNS,
+            output_dimensions=MATERIALIZED_PROVENANCE_COLUMNS + VIRTUAL_ACTIVITY_COLUMNS,
             classifier_id="activity_provenance_v1",
             evidence_refs=("project_phase0_provenance", "google_fit_activity_segments"),
             limitations=("Raw identifiers do not uniquely establish a physical device or user-entry method.",),
@@ -280,9 +288,10 @@ def _activity_policy(feature: str) -> FeaturePolicy:
             inclusion=InclusionPolicy.RULE_DRIVEN,
         ),
         output=_output(
-            ACTIVITY_CONTEXT_COLUMNS + GLOBAL_STATUS_COLUMNS,
-            fixed=ACTIVITY_CONTEXT_COLUMNS,
-            sparse=GLOBAL_STATUS_COLUMNS,
+            MATERIALIZED_PROVENANCE_COLUMNS + MATERIALIZED_STATUS_COLUMNS,
+            virtual=VIRTUAL_ACTIVITY_COLUMNS,
+            fixed=MATERIALIZED_PROVENANCE_COLUMNS,
+            sparse=MATERIALIZED_STATUS_COLUMNS,
         ),
         resampling=ResamplingPolicy(
             ResamplingSupport.SUPPORTED_LATER,
@@ -311,7 +320,9 @@ def _sleep_policy() -> FeaturePolicy:
     spec = NATIVE_FEATURE_SPECS[feature]
     measurements = tuple(_activity_measurement_policy(column) for column in spec.measurement_columns)
     provenance_raw = tuple(
-        column for column in ("tracked", "device", "source_name", "source_id") if column in spec.column_names
+        column
+        for column in ("tracked", "device", "source_name", "source_id")
+        if column in spec.column_names
     )
     return FeaturePolicy(
         feature=feature,
@@ -336,7 +347,7 @@ def _sleep_policy() -> FeaturePolicy:
         ),
         provenance=ProvenancePolicy(
             raw_columns=provenance_raw,
-            output_dimensions=ACTIVITY_CONTEXT_COLUMNS,
+            output_dimensions=MATERIALIZED_PROVENANCE_COLUMNS + VIRTUAL_ACTIVITY_COLUMNS,
             classifier_id="sleep_activity_provenance_v1",
             evidence_refs=("project_phase0_provenance", "google_fit_sleep_states"),
             limitations=("Cross-source overlap is context rather than automatic conflict.",),
@@ -367,9 +378,10 @@ def _sleep_policy() -> FeaturePolicy:
             )
         ),
         output=_output(
-            ACTIVITY_CONTEXT_COLUMNS + GLOBAL_STATUS_COLUMNS,
-            fixed=ACTIVITY_CONTEXT_COLUMNS,
-            sparse=GLOBAL_STATUS_COLUMNS,
+            MATERIALIZED_PROVENANCE_COLUMNS + MATERIALIZED_STATUS_COLUMNS,
+            virtual=VIRTUAL_ACTIVITY_COLUMNS,
+            fixed=MATERIALIZED_PROVENANCE_COLUMNS,
+            sparse=MATERIALIZED_STATUS_COLUMNS,
         ),
         resampling=ResamplingPolicy(
             ResamplingSupport.SUPPORTED_LATER,
@@ -421,8 +433,14 @@ def _outer_scalar_measurement(
 
 
 def _scalar_output() -> OutputPolicy:
-    columns = UNIT_COLUMNS + PROVENANCE_COLUMNS + GLOBAL_STATUS_COLUMNS
-    return _output(columns, fixed=(), sparse=columns)
+    materialized = MATERIALIZED_PROVENANCE_COLUMNS + MATERIALIZED_STATUS_COLUMNS
+    virtual = VIRTUAL_UNIT_COLUMNS + VIRTUAL_PROVENANCE_COLUMNS
+    return _output(
+        materialized,
+        virtual=virtual,
+        fixed=MATERIALIZED_PROVENANCE_COLUMNS,
+        sparse=MATERIALIZED_STATUS_COLUMNS,
+    )
 
 
 def _calories_policy() -> FeaturePolicy:
@@ -455,7 +473,7 @@ def _calories_policy() -> FeaturePolicy:
         ),
         provenance=ProvenancePolicy(
             (),
-            PROVENANCE_COLUMNS,
+            MATERIALIZED_PROVENANCE_COLUMNS + VIRTUAL_PROVENANCE_COLUMNS,
             "outer_calories_provenance_v1",
             ("project_phase0_provenance",),
             ("The native row has no package or device columns; classification may remain unknown.",),
@@ -527,7 +545,7 @@ def _distance_policy() -> FeaturePolicy:
         ),
         provenance=ProvenancePolicy(
             (),
-            PROVENANCE_COLUMNS,
+            MATERIALIZED_PROVENANCE_COLUMNS + VIRTUAL_PROVENANCE_COLUMNS,
             "outer_distance_provenance_v1",
             ("project_phase0_provenance",),
             ("The native row has no package or device columns; classification may remain unknown.",),
@@ -614,7 +632,7 @@ def _anthropometric_policy(feature: str) -> FeaturePolicy:
         ),
         provenance=ProvenancePolicy(
             tuple(column for column in ("added_by",) if column in spec.column_names),
-            PROVENANCE_COLUMNS,
+            MATERIALIZED_PROVENANCE_COLUMNS + VIRTUAL_PROVENANCE_COLUMNS,
             "anthropometric_added_by_v1",
             ("project_phase0_provenance",),
             ("Application identity does not prove device measurement or user entry.",),
@@ -779,9 +797,10 @@ def _step_count_policy() -> FeaturePolicy:
             inclusion=InclusionPolicy.GROUP_PREFERENCE,
         ),
         output=_output(
-            STEP_COUNT_COLUMNS,
-            fixed=("step_count_role", "canonical_unit", "curation_unit_status", "unit_evidence"),
-            sparse=("canonical_value", "acquisition_method", "derivation_method", "curation_status", "curation_flags", "include_by_default"),
+            STEP_COUNT_MATERIALIZED_COLUMNS,
+            virtual=STEP_COUNT_VIRTUAL_COLUMNS,
+            fixed=("acquisition_method", "step_count_role"),
+            sparse=MATERIALIZED_STATUS_COLUMNS,
         ),
         resampling=ResamplingPolicy(
             ResamplingSupport.BLOCKED_PENDING_EVIDENCE,
@@ -807,6 +826,23 @@ def _step_count_policy() -> FeaturePolicy:
     )
 
 
+_SCHEMA_V2_DECISION_IDS = (
+    "curated_schema_v2_normalization",
+    "acquisition_method_materialized",
+    "virtual_policy_projections",
+    "row_flags_findings_only",
+    "sparse_default_encoding",
+)
+
+
+def _with_schema_v2_decisions(policy: FeaturePolicy) -> FeaturePolicy:
+    decision_ids = tuple(dict.fromkeys((*policy.calibration.decision_ids, *_SCHEMA_V2_DECISION_IDS)))
+    return replace(
+        policy,
+        calibration=replace(policy.calibration, decision_ids=decision_ids),
+    )
+
+
 def _build_policies() -> dict[str, FeaturePolicy]:
     policies: dict[str, FeaturePolicy] = {}
     for feature, spec in NATIVE_FEATURE_SPECS.items():
@@ -824,7 +860,10 @@ def _build_policies() -> dict[str, FeaturePolicy]:
             policies[feature] = _step_count_policy()
         else:  # pragma: no cover - validation protects this branch
             raise AssertionError(f"No Google curation family for {feature}")
-    return dict(sorted(policies.items()))
+    return {
+        feature: _with_schema_v2_decisions(policy)
+        for feature, policy in sorted(policies.items())
+    }
 
 
 _POLICIES = _build_policies()
@@ -837,10 +876,21 @@ UNKNOWN_POLICY = FeaturePolicy(
     native_schema=NativeSchemaPolicy("__unknown__", (), (), (), (), (), (), "Unknown future native feature copied unchanged."),
     measurements=(),
     temporal=TemporalPolicy(None, None, None, None, DateAnchor.NONE, None, SourceDayLabelTreatment.NOT_PRESENT, True, False),
-    provenance=ProvenancePolicy((), (), "unknown_feature", ("project_curation_invariant",), ("No semantics are inferred.",)),
+    provenance=ProvenancePolicy(
+        (),
+        MATERIALIZED_PROVENANCE_COLUMNS + VIRTUAL_PROVENANCE_COLUMNS,
+        "unknown_feature",
+        ("project_curation_invariant",),
+        ("No semantics are inferred.",),
+    ),
     grouping=GroupPolicy((), GroupPreferenceStrategy.NONE, None, None),
     curation=_curation(("unknown_feature_policy",), status=CurationStatus.REVIEW, inclusion=InclusionPolicy.EXCLUDE),
-    output=_output(GLOBAL_STATUS_COLUMNS, fixed=GLOBAL_STATUS_COLUMNS, sparse=()),
+    output=_output(
+        MATERIALIZED_PROVENANCE_COLUMNS + MATERIALIZED_STATUS_COLUMNS,
+        virtual=VIRTUAL_PROVENANCE_COLUMNS,
+        fixed=MATERIALIZED_PROVENANCE_COLUMNS,
+        sparse=MATERIALIZED_STATUS_COLUMNS,
+    ),
     resampling=ResamplingPolicy(ResamplingSupport.BLOCKED_PENDING_EVIDENCE, "blocked_unknown_feature", ()),
     calibration=PolicyCalibration(
         PolicyMaturity.UNKNOWN,
@@ -853,6 +903,9 @@ UNKNOWN_POLICY = FeaturePolicy(
     evidence_refs=("project_curation_invariant",),
     unknown_fallback=True,
 )
+
+
+UNKNOWN_POLICY = _with_schema_v2_decisions(UNKNOWN_POLICY)
 
 
 def known_curation_features() -> tuple[str, ...]:
@@ -915,10 +968,14 @@ def validate_registry() -> RegistryValidationResult:
             issues.append(f"supported versions differ for {feature}")
         if policy.measurement_columns != native.measurement_columns:
             issues.append(f"measurement policies do not cover native measurements for {feature}")
-        if set(policy.derived_columns) & set(native.column_names):
-            issues.append(f"derived/native column collision for {feature}")
-        if set(policy.output.fixed_columns) | set(policy.output.sparse_columns) != set(policy.output.derived_columns):
-            issues.append(f"output fixed/sparse columns do not cover derived columns for {feature}")
+        if set(policy.materialized_columns) & set(native.column_names):
+            issues.append(f"materialized/native column collision for {feature}")
+        if set(policy.virtual_columns) & set(native.column_names):
+            issues.append(f"virtual/native column collision for {feature}")
+        if set(policy.materialized_columns) & set(policy.virtual_columns):
+            issues.append(f"materialized/virtual column overlap for {feature}")
+        if set(policy.output.fixed_columns) | set(policy.output.sparse_columns) != set(policy.output.materialized_columns):
+            issues.append(f"output fixed/sparse columns do not cover materialized columns for {feature}")
         if set(policy.output.fixed_columns) & set(policy.output.sparse_columns):
             issues.append(f"output fixed/sparse overlap for {feature}")
         if not (policy.output.preserve_native_prefix and policy.output.preserve_row_order and policy.output.preserve_row_count):
@@ -1039,7 +1096,8 @@ def matrix_rows(features: Iterable[str] | None = None) -> list[dict[str, object]
                 "versions": ";".join(policy.native_schema.supported_versions),
                 "native_columns": ";".join(policy.native_schema.native_columns),
                 "measurements": ";".join(policy.measurement_columns),
-                "derived_columns": ";".join(policy.derived_columns),
+                "materialized_columns": ";".join(policy.materialized_columns),
+                "virtual_columns": ";".join(policy.virtual_columns),
                 "rules": ";".join(policy.curation.rule_ids),
                 "default_status": policy.curation.default_status.value,
                 "default_inclusion": policy.curation.default_inclusion.value,

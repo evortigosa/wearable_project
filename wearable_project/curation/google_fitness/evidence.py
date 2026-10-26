@@ -17,7 +17,7 @@ from typing import Mapping
 from .models import EvidenceGrade, to_primitive
 
 
-EXPECTED_EVIDENCE_FINGERPRINT = "fa7309a5c68cfb3d0154e92c8abe4e05810230a1205bd2d0cc88f22766182221"
+EXPECTED_EVIDENCE_FINGERPRINT = "6b49a66ff5b75d5680fa49e22a99ecede0c2af43868427a0043f756ad7a4986c"
 
 
 class EvidenceKind(str, Enum):
@@ -193,7 +193,9 @@ _SOURCES = (
         EvidenceGrade.B_CONVERGENT,
         "Activity rows commonly carry calories, distance and quantity coupled to the classified interval.",
         ("activity_measurement_presence", "activity_measurements_stay_coupled"),
-        ("The exporter-specific units and meaning of quantity remain unresolved and may vary by activity.",),
+        (
+            "The exporter-specific units and meaning of quantity remain unresolved and may vary by activity.",
+        ),
         artifact="activity_submeasurement_profile.csv",
     ),
     EvidenceSource(
@@ -249,7 +251,9 @@ _SOURCES = (
         EvidenceGrade.B_CONVERGENT,
         "Payloads expose separate application, source-stream, origin-stream and device dimensions.",
         ("multidimensional_provenance", "avoid_single_provenance_label"),
-        ("Raw package and stream identifiers do not prove a unique physical device or user-entry method.",),
+        (
+            "Raw package and stream identifiers do not prove a unique physical device or user-entry method.",
+        ),
         artifact="participant_provenance_summary.csv and provenance_values.csv",
     ),
     EvidenceSource(
@@ -312,6 +316,27 @@ _SOURCES = (
         artifact="google_fitness_cwp2_calibration_v0_1_1 and CWP2_0_1_1_FULL_NATIVE_REVIEW.md",
     ),
     EvidenceSource(
+        "project_cwp6_curated_schema_audit",
+        "CWP6 accepted curated-schema normalization audit",
+        EvidenceKind.PROJECT_NATIVE_ACCEPTANCE,
+        "HPP wearable project",
+        EvidenceGrade.A_DIRECT,
+        "The accepted exported-at-2024-12 curated snapshot preserved every native row but repeated deterministic policy "
+        "facts and exact recodings across millions of CSV rows; a schema audit proved those fields can be reconstructed exactly from native evidence and versioned policy.",
+        (
+            "curated_schema_v2_normalization",
+            "acquisition_method_materialized",
+            "virtual_policy_projection",
+            "row_flags_findings_only",
+            "sparse_default_encoding",
+        ),
+        (
+            "The observed byte costs and counts are snapshot-specific; the normalization decision is semantic and "
+            "applies to future snapshots through the versioned contract.",
+        ),
+        artifact="CWP6 acceptance reports and CURATED_COLUMN_STORAGE_AUDIT.md",
+    ),
+    EvidenceSource(
         "project_native_malformed_weight",
         "Native malformed Weight ledger",
         EvidenceKind.PROJECT_LIMITATION,
@@ -338,7 +363,6 @@ _SOURCES = (
         artifact="accepted Apple curation architecture",
     ),
 )
-
 
 EVIDENCE: Mapping[str, EvidenceSource] = MappingProxyType(
     {item.evidence_id: item for item in sorted(_SOURCES, key=lambda item: item.evidence_id)}

@@ -309,6 +309,26 @@ def add_curation_commands(commands: Any) -> None:
     google.add_argument("--no-progress", action="store_true")
     google.add_argument("--json-summary", action="store_true")
 
+    migration_command = commands.add_parser(
+        "curation-schema-migration-audit",
+        help="Compare frozen Google Fitness curation schema v1 with schema v2",
+    )
+    google = _add_google_only_source(
+        migration_command,
+        handler=_curation_schema_migration_google_fitness,
+        help_text="Audit semantic equivalence between Google Fitness curated schema v1 and v2",
+    )
+    google.add_argument("--input-native", type=Path, required=True)
+    google.add_argument("--input-curated-v1", type=Path, required=True)
+    google.add_argument("--input-curated-v2", type=Path, required=True)
+    google.add_argument("--output", type=Path, required=True)
+    google.add_argument("--workers", type=int, default=8)
+    google.add_argument("--max-in-flight", type=int)
+    google.add_argument("--max-examples", type=int, default=100)
+    google.add_argument("--overwrite", action="store_true")
+    google.add_argument("--no-progress", action="store_true")
+    google.add_argument("--json-summary", action="store_true")
+
     environment_command = commands.add_parser("curation-environment", help="Report curation fingerprints and source integrity")
     apple, google = _add_source_pair(
         environment_command,
@@ -880,6 +900,34 @@ def _curation_cohort_acceptance_google_fitness(args: argparse.Namespace) -> int:
             f"Google Fitness CWP6 cohort acceptance {result['status'].upper()}: "
             f"{result['passed_check_count']}/{result['check_count']} checks passed; "
             f"{snapshot['feature_files']} files; {snapshot['curated_rows']} rows"
+        )
+    return 0 if result["status"] == "pass" else 1
+
+
+def _curation_schema_migration_google_fitness(args: argparse.Namespace) -> int:
+    from wearable_project.curation.google_fitness.schema_migration import run_schema_migration_audit
+
+    try:
+        result = run_schema_migration_audit(
+            args.input_native,
+            args.input_curated_v1,
+            args.input_curated_v2,
+            args.output,
+            workers=args.workers,
+            max_in_flight=args.max_in_flight,
+            max_examples=args.max_examples,
+            overwrite=args.overwrite,
+            no_progress=args.no_progress,
+        )
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if args.json_summary:
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(
+            f"Google Fitness curation schema migration audit {result['status'].upper()}: "
+            f"{result['participants_compared']:,} participants; {result['rows']:,} rows; {result['issue_count']} issue(s)"
         )
     return 0 if result["status"] == "pass" else 1
 

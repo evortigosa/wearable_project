@@ -275,12 +275,26 @@ class CurationPolicy:
 
 @dataclass(frozen=True, slots=True)
 class OutputPolicy:
+    """
+    Physical and virtual curation-output contract. ``materialized_columns`` are appended to the participant feature
+    CSV. ``virtual_columns`` remain reproducible policy projections exposed through the root curation contract and
+    future DataLoaders, but are not repeated on every row.  ``sparse_columns`` use documented blank/absent defaults;
+    ``fixed_columns`` are physically present for every row of the feature.
+    """
+
     preserve_native_prefix: bool
     preserve_row_order: bool
     preserve_row_count: bool
-    derived_columns: tuple[str, ...]
+    materialized_columns: tuple[str, ...]
+    virtual_columns: tuple[str, ...]
     sparse_columns: tuple[str, ...]
     fixed_columns: tuple[str, ...]
+
+    @property
+    def derived_columns(self) -> tuple[str, ...]:
+        """Compatibility alias for physically materialized columns."""
+
+        return self.materialized_columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,8 +336,18 @@ class FeaturePolicy:
         return tuple(item.column for item in self.measurements)
 
     @property
+    def materialized_columns(self) -> tuple[str, ...]:
+        return self.output.materialized_columns
+
+    @property
     def derived_columns(self) -> tuple[str, ...]:
-        return self.output.derived_columns
+        """Compatibility alias for ``materialized_columns``."""
+
+        return self.materialized_columns
+
+    @property
+    def virtual_columns(self) -> tuple[str, ...]:
+        return self.output.virtual_columns
 
 
 @dataclass(frozen=True, slots=True)

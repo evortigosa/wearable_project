@@ -17,7 +17,7 @@ from .models import EventKind, PolicyExecutionMode, to_primitive
 from .registry import CURATION_POLICIES
 
 
-EXPECTED_GUIDANCE_FINGERPRINT = "838b3db70d79a5e9074a66467843fe3498ebc654c36cfe8d1a0aa87b0df7da10"
+EXPECTED_GUIDANCE_FINGERPRINT = "30c6a32de986004d34910310fa5806bfd708971f6a40a5cb5a31b25566a9defd"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,8 +65,9 @@ def _activity_guide(feature: str) -> FeatureGuide:
             "Keep exporter submeasurements coupled to the interval."
         ),
         default_projection=(
-            f"The interval and raw {measurements} remain available. Canonical activity submeasurement projection is "
-            f"blocked until exporter semantics are verified."
+            f"The interval and raw {measurements} remain available. acquisition_method is materialized; "
+            f"derivation_method and tracking_status are virtual projections from the root curation contract. "
+            f"Canonical activity submeasurement projection remains blocked."
         ),
         unit_interpretation=_unit_summary(feature),
         temporal_interpretation=(
@@ -74,8 +75,9 @@ def _activity_guide(feature: str) -> FeatureGuide:
             "curation does not append or replace it."
         ),
         provenance_interpretation=(
-            "Acquisition, derivation and tracking are separate dimensions. Application or stream identifiers do not by "
-            "themselves prove a physical device or user-entry method."
+            "Acquisition, derivation and tracking remain separate dimensions. acquisition_method is physically "
+            "appended; derivation and tracking are reproducible virtual projections. Application or stream identifiers "
+            "do not by themselves prove a physical device or user-entry method."
         ),
         limitations=(
             "Activity quantity has no defensible common unit across activity types.",
@@ -97,8 +99,8 @@ def _sleep_guide() -> FeatureGuide:
             "Retain all overlaps and provenance rather than forcing one hypnogram."
         ),
         default_projection=(
-            "Native state and boundaries remain unchanged. Curation may append provenance, overlap flags, status and "
-            "inclusion metadata."
+            "Native state and boundaries remain unchanged. Curation appends acquisition_method and only row-specific "
+            "overlap/status/inclusion findings; derivation and tracking remain virtual contract projections."
         ),
         unit_interpretation=_unit_summary("Sleep"),
         temporal_interpretation=(
@@ -122,26 +124,30 @@ def _scalar_guide(feature: str) -> FeatureGuide:
     descriptions = {
         "Calories": (
             "Google Fitness interval energy totals",
-            "Use as source interval totals. Do not interpret as Apple active energy because the proposed Google contract "
-            "includes resting energy.",
-            "Canonical kcal values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
+            "Use as source interval totals. Do not interpret as Apple active energy because the proposed Google "
+            "contract includes resting energy.",
+            "Canonical kcal values remain withheld because CWP2 0.1.1 did not verify the exporter mapping; the pending "
+            "unit contract is stored once in the root curation contract rather than repeated per row.",
         ),
         "Distance": (
             "Google Fitness interval distance totals",
             "Use as source interval totals without imposing calendar-day boundaries.",
-            "Canonical meter values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
+            "Canonical meter values remain withheld because CWP2 0.1.1 did not verify the exporter mapping; the pending "
+            "unit contract is stored once in the root curation contract rather than repeated per row.",
         ),
         "Weight": (
             "Google Fitness body-weight observations",
             "Preserve both source boundaries and added_by provenance. Positive-duration rows remain intervals and are "
             "not collapsed to points.",
-            "Canonical kilogram values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
+            "Canonical kilogram values remain withheld because CWP2 0.1.1 did not verify the exporter mapping; the "
+            "pending unit contract is stored once in the root curation contract rather than repeated per row.",
         ),
         "Height": (
             "Google Fitness height observations",
             "Preserve both source boundaries and added_by provenance. The cohort contains only two native rows, so "
             "calibration evidence is limited.",
-            "Canonical meter values remain withheld in CWP3 because CWP2 0.1.1 did not verify the exporter mapping.",
+            "Canonical meter values remain withheld because CWP2 0.1.1 did not verify the exporter mapping; the pending "
+            "unit contract is stored once in the root curation contract rather than repeated per row.",
         ),
     }
     title, use, projection = descriptions[feature]
@@ -160,12 +166,11 @@ def _scalar_guide(feature: str) -> FeatureGuide:
         default_projection=projection,
         unit_interpretation=_unit_summary(feature),
         temporal_interpretation=(
-            "start_date and end_date remain the native temporal evidence. source_day_label is contextual and never "
-            "creates a canonical date."
+            "start_date and end_date remain the native temporal evidence. source_day_label is contextual and never creates a canonical date."
         ),
         provenance_interpretation=(
-            "Where provenance is absent, acquisition and derivation may remain unknown. added_by is preserved without "
-            "inferring user entry or device measurement."
+            "acquisition_method is materialized. derivation_method is a deterministic virtual projection. Where "
+            "provenance is absent, acquisition remains unknown; added_by is preserved without inferring user entry or device measurement."
         ),
         limitations=tuple(limitations),
         evidence_refs=policy.evidence_refs,
@@ -183,8 +188,8 @@ def _step_count_guide() -> FeatureGuide:
             "every named alternative."
         ),
         default_projection=(
-            "Curation may annotate one preferred version-2 row per outer group when evidence permits, but every row "
-            "remains physically present."
+            "Curation materializes step_count_role and default inclusion for each source row while retaining every "
+            "alternative. Canonical count value/unit/evidence are virtual identity projections from native value and collecting-method version."
         ),
         unit_interpretation=_unit_summary("StepCount"),
         temporal_interpretation=(
@@ -192,8 +197,8 @@ def _step_count_guide() -> FeatureGuide:
             "one canonical day."
         ),
         provenance_interpretation=(
-            "aggregation source, application, origin stream and device fields are retained. Acquisition and derivation "
-            "are classified separately."
+            "Aggregation source, application, origin stream and device fields are retained. acquisition_method is "
+            "materialized; derivation_method is reconstructed virtually from version and aggregation_source."
         ),
         limitations=(
             "estimated_steps preference is an analytical default, not a declaration that other alternatives are invalid.",

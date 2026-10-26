@@ -13,6 +13,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
+from wearable_project.curation.google_fitness.contract import CURATED_SCHEMA_VERSION, contract_fingerprint
 from wearable_project.curation.google_fitness.decisions import decisions_fingerprint
 from wearable_project.curation.google_fitness.engine import ENGINE_VERSION
 from wearable_project.curation.google_fitness.evidence import evidence_fingerprint
@@ -24,7 +25,7 @@ from wearable_project.processing.google_fitness.registry import SOURCE_KEY
 
 
 CURATION_STATE_FILENAME = ".wearable_curation_state.sqlite"
-CURATION_STATE_SCHEMA_VERSION = "google-fitness-curation-state-cwp4-0.1.0"
+CURATION_STATE_SCHEMA_VERSION = "google-fitness-curation-state-schema-v2-0.2.0"
 
 
 def now_utc() -> str:
@@ -59,7 +60,7 @@ class CuratedOutputState:
     sha256: str
     native_sha256: str
     policy_fingerprint: str
-    active_derived_columns: tuple[str, ...]
+    active_materialized_columns: tuple[str, ...]
     pass_rows: int
     review_rows: int
     exclude_default_rows: int
@@ -161,6 +162,13 @@ class CurationStateDatabase:
                 "incompatible Google Fitness curation state schema: "
                 f"{metadata.get('state_schema_version')!r}"
             )
+        if metadata.get("curated_schema_version") != CURATED_SCHEMA_VERSION:
+            raise OutputValidationError(
+                "incompatible Google Fitness curated schema: "
+                f"{metadata.get('curated_schema_version')!r}; use a new output root for schema v2"
+            )
+        if metadata.get("contract_fingerprint") != contract_fingerprint():
+            raise OutputValidationError("curation state contract fingerprint differs from the current schema contract")
 
     def _initialize(self) -> None:
         metadata_exists = self.connection.execute(
@@ -179,6 +187,12 @@ class CurationStateDatabase:
                     "incompatible Google Fitness curation state schema: "
                     f"{metadata.get('state_schema_version')!r}"
                 )
+            if metadata.get("curated_schema_version") not in (None, CURATED_SCHEMA_VERSION):
+                raise OutputValidationError(
+                    "existing curated root uses a different schema version; preserve it and choose a new output root"
+                )
+            if metadata.get("contract_fingerprint") not in (None, contract_fingerprint()):
+                raise OutputValidationError("existing curated root uses a different curation contract")
 
         self.connection.executescript(
             """
@@ -225,7 +239,7 @@ class CurationStateDatabase:
               sha256 TEXT NOT NULL,
               native_sha256 TEXT NOT NULL,
               policy_fingerprint TEXT NOT NULL,
-              active_derived_columns_json TEXT NOT NULL,
+              active_materialized_columns_json TEXT NOT NULL,
               pass_rows INTEGER NOT NULL,
               review_rows INTEGER NOT NULL,
               exclude_default_rows INTEGER NOT NULL,
@@ -270,7 +284,7 @@ class CurationStateDatabase:
               included_by_default_rows INTEGER NOT NULL,
               excluded_by_default_rows INTEGER NOT NULL,
               canonical_value_rows INTEGER NOT NULL,
-              active_derived_columns_json TEXT NOT NULL,
+              active_materialized_columns_json TEXT NOT NULL,
               flag_counts_json TEXT NOT NULL,
               acquisition_counts_json TEXT NOT NULL,
               derivation_counts_json TEXT NOT NULL,
@@ -289,6 +303,8 @@ class CurationStateDatabase:
                 ("source_key", SOURCE_KEY),
                 ("product_kind", "curated"),
                 ("state_schema_version", CURATION_STATE_SCHEMA_VERSION),
+                ("curated_schema_version", CURATED_SCHEMA_VERSION),
+                ("contract_fingerprint", contract_fingerprint()),
             ),
         )
         self.connection.commit()
@@ -382,7 +398,7 @@ class CurationStateDatabase:
             sha256=row["sha256"],
             native_sha256=row["native_sha256"],
             policy_fingerprint=row["policy_fingerprint"],
-            active_derived_columns=tuple(_loads(row["active_derived_columns_json"])),
+            active_materialized_columns=tuple(_loads(row["active_materialized_columns_json"])),
             pass_rows=int(row["pass_rows"]),
             review_rows=int(row["review_rows"]),
             exclude_default_rows=int(row["exclude_default_rows"]),
@@ -482,7 +498,7 @@ class CurationStateDatabase:
                         participant_id, item.feature, item.filename,
                         item.native_rows, item.curated_rows, item.size_bytes,
                         item.sha256, item.native_sha256, item.policy_fingerprint,
-                        _json(item.active_derived_columns),
+                        _json(item.active_materialized_columns),
                         item.pass_rows, item.review_rows, item.exclude_default_rows,
                         item.included_by_default_rows, item.excluded_by_default_rows,
                         item.canonical_value_rows, _json(item.flag_counts),
@@ -528,7 +544,7 @@ class CurationStateDatabase:
                         item.curated_rows, item.size_bytes, item.pass_rows,
                         item.review_rows, item.exclude_default_rows,
                         item.included_by_default_rows, item.excluded_by_default_rows,
-                        item.canonical_value_rows, _json(item.active_derived_columns),
+                        item.canonical_value_rows, _json(item.active_materialized_columns),
                         _json(item.flag_counts), _json(item.acquisition_counts),
                         _json(item.derivation_counts), _json(item.tracking_counts),
                         _json(item.step_count_role_counts), _json(item.unit_status_counts),
@@ -559,8 +575,10 @@ class CurationStateDatabase:
         )
         column_counts: Counter[str] = Counter()
         for row in rows:
-            column_counts.update(_loads(row["active_derived_columns_json"]))
+            column_counts.update(_loads(row["active_materialized_columns_json"]))
         return {
+            "curated_schema_version": CURATED_SCHEMA_VERSION,
+            "contract_fingerprint": contract_fingerprint(),
             "committed_participants": int(participants),
             "feature_files": len(rows),
             "native_rows": sum(int(row["native_rows"]) for row in rows),
@@ -581,7 +599,7 @@ class CurationStateDatabase:
             "step_count_role_counts": dict(sorted(self._merge_counter(rows, "step_count_role_counts_json").items())),
             "unit_status_counts": dict(sorted(self._merge_counter(rows, "unit_status_counts_json").items())),
             "unit_evidence_counts": dict(sorted(self._merge_counter(rows, "unit_evidence_counts_json").items())),
-            "active_derived_column_file_counts": dict(sorted(column_counts.items())),
+            "active_materialized_column_file_counts": dict(sorted(column_counts.items())),
         }
 
     def build_report(self, run_id: str, *, include_details: bool = False) -> dict[str, Any]:
@@ -666,13 +684,15 @@ class CurationStateDatabase:
                 "guidance": guidance_fingerprint(),
                 "engine": ENGINE_VERSION,
                 "state_schema": CURATION_STATE_SCHEMA_VERSION,
+                "curated_schema": CURATED_SCHEMA_VERSION,
+                "contract": contract_fingerprint(),
             },
         }
         if include_details:
             payload["participant_details"] = [dict(row) for row in participant_rows]
             details: list[dict[str, Any]] = []
             json_columns = (
-                "active_derived_columns_json", "flag_counts_json", "acquisition_counts_json",
+                "active_materialized_columns_json", "flag_counts_json", "acquisition_counts_json",
                 "derivation_counts_json", "tracking_counts_json", "step_count_role_counts_json",
                 "unit_status_counts_json", "unit_evidence_counts_json",
             )
@@ -720,7 +740,7 @@ def format_curation_report(report: Mapping[str, Any]) -> str:
                 f"{activity['included_by_default_rows']} included; "
                 f"{activity['excluded_by_default_rows']} excluded"
             ),
-            f"Canonical-value rows: {activity['canonical_value_rows']}",
+            f"Canonical projection rows: {activity['canonical_value_rows']}",
             (
                 "Snapshot: "
                 f"{snapshot['committed_participants']} participants; "

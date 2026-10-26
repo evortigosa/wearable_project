@@ -19,6 +19,10 @@ import time
 import traceback
 from typing import Any, Iterable
 from tqdm import tqdm
+from wearable_project.curation.google_fitness.contract import (
+    CURATED_SCHEMA_VERSION, CURATION_CONTRACT_FILENAME, contract_fingerprint, validate_contract_file,
+    write_contract_atomic,
+)
 from wearable_project.curation.google_fitness.decisions import decisions_fingerprint
 from wearable_project.curation.google_fitness.engine import (
     ENGINE_VERSION, CuratedFeatureInfo, curate_feature_file, feature_policy_fingerprint, sha256_file,
@@ -38,7 +42,7 @@ from wearable_project.processing.google_fitness.tracker import peak_rss_bytes
 from wearable_project.processing.google_fitness.writer import DirectorySwap, STATE_FILENAME as NATIVE_STATE_FILENAME
 
 
-PIPELINE_VERSION = "google-fitness-curation-pipeline-cwp4-0.1.0"
+PIPELINE_VERSION = "google-fitness-curation-pipeline-schema-v2-0.2.0"
 TEMP_DIRNAME = ".wearable_curation_tmp"
 
 
@@ -88,19 +92,24 @@ def _native_state_connection(native_root: Path) -> sqlite3.Connection:
         raise InputLayoutError(f"managed Google Fitness native root lacks {NATIVE_STATE_FILENAME}: {native_root}")
     wal = state_path.with_name(state_path.name + "-wal")
     if wal.is_file() and wal.stat().st_size:
-        raise InputLayoutError(f"native state has an active WAL; finish native processing before curation: {wal}")
+        raise InputLayoutError(
+            f"native state has an active WAL; finish native processing before curation: {wal}"
+        )
     connection = sqlite3.connect(f"file:{state_path}?mode=ro&immutable=1", uri=True)
     connection.row_factory = sqlite3.Row
     try:
         metadata = {
-            row["key"]: row["value"] for row in connection.execute("SELECT key,value FROM metadata")
+            row["key"]: row["value"]
+            for row in connection.execute("SELECT key,value FROM metadata")
         }
     except sqlite3.Error as exc:
         connection.close()
         raise InputLayoutError(f"invalid Google Fitness native state: {state_path}") from exc
     if metadata.get("source_key") != SOURCE_KEY:
         connection.close()
-        raise InputLayoutError(f"native state source is {metadata.get('source_key')!r}, expected {SOURCE_KEY!r}")
+        raise InputLayoutError(
+            f"native state source is {metadata.get('source_key')!r}, expected {SOURCE_KEY!r}"
+        )
     return connection
 
 
@@ -127,7 +136,9 @@ def validate_native_input_root(
 def _ensure_disjoint_roots(
     input_native: Path, output: Path, *, allow_unmanaged_native_root: bool,
 ) -> tuple[Path, Path]:
-    native_root = validate_native_input_root(input_native, allow_unmanaged_native_root=allow_unmanaged_native_root)
+    native_root = validate_native_input_root(
+        input_native, allow_unmanaged_native_root=allow_unmanaged_native_root
+    )
     output_root = Path(output).expanduser().resolve()
     if (
         native_root == output_root
@@ -268,6 +279,8 @@ def _signature(features: Iterable[NativeFeatureInput], *, include_policy: bool) 
                 {"guidance": guidance_fingerprint()},
                 {"engine": ENGINE_VERSION},
                 {"pipeline": PIPELINE_VERSION},
+                {"curated_schema": CURATED_SCHEMA_VERSION},
+                {"contract": contract_fingerprint()},
             ]
         )
     rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -312,7 +325,8 @@ def _recover_stale_transactions(
             final_dir = output_root / participant_id
             stored = state.get_participant(participant_id)
             published_is_committed = (
-                stored is not None and _stored_outputs_usable(final_dir, stored, verify_hashes=True)
+                stored is not None
+                and _stored_outputs_usable(final_dir, stored, verify_hashes=True)
             )
             if published_is_committed:
                 shutil.rmtree(backup, ignore_errors=True)
@@ -358,7 +372,8 @@ def plan_participant(
             features, native_signature, policy_signature,
         )
     return ParticipantPlan(
-        participant_id, participant_dir, "rebuild", reason, features, native_signature, policy_signature,
+        participant_id, participant_dir, "rebuild", reason,
+        features, native_signature, policy_signature,
     )
 
 
@@ -429,7 +444,7 @@ def _output_state(info: CuratedFeatureInfo) -> CuratedOutputState:
         sha256=info.curated_sha256,
         native_sha256=info.native_sha256,
         policy_fingerprint=info.policy_fingerprint,
-        active_derived_columns=info.active_derived_columns,
+        active_materialized_columns=info.active_materialized_columns,
         pass_rows=info.pass_rows,
         review_rows=info.review_rows,
         exclude_default_rows=info.exclude_default_rows,
@@ -465,7 +480,7 @@ def _validate_staged_outputs(
             native.path,
             path,
             info.feature,
-            expected_derived_columns=info.active_derived_columns,
+            expected_materialized_columns=info.active_materialized_columns,
         )
         if count != info.curated_rows:
             raise OutputValidationError(f"staged row count differs for {info.feature}")
@@ -480,7 +495,8 @@ def curate_dataset(
     if mode not in {"auto", "rebuild"}:
         raise ValueError(f"unsupported curation mode: {mode}")
     native_root, output_root = _ensure_disjoint_roots(
-        input_native, output,
+        input_native,
+        output,
         allow_unmanaged_native_root=allow_unmanaged_native_root,
     )
     output_root.mkdir(parents=True, exist_ok=True)
@@ -489,7 +505,9 @@ def curate_dataset(
         raise InputLayoutError("curation state cannot be stored inside the native root")
     existing_items = [item for item in output_root.iterdir() if item.name != TEMP_DIRNAME]
     if existing_items and not state_path.is_file():
-        raise InputLayoutError(f"nonempty curated output root lacks its curation state database: {output_root}")
+        raise InputLayoutError(
+            f"nonempty curated output root lacks its curation state database: {output_root}"
+        )
 
     participants = discover_native_participants(native_root, selected_participants)
     manifest, native_diagnostics = _native_manifest(native_root)
@@ -512,10 +530,31 @@ def curate_dataset(
         "rules_fingerprint": rules_fingerprint(),
         "decisions_fingerprint": decisions_fingerprint(),
         "guidance_fingerprint": guidance_fingerprint(),
+        "curated_schema_version": CURATED_SCHEMA_VERSION,
+        "contract_fingerprint": contract_fingerprint(),
         "native_input_diagnostics": native_diagnostics,
     }
 
     with CurationStateDatabase(state_path) as state:
+        contract_path = output_root / CURATION_CONTRACT_FILENAME
+        if contract_path.is_file():
+            contract_issues = validate_contract_file(
+                contract_path,
+                engine_version=ENGINE_VERSION,
+                pipeline_version=PIPELINE_VERSION,
+                state_schema_version=state._metadata()["state_schema_version"],
+            )
+            if contract_issues:
+                raise OutputValidationError("invalid curated-root contract: " + "; ".join(contract_issues))
+        else:
+            write_contract_atomic(
+                contract_path,
+                engine_version=ENGINE_VERSION,
+                pipeline_version=PIPELINE_VERSION,
+                state_schema_version=state._metadata()["state_schema_version"],
+            )
+        configuration["contract_file"] = str(contract_path)
+        configuration["contract_sha256"] = sha256_file(contract_path)
         interrupted_runs = state.mark_interrupted_runs()
         recovery_actions = _recover_stale_transactions(output_root, temporary_root, state)
         temporary_root.mkdir(parents=True, exist_ok=True)

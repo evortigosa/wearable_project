@@ -26,8 +26,12 @@ import time
 from typing import Any, Iterable, Mapping, Sequence
 from tqdm import tqdm
 from wearable_project.curation.google_fitness.decisions import decisions_fingerprint
+from wearable_project.curation.google_fitness.contract import (
+    CURATED_SCHEMA_VERSION, CURATION_CONTRACT_FILENAME, contract_fingerprint, expected_acquisition_method,
+    validate_contract_file, virtual_default, virtual_row_values,
+)
 from wearable_project.curation.google_fitness.engine import (
-    DERIVED_COLUMN_ORDER, ENGINE_VERSION, feature_policy_fingerprint, sha256_file,
+    MATERIALIZED_OUTPUT_COLUMN_ORDER, ENGINE_VERSION, feature_policy_fingerprint, sha256_file,
 )
 from wearable_project.curation.google_fitness.evidence import evidence_fingerprint
 from wearable_project.curation.google_fitness.guidance import guidance_fingerprint
@@ -40,9 +44,9 @@ from wearable_project.processing.google_fitness.registry import SOURCE_KEY, get_
 from wearable_project.processing.google_fitness.writer import STATE_FILENAME as NATIVE_STATE_FILENAME
 
 
-ACCEPTANCE_VERSION = "google-fitness-curation-sample-acceptance-cwp5-0.1.0"
-ACCEPTANCE_REPORT_SCHEMA_VERSION = "google-fitness-curation-acceptance-report-0.1.0"
-REFERENCE_SCHEMA_VERSION = "google-fitness-curation-reference-sample-0.1.0"
+ACCEPTANCE_VERSION = "google-fitness-curation-sample-acceptance-schema-v2-0.2.0"
+ACCEPTANCE_REPORT_SCHEMA_VERSION = "google-fitness-curation-acceptance-report-v2-0.2.0"
+REFERENCE_SCHEMA_VERSION = "google-fitness-curation-reference-sample-v2-0.2.0"
 TEMP_DIRNAME = ".wearable_curation_acceptance_tmp"
 
 _STATUS_VALUES = frozenset({"pass", "review", "exclude_default"})
@@ -148,7 +152,7 @@ class CuratedStateFile:
     sha256: str
     native_sha256: str
     policy_fingerprint: str
-    active_derived_columns: tuple[str, ...]
+    active_materialized_columns: tuple[str, ...]
     pass_rows: int
     review_rows: int
     exclude_default_rows: int
@@ -205,7 +209,7 @@ class FileAudit:
     native_sha256: str | None = None
     curated_sha256: str | None = None
     native_header: tuple[str, ...] = ()
-    derived_columns: tuple[str, ...] = ()
+    materialized_columns: tuple[str, ...] = ()
     pass_rows: int = 0
     review_rows: int = 0
     exclude_default_rows: int = 0
@@ -280,7 +284,7 @@ def _output_from_row(row: sqlite3.Row) -> CuratedStateFile:
         sha256=str(row["sha256"]),
         native_sha256=str(row["native_sha256"]),
         policy_fingerprint=str(row["policy_fingerprint"]),
-        active_derived_columns=tuple(_json_load(row["active_derived_columns_json"], [])),
+        active_materialized_columns=tuple(_json_load(row["active_materialized_columns_json"], [])),
         pass_rows=int(row["pass_rows"]),
         review_rows=int(row["review_rows"]),
         exclude_default_rows=int(row["exclude_default_rows"]),
@@ -319,6 +323,13 @@ def _load_curated_state(
                 "curated state schema differs from the current implementation: "
                 f"{metadata.get('state_schema_version')!r}"
             )
+        if metadata.get("curated_schema_version") != CURATED_SCHEMA_VERSION:
+            raise InputLayoutError(
+                "curated schema differs from the current implementation: "
+                f"{metadata.get('curated_schema_version')!r}"
+            )
+        if metadata.get("contract_fingerprint") != contract_fingerprint():
+            raise InputLayoutError("curated state contract fingerprint differs from the current contract")
         participant_rows = list(connection.execute(
             "SELECT participant_id,status,native_signature,policy_signature,engine_version,last_error "
             "FROM curation_participants ORDER BY participant_id"
@@ -432,7 +443,7 @@ def _audit_file(task: FileTask) -> FileAudit:
             native_header = tuple(next(native_reader, ()))
             curated_header = tuple(next(curated_reader, ()))
             result.native_header = native_header
-            result.derived_columns = curated_header[len(native_header):]
+            result.materialized_columns = curated_header[len(native_header):]
             expected_native = tuple(get_feature_spec(task.feature).column_names)
             if native_header != expected_native:
                 result.issues.append(
@@ -440,16 +451,21 @@ def _audit_file(task: FileTask) -> FileAudit:
                 )
             if curated_header[: len(native_header)] != native_header:
                 result.issues.append("curated native-column prefix differs from native header")
-            expected_derived = task.curated_state.active_derived_columns
-            if result.derived_columns != expected_derived:
+            expected_materialized = task.curated_state.active_materialized_columns
+            if result.materialized_columns != expected_materialized:
                 result.issues.append(
-                    f"derived columns differ from state: observed={result.derived_columns}, expected={expected_derived}"
+                    f"materialized columns differ from state: observed={result.materialized_columns}, expected={expected_materialized}"
                 )
-            if not set(result.derived_columns) <= set(policy.derived_columns):
-                result.issues.append("curated file contains undeclared derived columns")
-            ordered = tuple(column for column in DERIVED_COLUMN_ORDER if column in set(result.derived_columns))
-            if result.derived_columns != ordered:
-                result.issues.append("derived columns are not in the canonical engine order")
+            if not set(result.materialized_columns) <= set(policy.materialized_columns):
+                result.issues.append("curated file contains undeclared materialized columns")
+            virtual_in_file = sorted(set(result.materialized_columns) & set(policy.virtual_columns))
+            if virtual_in_file:
+                result.issues.append(
+                    f"curated file materializes virtual columns: {virtual_in_file}"
+                )
+            ordered = tuple(column for column in MATERIALIZED_OUTPUT_COLUMN_ORDER if column in set(result.materialized_columns))
+            if result.materialized_columns != ordered:
+                result.issues.append("materialized columns are not in the canonical engine order")
 
             indices = {name: index for index, name in enumerate(curated_header)}
             status_counts: Counter[str] = Counter()
@@ -478,7 +494,19 @@ def _audit_file(task: FileTask) -> FileAudit:
                 if len(curated_row) != len(curated_header):
                     result.issues.append(f"curated row width differs from header at row {row_index}")
                     break
+                native_values = {
+                    name: native_row[index]
+                    for index, name in enumerate(native_header)
+                }
                 values = {name: curated_row[index] for name, index in indices.items()}
+                virtual = virtual_row_values(task.feature, native_values, policy)
+                observed_acquisition = _counter_value(values, "acquisition_method", "unknown")
+                expected_acquisition = expected_acquisition_method(task.feature, native_values, policy)
+                if observed_acquisition != expected_acquisition:
+                    result.issues.append(
+                        f"acquisition_method differs from contract at row {row_index}: "
+                        f"observed={observed_acquisition!r}, expected={expected_acquisition!r}"
+                    )
                 status = _counter_value(values, "curation_status", "pass")
                 include = _counter_value(values, "include_by_default", "1")
                 if status not in _STATUS_VALUES:
@@ -487,15 +515,23 @@ def _audit_file(task: FileTask) -> FileAudit:
                     result.issues.append(f"invalid include_by_default {include!r} at row {row_index}")
                 status_counts[status] += 1
                 include_counts[include] += 1
-                if (values.get("canonical_value") or "").strip():
+                if (virtual.get("canonical_value") or "").strip():
                     canonical_rows += 1
                 flags.update(_split_flags(values.get("curation_flags", "")))
-                acquisition[_counter_value(values, "acquisition_method", "unknown")] += 1
-                derivation[_counter_value(values, "derivation_method", "unknown")] += 1
-                tracking[_counter_value(values, "tracking_status", "not_applicable")] += 1
+                acquisition[observed_acquisition] += 1
+                derivation[
+                    (virtual.get("derivation_method") or virtual_default("derivation_method"))
+                ] += 1
+                tracking[
+                    (virtual.get("tracking_status") or virtual_default("tracking_status"))
+                ] += 1
                 roles[_counter_value(values, "step_count_role", "not_applicable")] += 1
-                unit_status[_counter_value(values, "curation_unit_status", "not_applicable")] += 1
-                unit_evidence[_counter_value(values, "unit_evidence", "none")] += 1
+                unit_status[
+                    (virtual.get("curation_unit_status") or virtual_default("curation_unit_status"))
+                ] += 1
+                unit_evidence[
+                    (virtual.get("unit_evidence") or virtual_default("unit_evidence"))
+                ] += 1
                 row_index += 1
 
             result.native_rows = row_index
@@ -601,7 +637,7 @@ def _aggregate_curated_state(outputs: Mapping[tuple[str, str], CuratedStateFile]
         roles.update(row.step_count_role_counts)
         unit_status.update(row.unit_status_counts)
         unit_evidence.update(row.unit_evidence_counts)
-        active_columns.update(row.active_derived_columns)
+        active_columns.update(row.active_materialized_columns)
     snapshot = {
         "participants": len({row.participant_id for row in rows}),
         "feature_files": len(rows),
@@ -621,7 +657,7 @@ def _aggregate_curated_state(outputs: Mapping[tuple[str, str], CuratedStateFile]
         "step_count_role_counts": dict(sorted(roles.items())),
         "unit_status_counts": dict(sorted(unit_status.items())),
         "unit_evidence_counts": dict(sorted(unit_evidence.items())),
-        "active_derived_column_file_counts": dict(sorted(active_columns.items())),
+        "active_materialized_column_file_counts": dict(sorted(active_columns.items())),
     }
     snapshot["status_accounting_complete"] = (
         snapshot["pass_rows"] + snapshot["review_rows"] + snapshot["exclude_default_status_rows"]
@@ -649,10 +685,12 @@ def _reference_view(
     planner_counts: Mapping[str, int], native_state_semantic_sha256: str, curated_state_semantic_sha256: str,
 ) -> dict[str, Any]:
     native_hashes = {
-        f"{item.participant_id}/{item.filename}": str(item.native_sha256) for item in file_results
+        f"{item.participant_id}/{item.filename}": str(item.native_sha256)
+        for item in file_results
     }
     curated_hashes = {
-        f"{item.participant_id}/{item.filename}": str(item.curated_sha256) for item in file_results
+        f"{item.participant_id}/{item.filename}": str(item.curated_sha256)
+        for item in file_results
     }
     return {
         "source_key": SOURCE_KEY,
@@ -668,6 +706,8 @@ def _reference_view(
             "engine": ENGINE_VERSION,
             "pipeline": PIPELINE_VERSION,
             "state_schema": CURATION_STATE_SCHEMA_VERSION,
+            "curated_schema": CURATED_SCHEMA_VERSION,
+            "contract": contract_fingerprint(),
         },
         "native_csv_tree_sha256": _tree_fingerprint(native_hashes),
         "curated_csv_tree_sha256": _tree_fingerprint(curated_hashes),
@@ -780,6 +820,14 @@ def run_acceptance(
 
     native_metadata, native_manifest, active_native_runs = _load_native_state(native_state_path)
     curated_metadata, participant_states, curated_native_manifest, curated_outputs, active_runs = _load_curated_state(curated_state_path)
+    contract_path = curated / CURATION_CONTRACT_FILENAME
+    contract_issues = validate_contract_file(
+        contract_path,
+        engine_version=ENGINE_VERSION,
+        pipeline_version=PIPELINE_VERSION,
+        state_schema_version=CURATION_STATE_SCHEMA_VERSION,
+    )
+    contract_sha_before = sha256_file(contract_path) if contract_path.is_file() else None
 
     native_keys = set(native_manifest)
     curated_native_keys = set(curated_native_manifest)
@@ -892,8 +940,8 @@ def run_acceptance(
         "step_count_role_counts": _merge_dict_counter(file_results, "step_count_role_counts"),
         "unit_status_counts": _merge_dict_counter(file_results, "unit_status_counts"),
         "unit_evidence_counts": _merge_dict_counter(file_results, "unit_evidence_counts"),
-        "active_derived_column_file_counts": dict(sorted(Counter(
-            column for item in file_results for column in item.derived_columns
+        "active_materialized_column_file_counts": dict(sorted(Counter(
+            column for item in file_results for column in item.materialized_columns
         ).items())),
     }
     snapshot["status_accounting_complete"] = (
@@ -982,6 +1030,12 @@ def run_acceptance(
 
     checks = [
         _check("source_qualified_states", native_metadata.get("source_key") == SOURCE_KEY and curated_metadata.get("source_key") == SOURCE_KEY, "native and curated state source keys are google_fitness"),
+        _check(
+            "curation_contract_valid",
+            not contract_issues,
+            "root curation contract matches schema v2 and current implementation"
+            if not contract_issues else f"contract issues: {list(contract_issues)}",
+        ),
         _check("quiescent_native_state", active_native_runs == 0, f"active native runs: {active_native_runs}"),
         _check("quiescent_curation_state", active_runs == 0, f"active curation runs: {active_runs}"),
         _check("participant_sets_equal", participants_native == participants_curated, f"native={len(participants_native)}, curated={len(participants_curated)}"),
@@ -1003,10 +1057,17 @@ def run_acceptance(
 
     native_state_sha_after = sha256_file(native_state_path)
     curated_state_sha_after = sha256_file(curated_state_path)
+    contract_sha_after = sha256_file(contract_path) if contract_path.is_file() else None
     root_unchanged = (
-        native_state_sha_before == native_state_sha_after and curated_state_sha_before == curated_state_sha_after
+        native_state_sha_before == native_state_sha_after
+        and curated_state_sha_before == curated_state_sha_after
+        and contract_sha_before == contract_sha_after
     )
-    checks.append(_check("state_databases_unchanged", root_unchanged, "native and curated state database hashes are unchanged"))
+    checks.append(_check(
+        "managed_products_unchanged",
+        root_unchanged,
+        "native state, curated state, and root contract hashes are unchanged",
+    ))
     if not root_unchanged:
         status = "fail"
         failed = [item for item in checks if item["status"] == "fail"]
@@ -1052,7 +1113,7 @@ def run_acceptance(
             "curated_size_bytes": item.curated_size_bytes,
             "native_sha256": item.native_sha256,
             "curated_sha256": item.curated_sha256,
-            "derived_columns": ";".join(item.derived_columns),
+            "materialized_columns": ";".join(item.materialized_columns),
             "pass_rows": item.pass_rows,
             "review_rows": item.review_rows,
             "exclude_default_rows": item.exclude_default_rows,
@@ -1121,7 +1182,7 @@ def run_acceptance(
         _csv_write(stage / "file_manifest.csv", file_rows, (
             "participant_id", "feature", "filename", "native_rows", "curated_rows",
             "native_size_bytes", "curated_size_bytes", "native_sha256", "curated_sha256",
-            "derived_columns", "pass_rows", "review_rows", "exclude_default_rows",
+            "materialized_columns", "pass_rows", "review_rows", "exclude_default_rows",
             "included_by_default_rows", "excluded_by_default_rows", "canonical_value_rows",
             "issue_count", "issues",
         ))
@@ -1155,6 +1216,8 @@ def run_acceptance(
             "native_state_sha256_after": native_state_sha_after,
             "curated_state_sha256_before": curated_state_sha_before,
             "curated_state_sha256_after": curated_state_sha_after,
+            "contract_sha256_before": contract_sha_before,
+            "contract_sha256_after": contract_sha_after,
             "wall_clock_seconds": round(time.perf_counter() - started, 6),
         })
         _publish_reports(stage, report_root, overwrite)

@@ -18,8 +18,9 @@ import pytest
 from wearable_project.curation.google_fitness import (
     ENGINE_VERSION, curate_feature_file, validate_curated_feature_file, validate_engine_contract,
 )
-from wearable_project.curation.google_fitness.context import (
-    build_sleep_context, build_step_count_context,
+from wearable_project.curation.google_fitness.context import build_sleep_context, build_step_count_context
+from wearable_project.curation.google_fitness.contract import (
+    CURATED_SCHEMA_VERSION, effective_row_decisions, virtual_row_values,
 )
 from wearable_project.curation.google_fitness.decisions import DECISIONS
 from wearable_project.curation.google_fitness.engine import feature_policy_fingerprint
@@ -91,7 +92,8 @@ def _step_row(**updates: object) -> dict[str, object]:
 
 
 def test_cwp3_versions_and_reviewed_decisions() -> None:
-    assert ENGINE_VERSION == "google-fitness-curation-engine-cwp3-0.1.0"
+    assert ENGINE_VERSION == "google-fitness-curation-engine-schema-v2-0.2.0"
+    assert CURATED_SCHEMA_VERSION == "google-fitness-curated-schema-v2-0.1.0"
     assert DECISIONS["step_count_preference"].status is DecisionStatus.ACCEPTED
     assert DECISIONS["negative_calories_buckets"].status is DecisionStatus.ACCEPTED
     assert validate_engine_contract() == ()
@@ -131,10 +133,13 @@ def test_activity_row_preserves_prefix_and_adds_context(tmp_path: Path) -> None:
     fields, rows = _read(curated)
     assert fields[: len(NATIVE_FEATURE_SPECS["Walking"].column_names)] == list(NATIVE_FEATURE_SPECS["Walking"].column_names)
     assert rows[0]["acquisition_method"] == "third_party_import"
-    assert rows[0]["derivation_method"] == "activity_classification"
-    assert rows[0]["tracking_status"] == "tracked"
-    assert rows[0]["curation_flags"] == "activity_quantity_semantics_unresolved"
+    virtual = virtual_row_values("Walking", rows[0])
+    assert virtual["derivation_method"] == "activity_classification"
+    assert virtual["tracking_status"] == "tracked"
+    assert rows[0].get("curation_flags", "") == ""
     assert "canonical_value" not in fields
+    assert "derivation_method" not in fields
+    assert "tracking_status" not in fields
     assert result.info.native_rows == result.info.curated_rows == 1
     assert validate_curated_feature_file(native, curated, "Walking") == 1
 
@@ -165,17 +170,18 @@ def test_calories_reviewed_magnitude_policy(
     curate_feature_file(native, curated, "Calories")
     _, rows = _read(curated)
     row = rows[0]
-    assert row.get("curation_status", "pass") == status
-    assert row.get("include_by_default", "1") == include
-    flags = set(filter(None, row["curation_flags"].split(";")))
-    assert "canonical_unit_withheld_pending_exporter_mapping" in flags
+    decisions = effective_row_decisions(row)
+    assert decisions["curation_status"] == status
+    assert ("1" if decisions["include_by_default"] else "0") == include
+    flags = set(decisions["curation_flags"])
+    assert "canonical_unit_withheld_pending_exporter_mapping" not in flags
     if flag:
         assert flag in flags
     else:
         assert not any(item.startswith("negative_calories_") for item in flags)
-    assert row["canonical_value"] if "canonical_value" in row else True
-    assert row.get("canonical_value", "") == ""
-    assert row["curation_unit_status"] == "withheld_exporter_mapping_pending"
+    virtual = virtual_row_values("Calories", row)
+    assert virtual.get("canonical_value", "") == ""
+    assert virtual["curation_unit_status"] == "withheld_exporter_mapping_pending"
 
 
 def test_distance_quality_rules(tmp_path: Path) -> None:
@@ -210,7 +216,11 @@ def test_distance_quality_rules(tmp_path: Path) -> None:
     curate_feature_file(native, curated, "Distance")
     _, rows = _read(curated)
     assert "positive_distance_zero_duration" in rows[0]["curation_flags"]
-    assert rows[0]["curation_status"] == "review" and rows[0]["include_by_default"] == "1"
+    assert effective_row_decisions(rows[0]) == {
+        "curation_status": "review",
+        "curation_flags": ("positive_distance_zero_duration",),
+        "include_by_default": True,
+    }
     assert "distance_rate_above_source_limit" in rows[1]["curation_flags"]
     assert "negative_distance" in rows[2]["curation_flags"]
     assert rows[2]["include_by_default"] == "0"
@@ -244,7 +254,7 @@ def test_weight_nonpoint_intervals_are_preserved(tmp_path: Path) -> None:
     assert rows[0]["start_date"] != rows[0]["end_date"]
     assert "weight_nonpoint_interval" in rows[0]["curation_flags"]
     assert rows[0]["curation_status"] == "review"
-    assert rows[0].get("include_by_default", "1") == "1"
+    assert effective_row_decisions(rows[0])["include_by_default"] is True
     assert "weight_long_interval" in rows[1]["curation_flags"]
     assert rows[1]["include_by_default"] == "0"
     assert rows[0]["acquisition_method"] == "third_party_import"
@@ -267,7 +277,7 @@ def test_height_range_and_unit_withholding(tmp_path: Path) -> None:
     _, rows = _read(curated)
     assert "height_outside_source_range" in rows[0]["curation_flags"]
     assert rows[0]["include_by_default"] == "0"
-    assert rows[0]["curation_unit_status"] == "withheld_exporter_mapping_pending"
+    assert virtual_row_values("Height", rows[0])["curation_unit_status"] == "withheld_exporter_mapping_pending"
 
 
 def test_step_count_group_roles_and_disagreement(tmp_path: Path) -> None:
@@ -340,13 +350,14 @@ def test_step_count_group_roles_and_disagreement(tmp_path: Path) -> None:
         by_group.setdefault(row["outer_id"], []).append(row)
 
     assert by_group["v1"][0]["step_count_role"] == "legacy_v1"
-    assert "invalid_native_interval" not in by_group["v1"][0]["curation_flags"]
-    assert by_group["v1"][0]["canonical_unit"] == "count"
-    assert by_group["v1"][0]["curation_unit_status"] == "resolved_source_convention"
+    assert "invalid_native_interval" not in by_group["v1"][0].get("curation_flags", "")
+    v1_virtual = virtual_row_values("StepCount", by_group["v1"][0])
+    assert v1_virtual["canonical_unit"] == "count"
+    assert v1_virtual["curation_unit_status"] == "resolved_source_convention"
 
     preferred, nonpreferred = by_group["g1"]
     assert preferred["step_count_role"] == "fit_app_preferred"
-    assert preferred["include_by_default"] == "1"
+    assert effective_row_decisions(preferred)["include_by_default"] is True
     assert nonpreferred["step_count_role"] == "parallel_nonpreferred"
     assert nonpreferred["include_by_default"] == "0"
     assert preferred["curation_status"] == nonpreferred["curation_status"] == "review"
@@ -354,7 +365,7 @@ def test_step_count_group_roles_and_disagreement(tmp_path: Path) -> None:
 
     assert by_group["g2"][0]["step_count_role"] == "merge_fallback"
     assert by_group["g2"][0]["curation_status"] == "review"
-    assert by_group["g2"][0]["include_by_default"] == "1"
+    assert effective_row_decisions(by_group["g2"][0])["include_by_default"] is True
     assert by_group["g3"][0]["step_count_role"] == "third_party_fallback"
     assert all(row["step_count_role"] == "ambiguous_parallel" for row in by_group["g4"])
     assert all(row["include_by_default"] == "0" for row in by_group["g4"])
@@ -381,7 +392,7 @@ def test_step_count_rate_and_negative_rules(tmp_path: Path) -> None:
     assert "step_count_rate_above_source_limit" in rows[0]["curation_flags"]
     assert rows[0]["include_by_default"] == "0"
     assert "negative_step_count" in rows[1]["curation_flags"]
-    assert rows[1]["canonical_value"] == ""
+    assert virtual_row_values("StepCount", rows[1]).get("canonical_value", "") == ""
 
 
 def test_sleep_overlap_context_preserves_rows(tmp_path: Path) -> None:
@@ -413,7 +424,8 @@ def test_sleep_overlap_context_preserves_rows(tmp_path: Path) -> None:
     assert out[0]["curation_status"] == out[1]["curation_status"] == "review"
     assert "generic_sleep_overlaps_detailed_state" in out[2]["curation_flags"]
     assert "generic_sleep_overlaps_detailed_state" in out[3]["curation_flags"]
-    assert out[2]["curation_status"] == out[3]["curation_status"] == "pass"
+    assert effective_row_decisions(out[2])["curation_status"] == "pass"
+    assert effective_row_decisions(out[3])["curation_status"] == "pass"
     assert all(row.get("include_by_default", "1") == "1" for row in out)
 
 
@@ -443,7 +455,7 @@ def test_source_day_label_rules(tmp_path: Path) -> None:
     assert "source_day_label_nonadjacent_disagreement" in rows[0]["curation_flags"]
     assert rows[0]["curation_status"] == "review"
     assert "unrecognized_source_day_label" in rows[1]["curation_flags"]
-    assert rows[1]["curation_status"] == "pass"
+    assert effective_row_decisions(rows[1])["curation_status"] == "pass"
 
 
 def test_unknown_feature_fallback_is_visible_and_excluded(tmp_path: Path) -> None:
@@ -455,7 +467,11 @@ def test_unknown_feature_fallback_is_visible_and_excluded(tmp_path: Path) -> Non
         writer.writerow({"x": "1", "y": "2"})
     curate_feature_file(native, curated, "FutureFeature")
     fields, rows = _read(curated)
-    assert fields == ["x", "y", "curation_status", "curation_flags", "include_by_default"]
+    assert fields == [
+        "x", "y", "acquisition_method", "curation_status",
+        "curation_flags", "include_by_default",
+    ]
+    assert rows[0]["acquisition_method"] == "unknown"
     assert rows[0]["curation_status"] == "review"
     assert rows[0]["curation_flags"] == "unknown_feature_policy"
     assert rows[0]["include_by_default"] == "0"
@@ -508,7 +524,7 @@ def test_provenance_classifier_matches_calibration_contract() -> None:
     assert ann.tracking_status.value == "tracked"
 
 
-def test_annotation_uses_only_policy_derived_columns() -> None:
+def test_annotation_uses_only_policy_materialized_columns() -> None:
     policy = get_policy("Calories")
     row = {
         "start_date": "2024-01-01T00:00:00Z",
@@ -519,7 +535,7 @@ def test_annotation_uses_only_policy_derived_columns() -> None:
         "outer_id": "x",
     }
     annotation = annotate_row("Calories", row, policy)
-    assert set(annotation.as_sparse_dict(policy)) <= set(policy.derived_columns)
+    assert set(annotation.as_sparse_dict(policy)) <= set(policy.materialized_columns)
 
 
 @pytest.mark.skipif(

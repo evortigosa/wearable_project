@@ -17,7 +17,7 @@ from .models import DecisionStatus, to_primitive
 from .rules import RULES
 
 
-EXPECTED_DECISIONS_FINGERPRINT = "07ee5b732b254c9fb37a27336885251b81f30610bece134188b19400ae8fee8c"
+EXPECTED_DECISIONS_FINGERPRINT = "600c6e174a9cc74d37dc65a3ccda205a3cff6d54ab5c848ee076d04fa1410acd"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,11 +139,9 @@ _DECISIONS = (
         "step_count_preference",
         "Annotate one default StepCount alternative when evidence permits",
         DecisionStatus.ACCEPTED,
-        "Prefer a unique estimated_steps row; otherwise use a unique merge_step_deltas row or sole alternative as "
-        "reviewable fallback; select none for ambiguous groups.",
+        "Prefer a unique estimated_steps row; otherwise use a unique merge_step_deltas row or sole alternative as reviewable fallback; select none for ambiguous groups.",
         ("always choose the largest value", "always choose merge_step_deltas", "select multiple defaults"),
-        "Official guidance supports estimated_steps for Fit-app daily totals, and CWP2 0.1.1 found a unique preferred "
-        "or fallback row for every observed version-2 group.",
+        "Official guidance supports estimated_steps for Fit-app daily totals, and CWP2 0.1.1 found a unique preferred or fallback row for every observed version-2 group.",
         ("StepCount",),
         ("google_fit_daily_step_total", "project_phase0_stepcount_alternatives", "project_cwp2_full_native_calibration"),
         (
@@ -175,8 +173,7 @@ _DECISIONS = (
         DecisionStatus.ACCEPTED,
         "Use tiny, small, material and extreme magnitude buckets; never clip values to zero.",
         ("replace with zero", "drop all negative rows", "treat every negative value identically"),
-        "CWP2 0.1.1 reproduced four mutually exclusive, exhaustive magnitude classes over the accepted full native "
-        "root and approved their status and inclusion effects for execution.",
+        "CWP2 0.1.1 reproduced four mutually exclusive, exhaustive magnitude classes over the accepted full native root and approved their status and inclusion effects for execution.",
         ("Calories",),
         ("project_phase0_negative_calories", "project_cwp2_full_native_calibration"),
         (
@@ -203,8 +200,8 @@ _DECISIONS = (
         "provenance_dimensions",
         "Separate acquisition, derivation and tracking dimensions",
         DecisionStatus.ACCEPTED,
-        "Append acquisition_method, derivation_method and tracking_status independently where applicable.",
-        ("one generic provenance label", "infer physical device from package alone"),
+        "Materialize acquisition_method as the broadly useful provenance interpretation; expose derivation_method and tracking_status as deterministic virtual projections from native evidence.",
+        ("one generic provenance label", "infer physical device from package alone", "repeat every deterministic provenance projection in each CSV row"),
         "The native source exposes application, stream, origin, device and tracking evidence that answer different questions.",
         ("*",),
         ("project_phase0_provenance",),
@@ -289,6 +286,67 @@ _DECISIONS = (
         ("unit_contract_matrix",),
     ),
     CalibrationDecision(
+        "curated_schema_v2_normalization",
+        "Normalize curated facts to the correct storage level",
+        DecisionStatus.ACCEPTED,
+        "Materialize row/group decisions; move deterministic feature/version and exact-recoding facts to a versioned root curation contract and virtual projections.",
+        ("repeat every policy fact on every row", "edit the accepted schema-v1 root in place", "remove the native prefix"),
+        "The accepted CWP6 product is scientifically correct, but the schema audit found several columns with zero independent row-level information.",
+        ("*",),
+        ("project_cwp6_curated_schema_audit", "project_curation_invariant"),
+        (),
+        ("schema_v2_sample_acceptance", "schema_v2_full_cohort_acceptance"),
+        ("The accepted schema-v1 curated root remains frozen as a historical release.",),
+    ),
+    CalibrationDecision(
+        "acquisition_method_materialized",
+        "Retain acquisition_method as the broadly materialized provenance interpretation",
+        DecisionStatus.ACCEPTED,
+        "Append acquisition_method to every curated feature row; retain raw provenance in the native prefix and keep other deterministic provenance dimensions virtual.",
+        ("remove all provenance interpretation from CSVs", "materialize every provenance dimension"),
+        "Acquisition interpretation is broadly useful and worth the modest repeated storage cost; derivation and tracking are exact deterministic projections.",
+        ("*",),
+        ("project_phase0_provenance", "project_cwp6_curated_schema_audit"),
+        ("activity_provenance_classification", "activity_provenance_unknown", "anthropometric_added_by_context"),
+        ("schema_v2_sample_acceptance",),
+    ),
+    CalibrationDecision(
+        "virtual_policy_projections",
+        "Expose canonical, unit, derivation and tracking facts virtually",
+        DecisionStatus.ACCEPTED,
+        "Do not repeat canonical_value, canonical_unit, curation_unit_status, unit_evidence, derivation_method or tracking_status in CSV rows when they are exact policy/native projections.",
+        ("drop the concepts", "repeat the values physically", "infer them without a versioned contract"),
+        "The schema-v2 contract preserves the concepts and reconstruction algorithms while removing row-level duplication.",
+        ("*",),
+        ("project_cwp6_curated_schema_audit", "project_curation_invariant"),
+        ("unit_mapping_pending", "unit_payload_explicit", "activity_tracking_status"),
+        ("virtual_projection_equivalence",),
+    ),
+    CalibrationDecision(
+        "row_flags_findings_only",
+        "Restrict curation_flags to row or group findings",
+        DecisionStatus.ACCEPTED,
+        "Materialize only observation-specific or group-specific findings; represent activity quantity uncertainty and pending exporter mappings as policy metadata.",
+        ("repeat policy documentation as a flag on every applicable row", "discard row-level anomaly flags"),
+        "A curation flag should explain what is unusual about a row, not restate a feature-level policy fact.",
+        ("*",),
+        ("project_cwp6_curated_schema_audit",),
+        ("activity_quantity_unresolved", "unit_mapping_pending"),
+        ("schema_v2_flag_scope_audit",),
+    ),
+    CalibrationDecision(
+        "sparse_default_encoding",
+        "Use blank or absent defaults for pass and included rows",
+        DecisionStatus.ACCEPTED,
+        "When a sparse decision column is present, blank curation_status means pass and blank include_by_default means included; absent columns have the same defaults.",
+        ("write pass and 1 on every row", "make defaults implicit without documenting them"),
+        "The root curation contract makes the defaults explicit while avoiding repeated values.",
+        ("*",),
+        ("project_cwp6_curated_schema_audit", "project_curation_invariant"),
+        (),
+        ("schema_v2_default_semantics_audit",),
+    ),
+    CalibrationDecision(
         "unknown_feature_fallback",
         "Use a safe fallback for unknown future native features",
         DecisionStatus.ACCEPTED,
@@ -301,7 +359,6 @@ _DECISIONS = (
         ("policy_coverage",),
     ),
 )
-
 
 DECISIONS: Mapping[str, CalibrationDecision] = MappingProxyType(
     {item.decision_id: item for item in sorted(_DECISIONS, key=lambda item: item.decision_id)}

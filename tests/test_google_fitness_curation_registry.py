@@ -74,9 +74,9 @@ from wearable_project.processing.google_fitness.registry import NATIVE_FEATURE_S
 def test_cwp1_catalog_counts_and_fingerprints_are_frozen() -> None:
     assert len(CURATION_POLICIES) == 67
     assert len(FEATURE_GUIDES) == 67
-    assert len(EVIDENCE) == 22
+    assert len(EVIDENCE) == 24
     assert len(RULES) == 45
-    assert len(DECISIONS) == 19
+    assert len(DECISIONS) == 24
 
     assert registry_fingerprint() == EXPECTED_REGISTRY_FINGERPRINT
     assert evidence_fingerprint() == EXPECTED_EVIDENCE_FINGERPRINT
@@ -116,9 +116,11 @@ def test_all_policies_enforce_non_destructive_output() -> None:
         assert policy.output.preserve_native_prefix, feature
         assert policy.output.preserve_row_order, feature
         assert policy.output.preserve_row_count, feature
-        assert not set(policy.derived_columns) & set(policy.native_schema.native_columns)
+        assert not set(policy.materialized_columns) & set(policy.native_schema.native_columns)
+        assert not set(policy.virtual_columns) & set(policy.native_schema.native_columns)
+        assert set(policy.materialized_columns).isdisjoint(policy.virtual_columns)
         assert set(policy.output.fixed_columns).isdisjoint(policy.output.sparse_columns)
-        assert set(policy.output.fixed_columns) | set(policy.output.sparse_columns) == set(policy.derived_columns)
+        assert set(policy.output.fixed_columns) | set(policy.output.sparse_columns) == set(policy.materialized_columns)
 
 
 def test_policy_family_counts_are_exact() -> None:
@@ -133,8 +135,16 @@ def test_activity_policies_do_not_force_scalar_canonical_value() -> None:
     for feature, policy in CURATION_POLICIES.items():
         if policy.event_kind not in {EventKind.ACTIVITY_INTERVAL, EventKind.STATE_INTERVAL}:
             continue
-        assert "canonical_value" not in policy.derived_columns
-        assert "tracking_status" in policy.derived_columns
+        assert "canonical_value" not in policy.materialized_columns
+        assert "tracking_status" not in policy.materialized_columns
+        assert "tracking_status" in policy.virtual_columns
+        assert "derivation_method" in policy.virtual_columns
+        assert policy.materialized_columns == (
+            "acquisition_method",
+            "curation_status",
+            "curation_flags",
+            "include_by_default",
+        )
         for measurement in policy.measurements:
             assert measurement.column in {"calories", "distance", "quantity"}
             assert not measurement.canonical_projection_enabled
@@ -209,16 +219,19 @@ def test_step_count_group_policy_preserves_all_rows_and_separates_inclusion() ->
     assert policy.grouping.strategy is GroupPreferenceStrategy.STEP_COUNT_V2_SOURCE_PREFERENCE
     assert policy.grouping.role_column == "step_count_role"
     assert policy.curation.default_inclusion is InclusionPolicy.GROUP_PREFERENCE
-    assert "step_count_role" in policy.derived_columns
-    assert "include_by_default" in policy.derived_columns
-    assert "curation_status" in policy.derived_columns
+    assert "step_count_role" in policy.materialized_columns
+    assert "canonical_value" in policy.virtual_columns
+    assert "canonical_unit" in policy.virtual_columns
+    assert "derivation_method" in policy.virtual_columns
+    assert "include_by_default" in policy.materialized_columns
+    assert "curation_status" in policy.materialized_columns
     assert policy.temporal.canonical_date_derivation_allowed is False
     assert policy.temporal.source_day_label_treatment is SourceDayLabelTreatment.NOT_PRESENT
 
 
-def test_step_count_preference_is_provisional_not_destructive() -> None:
+def test_step_count_preference_is_accepted_and_non_destructive() -> None:
     decision = DECISIONS["step_count_preference"]
-    assert decision.status is DecisionStatus.PROVISIONAL
+    assert decision.status is DecisionStatus.ACCEPTED
     assert "stepcount_preference_audit" in decision.required_audits
     assert "drop" not in decision.selected_option.casefold()
     policy = get_policy("StepCount")
@@ -235,7 +248,7 @@ def test_calories_negative_buckets_are_explicit_and_non_overlapping() -> None:
     assert small == {"absolute_max": 1.0, "absolute_min_exclusive": 0.001}
     assert material == {"absolute_max": 100.0, "absolute_min_exclusive": 1.0}
     assert extreme == {"absolute_min_exclusive": 100.0}
-    assert DECISIONS["negative_calories_buckets"].status is DecisionStatus.PROVISIONAL
+    assert DECISIONS["negative_calories_buckets"].status is DecisionStatus.ACCEPTED
 
 
 def test_weight_policy_preserves_nonpoint_intervals() -> None:
@@ -345,6 +358,8 @@ def test_decision_scaffold_separates_accepted_and_provisional_work() -> None:
     assert {
         "step_count_preference",
         "negative_calories_buckets",
+    } <= accepted
+    assert {
         "calories_unit_mapping",
         "distance_unit_mapping",
         "weight_unit_mapping",
@@ -404,12 +419,17 @@ def test_google_curation_modules_do_not_import_apple_scientific_policy() -> None
         assert "from ..apple_healthkit" not in text, path.name
 
 
-def test_cwp1_does_not_register_google_curation_cli_yet() -> None:
+def test_cwp4_registers_google_curation_cli_but_not_combined_run() -> None:
     from wearable_project.cli import build_parser
 
     parser = build_parser()
+    args = parser.parse_args([
+        "curate", "google-fitness", "--input-native", "x", "--output", "y"
+    ])
+    assert args.source == "google-fitness"
+    assert args._handler.__module__ == "wearable_project.curation.cli"
     with pytest.raises(SystemExit):
-        parser.parse_args(["curate", "google-fitness", "--input-native", "x", "--output", "y"])
+        parser.parse_args(["run", "google-fitness"])
 
 
 def test_catalog_payloads_and_lookup_helpers_are_complete() -> None:

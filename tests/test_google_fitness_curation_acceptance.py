@@ -319,8 +319,8 @@ def test_checked_in_reference_sample_manifest_matches_current_contract() -> None
     fixture = Path(__file__).parent / "fixtures" / "google_fitness_cwp5_reference_sample_manifest.json"
     payload = json.loads(fixture.read_text(encoding="utf-8"))
     expected = payload["expected"]
-    assert payload["reference_schema_version"] == "google-fitness-curation-reference-sample-0.1.0"
-    assert payload["reference_id"] == "nonapple-exported-at-2024-12-three-participant-cwp5"
+    assert payload["reference_schema_version"] == "google-fitness-curation-reference-sample-v2-0.2.0"
+    assert payload["reference_id"] == "nonapple-exported-at-2024-12-three-participant-schema-v2"
     assert expected["source_key"] == "google_fitness"
     assert expected["participants"] == ["1814073142", "3919706846", "8790614327"]
     assert expected["snapshot"]["participants"] == 3
@@ -329,5 +329,7 @@ def test_checked_in_reference_sample_manifest_matches_current_contract() -> None
     assert expected["snapshot"]["curated_rows"] == 145_493
     assert len(expected["native_file_sha256"]) == 37
     assert len(expected["curated_file_sha256"]) == 37
-    assert expected["fingerprints"]["engine"] == "google-fitness-curation-engine-cwp3-0.1.0"
-    assert expected["fingerprints"]["pipeline"] == "google-fitness-curation-pipeline-cwp4-0.1.0"
+    assert expected["fingerprints"]["curated_schema"] == "google-fitness-curated-schema-v2-0.1.0"
+    assert expected["fingerprints"]["contract"] == "395b736e2885e7be6ef23651a11bea83e61d8026b0f1f6c4ffc9c34d86474c8a"
+    assert expected["fingerprints"]["engine"] == "google-fitness-curation-engine-schema-v2-0.2.0"
+    assert expected["fingerprints"]["pipeline"] == "google-fitness-curation-pipeline-schema-v2-0.2.0"

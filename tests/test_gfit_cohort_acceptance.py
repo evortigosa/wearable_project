@@ -325,9 +325,12 @@ def test_checked_in_full_cohort_expected_snapshot_is_snapshot_specific() -> None
     fixture = Path(__file__).parent / "fixtures" / "google_fitness_cwp6_expected_native_snapshot_2024_12.json"
     payload = json.loads(fixture.read_text(encoding="utf-8"))
     assert payload["expected_snapshot_schema_version"] == (
-        "google-fitness-curation-expected-native-snapshot-0.1.0"
+        "google-fitness-curation-expected-native-snapshot-v2-0.2.0"
     )
-    assert payload["reference_id"] == "exported-at-2024-12-google-fitness-native-cwp6"
+    assert payload["reference_id"] == "exported-at-2024-12-google-fitness-native-curation-schema-v2"
+    fingerprints = payload["expected"]["fingerprints"]
+    assert fingerprints["curated_schema"] == "google-fitness-curated-schema-v2-0.1.0"
+    assert fingerprints["contract"] == "395b736e2885e7be6ef23651a11bea83e61d8026b0f1f6c4ffc9c34d86474c8a"
     expected = payload["expected"]["native_snapshot"]
     assert expected["participant_records"] == 9_798
     assert expected["complete_participants"] == 5_983
