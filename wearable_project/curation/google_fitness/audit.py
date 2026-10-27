@@ -1,9 +1,9 @@
 """
 Wearable Data Processing and Modeling project
-Read-only CWP2 calibration audit for an accepted Google Fitness native root. The audit consumes the immutable
-CWP1 policy contracts and the accepted native state database. It never creates or modifies a curated root.
-Participant feature CSVs are read in spawned worker processes; compact aggregates are merged deterministically
-by participant ID and rendered into calibration reports that can be reviewed before executable curation is frozen.
+Read-only calibration audit for an accepted Google Fitness native root. The audit consumes the versioned curation
+policy contracts and the accepted native state database. It never creates or modifies a curated root. Participant
+feature CSVs are read in spawned worker processes; compact aggregates are merged deterministically by participant
+ID and rendered into calibration reports that can be reviewed before executable curation is frozen.
 """
 
 
@@ -28,17 +28,45 @@ from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
 from tqdm import tqdm
 from wearable_project.curation.google_fitness.audit_models import (
-    AUDIT_VERSION, REPORT_SCHEMA_VERSION, NumericSketch, PairSketch, ParticipantAuditResult, flatten_summary,
+    AUDIT_VERSION,
+    REPORT_SCHEMA_VERSION,
+    NumericSketch,
+    PairSketch,
+    ParticipantAuditResult,
+    flatten_summary,
 )
-from wearable_project.curation.google_fitness.decisions import DECISIONS, decisions_fingerprint, validate_decisions
-from wearable_project.curation.google_fitness.evidence import evidence_fingerprint, validate_evidence
-from wearable_project.curation.google_fitness.guidance import guidance_fingerprint, validate_guidance
-from wearable_project.curation.google_fitness.models import EventKind
+from wearable_project.curation.google_fitness.decisions import (
+    DECISIONS,
+    decisions_fingerprint,
+    validate_decisions,
+)
+from wearable_project.curation.google_fitness.evidence import (
+    evidence_fingerprint,
+    validate_evidence,
+)
+from wearable_project.curation.google_fitness.guidance import (
+    guidance_fingerprint,
+    validate_guidance,
+)
+from wearable_project.curation.google_fitness.models import (
+    EventKind,
+)
 from wearable_project.curation.google_fitness.registry import (
-    CURATION_POLICIES, CURATION_REGISTRY_VERSION, get_policy, registry_fingerprint, validate_registry,
+    CURATION_POLICIES,
+    CURATION_REGISTRY_VERSION,
+    get_policy,
+    registry_fingerprint,
+    validate_registry,
 )
-from wearable_project.curation.google_fitness.rules import RULES, rules_fingerprint, validate_rules
-from wearable_project.processing.google_fitness.registry import REGISTRY_VERSION as NATIVE_REGISTRY_VERSION, SOURCE_KEY
+from wearable_project.curation.google_fitness.rules import (
+    RULES,
+    rules_fingerprint,
+    validate_rules,
+)
+from wearable_project.processing.google_fitness.registry import (
+    REGISTRY_VERSION as NATIVE_REGISTRY_VERSION,
+    SOURCE_KEY,
+)
 from wearable_project.processing.google_fitness.writer import STATE_FILENAME
 
 
@@ -66,7 +94,7 @@ REQUIRED_REPORTS = (
     "sleep_overlap_audit.csv",
     "quality_rule_trigger_audit.csv",
     "calibration_decisions.json",
-    "cwp2_acceptance.json",
+    "audit_acceptance.json",
     "audit_summary.json",
     "REPORT.md",
 )
@@ -168,7 +196,8 @@ _WEEKDAY_LABELS: dict[str, int] = {
 
 def _json_dump(path: Path, payload: Any) -> None:
     path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -427,9 +456,14 @@ def _native_state_connection(native_root: Path) -> sqlite3.Connection:
         raise FileNotFoundError(f"Google Fitness native state not found: {state}")
     wal = Path(str(state) + "-wal")
     if wal.exists() and wal.stat().st_size:
-        raise ValueError(f"native state has an active WAL file: {wal}; finish/checkpoint processing before auditing")
-    # immutable=1 prevents a read-only audit from creating SQLite -wal/-shm sidecars inside the protected native root.
-    connection = sqlite3.connect(f"file:{state.as_posix()}?mode=ro&immutable=1", uri=True)
+        raise ValueError(
+            f"native state has an active WAL file: {wal}; finish/checkpoint processing before auditing"
+        )
+    # immutable=1 prevents a read-only audit from creating SQLite -wal/-shm
+    # sidecars inside the protected native root.
+    connection = sqlite3.connect(
+        f"file:{state.as_posix()}?mode=ro&immutable=1", uri=True
+    )
     connection.row_factory = sqlite3.Row
     row = connection.execute("SELECT value FROM metadata WHERE key='source_key'").fetchone()
     if row is None or row["value"] != SOURCE_KEY:
@@ -444,7 +478,8 @@ def _load_native_snapshot(native_root: Path) -> tuple[NativeSnapshot, tuple[Part
     connection = _native_state_connection(native_root)
     try:
         metadata = {
-            row["key"]: row["value"] for row in connection.execute("SELECT key,value FROM metadata ORDER BY key")
+            row["key"]: row["value"]
+            for row in connection.execute("SELECT key,value FROM metadata ORDER BY key")
         }
         status_counts = {
             row["status"]: int(row["count"])
@@ -577,11 +612,15 @@ def _validate_file(path: Path, record: NativeFileRecord, verify_hash: bool) -> N
         raise FileNotFoundError(path)
     stat = path.stat()
     if stat.st_size != record.size_bytes:
-        raise ValueError(f"size mismatch for {path}: state={record.size_bytes}, disk={stat.st_size}")
+        raise ValueError(
+            f"size mismatch for {path}: state={record.size_bytes}, disk={stat.st_size}"
+        )
     if verify_hash:
         observed = _sha256_file(path)
         if observed != record.sha256:
-            raise ValueError(f"SHA-256 mismatch for {path}: state={record.sha256}, disk={observed}")
+            raise ValueError(
+                f"SHA-256 mismatch for {path}: state={record.sha256}, disk={observed}"
+            )
 
 
 def _record_provenance(
@@ -680,7 +719,8 @@ def _audit_stepcount(
         if start and end:
             seconds = (end - start).total_seconds()
             result.sketch(result.step_temporal_duration, aggregation).add(
-                seconds, key=f"{participant_id}|step|{row.get('outer_id')}|{row.get('payload_index')}|duration",
+                seconds,
+                key=f"{participant_id}|step|{row.get('outer_id')}|{row.get('payload_index')}|duration",
             )
             result.step_temporal_counts[(aggregation, "raw_interval_valid" if seconds >= 0 else "raw_interval_negative")] += 1
         else:
@@ -1355,7 +1395,8 @@ def _activity_quantity_rows(aggregate: ParticipantAuditResult) -> list[dict[str,
 def _activity_quantity_stepcount_rows(aggregate: ParticipantAuditResult) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     activity_features = [
-        feature for feature, policy in CURATION_POLICIES.items() if "quantity" in policy.measurement_columns
+        feature for feature, policy in CURATION_POLICIES.items()
+        if "quantity" in policy.measurement_columns
     ]
     for feature in activity_features:
         for basis in ("outer_date", "summary_date"):
@@ -1815,7 +1856,7 @@ def _decision_payload(
             rationale = "The audit covered a participant subset; provisional decisions require a complete native-root run."
         elif decision.status.value == "accepted":
             recommendation = "retain_accepted"
-            rationale = "Required audit evidence is present; CWP2 does not reopen an accepted non-destructive decision."
+            rationale = "Required audit evidence is present; The audit does not reopen an accepted non-destructive decision."
         elif decision_id in {"calories_unit_mapping", "distance_unit_mapping", "weight_unit_mapping", "height_unit_mapping"}:
             recommendation = "remain_provisional"
             rationale = "Native cohort concordance cannot by itself prove the exporter query-to-Google-type mapping."
@@ -1943,7 +1984,7 @@ def _acceptance_payload(
         ("row_count", aggregate.rows_read == expected_rows, f"{aggregate.rows_read}/{expected_rows}"),
         ("full_native_coverage", full_native_coverage, "complete native root" if full_native_coverage else "participant subset"),
         ("policy_coverage", set(item["feature"] for item in snapshot.feature_totals) <= set(CURATION_POLICIES), "all observed features registered"),
-        ("required_reports", all((output_dir / name).is_file() for name in REQUIRED_REPORTS if name not in {"cwp2_acceptance.json", "REPORT.md"}), "required report files present"),
+        ("required_reports", all((output_dir / name).is_file() for name in REQUIRED_REPORTS if name not in {"audit_acceptance.json", "REPORT.md"}), "required report files present"),
     ]
     records = [
         {"check": name, "passed": bool(passed), "detail": detail}
@@ -1972,7 +2013,7 @@ def _render_report_md(
 ) -> str:
     return "\n".join(
         [
-            "# Google Fitness CWP2 native calibration audit",
+            "# Google Fitness native curation audit",
             "",
             f"- Audit version: `{AUDIT_VERSION}`",
             f"- Native snapshot: `{snapshot.snapshot_id}`",
@@ -1991,12 +2032,12 @@ def _render_report_md(
             "",
             "## Calibration reports",
             "",
-            *[f"- `{name}`" for name in REQUIRED_REPORTS if name not in {"REPORT.md", "cwp2_acceptance.json"}],
+            *[f"- `{name}`" for name in REQUIRED_REPORTS if name not in {"REPORT.md", "audit_acceptance.json"}],
             "",
             "## Interpretation boundary",
             "",
             "The reports measure the accepted native product and support human review of provisional policies. ",
-            "They do not prove exporter mappings that are absent from the payload, and they do not modify CWP1 decisions automatically.",
+            "They do not prove exporter mappings that are absent from the payload, and they do not modify policy decisions automatically.",
             "",
         ]
     )
@@ -2080,7 +2121,7 @@ def _write_reports(
         expected_rows=expected_rows,
         full_native_coverage=full_native_coverage,
     )
-    _json_dump(stage / "cwp2_acceptance.json", acceptance)
+    _json_dump(stage / "audit_acceptance.json", acceptance)
     (stage / "REPORT.md").write_text(
         _render_report_md(snapshot, aggregate, failures, acceptance), encoding="utf-8"
     )
@@ -2091,7 +2132,9 @@ def _safe_output(native_root: Path, output: Path) -> None:
     native_root = native_root.resolve()
     output = output.resolve()
     if output == native_root or native_root in output.parents or output in native_root.parents:
-        raise ValueError(f"audit output {output} must be separate from native root {native_root}")
+        raise ValueError(
+            f"audit output {output} must be separate from native root {native_root}"
+        )
 
 
 def run_audit(
@@ -2171,7 +2214,9 @@ def _participants_file(path: Path | None) -> set[str] | None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the read-only Google Fitness CWP2 native calibration audit.")
+    parser = argparse.ArgumentParser(
+        description="Run the read-only Google Fitness native curation audit."
+    )
     parser.add_argument("--input-native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=4)
@@ -2205,7 +2250,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         acceptance = summary["acceptance"]
         print(
-            f"Google Fitness CWP2 audit {acceptance['status'].upper()}: "
+            f"Google Fitness curation audit {acceptance['status'].upper()}: "
             f"{summary['audited_rows']:,} rows in {summary['audited_files']:,} files; "
             f"reports written to {summary['output']}"
         )

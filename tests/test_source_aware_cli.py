@@ -2,6 +2,7 @@
 Wearable Data Processing and Modeling project
 """
 
+
 from __future__ import annotations
 import json
 import subprocess
@@ -67,9 +68,6 @@ def test_curation_command_dispatches_to_curation_stage() -> None:
         "explain-rule",
         "explain-unit-policy",
         "curation-audit",
-        "curation-acceptance",
-        "curation-cohort-acceptance",
-        "curation-schema-migration-audit",
         "curation-environment",
         "policy-decisions",
     ],
@@ -89,34 +87,22 @@ def test_google_fitness_is_registered_for_processing_and_curation_but_not_combin
     ])
     assert curate.source == GOOGLE
     assert curate._handler.__module__ == "wearable_project.curation.cli"
-    acceptance = build_parser().parse_args([
-        "curation-acceptance", GOOGLE,
-        "--input-native", "native",
-        "--input-curated", "curated",
-        "--output", "acceptance",
-    ])
-    assert acceptance.source == GOOGLE
-    assert acceptance._handler.__module__ == "wearable_project.curation.cli"
-    cohort_acceptance = build_parser().parse_args([
-        "curation-cohort-acceptance", GOOGLE,
-        "--input-native", "native",
-        "--input-curated", "curated",
-        "--output", "cohort-acceptance",
-        "--expected-snapshot", "expected.json",
-    ])
-    assert cohort_acceptance.source == GOOGLE
-    assert cohort_acceptance._handler.__module__ == "wearable_project.curation.cli"
-    migration = build_parser().parse_args([
-        "curation-schema-migration-audit", GOOGLE,
-        "--input-native", "native",
-        "--input-curated-v1", "curated-v1",
-        "--input-curated-v2", "curated-v2",
-        "--output", "migration-audit",
-    ])
-    assert migration.source == GOOGLE
-    assert migration._handler.__module__ == "wearable_project.curation.cli"
     with pytest.raises(SystemExit) as caught:
         build_parser().parse_args(["run", GOOGLE])
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "removed_command",
+    [
+        "curation-acceptance",
+        "curation-cohort-acceptance",
+        "curation-schema-migration-audit",
+    ],
+)
+def test_release_only_curation_commands_are_not_registered(removed_command: str) -> None:
+    with pytest.raises(SystemExit) as caught:
+        build_parser().parse_args([removed_command, GOOGLE])
     assert caught.value.code == 2
 
 

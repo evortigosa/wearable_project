@@ -1,9 +1,9 @@
 """
 Wearable Data Processing and Modeling project
-Executable CWP3 row and group strategies for Google Fitness curation. The strategies annotate native rows; they
-never delete, reorder, clip, repair, or resample an observation. Rules are executed only when registered for the
-feature policy. Policy-wide context is represented through derived columns rather than repeated flags where a
-flag would duplicate the same fact.
+Executable row and group strategies for Google Fitness curation. The strategies annotate native rows; they never
+delete, reorder, clip, repair, or resample an observation. Rules are executed only when registered for the feature
+policy. Policy-wide context is represented through derived columns rather than repeated flags where a flag would
+duplicate the same fact.
 """
 
 
@@ -314,14 +314,10 @@ def _step_count_rules(annotation: RowAnnotation, row: Mapping[str, str], active:
 
 
 def annotate_row(
-    feature: str,
-    row: Mapping[str, str],
-    policy: FeaturePolicy,
-    *,
-    step_context: StepCountRowContext | None = None,
+    feature: str, row: Mapping[str, str], policy: FeaturePolicy, *, step_context: StepCountRowContext | None = None,
     sleep_context: SleepRowContext | None = None,
 ) -> RowAnnotation:
-    """Create one non-destructive row annotation from the reviewed CWP3 policy."""
+    """Create one non-destructive row annotation from the reviewed policy."""
 
     annotation = RowAnnotation(
         status=policy.curation.default_status,

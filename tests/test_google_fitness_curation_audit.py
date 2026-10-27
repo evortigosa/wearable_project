@@ -9,7 +9,12 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import pytest
+from wearable_project.curation.google_fitness import audit as audit_module
 from wearable_project.curation.google_fitness.audit import run_audit
+from wearable_project.curation.google_fitness.audit_models import (
+    AUDIT_VERSION, REPORT_SCHEMA_VERSION, ParticipantAuditResult,
+)
+from wearable_project.curation.google_fitness.registry import get_policy
 from wearable_project.curation.google_fitness.evidence import EVIDENCE
 from wearable_project.processing.google_fitness.writer import StateDatabase, write_feature_csv
 
@@ -196,11 +201,13 @@ def _rows() -> dict[str, dict[str, list[dict[str, object]]]]:
     }
 
 
-def _build_native_root(root: Path) -> Path:
+def _build_native_root(
+    root: Path, rows_by_participant: dict[str, dict[str, list[dict[str, object]]]] | None = None,
+) -> Path:
     root.mkdir()
     state = StateDatabase(root / ".wearable_state.sqlite")
     try:
-        for participant, by_feature in _rows().items():
+        for participant, by_feature in (rows_by_participant or _rows()).items():
             folder = root / participant
             folder.mkdir()
             outputs = []
@@ -311,6 +318,67 @@ def test_stepcount_preference_and_rule_reports_use_qualified_sources(tmp_path: P
     assert triggered[("step_count_parallel_nonpreferred", "StepCount", "2.0")] == 1
     assert triggered[("calories_negative_tiny", "Calories", "1.0")] == 1
     assert triggered[("weight_nonpoint_interval", "Weight", "2.0")] == 1
+    assert ("native_interval_valid", "StepCount", "1.0") not in triggered
+
+    for row in rules:
+        if int(row["trigger_count"]) <= 0:
+            continue
+        assert row["rule_id"] in get_policy(row["feature"]).curation.rule_ids
+
+    acceptance = json.loads((output / "audit_acceptance.json").read_text())
+    alignment = next(
+        item for item in acceptance["checks"]
+        if item["check"] == "quality_rule_policy_alignment"
+    )
+    assert alignment["passed"] is True
+    assert acceptance["quality_rule_policy_alignment_issues"] == []
+    assert acceptance["check_count"] == 14
+    assert AUDIT_VERSION == "google-fitness-curation-audit-1.0.0"
+    assert REPORT_SCHEMA_VERSION == "google-fitness-curation-audit-report-1.0.0"
+
+
+def test_invalid_interval_feature_still_triggers_registered_rule(tmp_path: Path) -> None:
+    rows = _rows()
+    rows["P1"]["Walking"][0]["end_date"] = "2024-01-01T09:59:00.000000Z"
+    native = _build_native_root(tmp_path / "native", rows)
+    output = tmp_path / "audit"
+    run_audit(native, output, workers=1, progress=False)
+    triggered = {
+        (row["rule_id"], row["feature"], row["collecting_method_version"]): int(row["trigger_count"])
+        for row in _read_csv(output / "quality_rule_trigger_audit.csv")
+    }
+    assert triggered[("native_interval_valid", "Walking", "1.0")] == 1
+    assert triggered[("activity_interval_valid", "Walking", "1.0")] == 1
+
+
+def test_quality_rule_alignment_helper_rejects_unregistered_rule() -> None:
+    aggregate = ParticipantAuditResult("P1")
+    aggregate.quality_rule_counts[("native_interval_valid", "StepCount", "1.0")] = 1
+    assert audit_module._quality_rule_policy_alignment_issues(aggregate) == (
+        "StepCount|1.0: observed 1 trigger(s) for unregistered rule 'native_interval_valid'",
+    )
+
+
+def test_acceptance_fails_when_quality_rule_policy_alignment_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    native = _build_native_root(tmp_path / "native")
+    output = tmp_path / "audit"
+    monkeypatch.setattr(
+        audit_module,
+        "_quality_rule_policy_alignment_issues",
+        lambda aggregate: ("forced alignment failure",),
+    )
+    result = run_audit(native, output, workers=1, progress=False)
+    assert result["acceptance"]["status"] == "fail"
+    alignment = next(
+        item for item in result["acceptance"]["checks"]
+        if item["check"] == "quality_rule_policy_alignment"
+    )
+    assert alignment["passed"] is False
+    assert result["acceptance"]["quality_rule_policy_alignment_issues"] == [
+        "forced alignment failure"
+    ]
 
 
 def test_reports_are_deterministic_across_worker_counts(tmp_path: Path) -> None:

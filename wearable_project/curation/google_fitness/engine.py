@@ -1,9 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Non-destructive Google Fitness feature-file curation engine (CWP3). The engine consumes one accepted native
-feature CSV and writes one curated CSV. Native columns remain an unchanged prefix, native row order and row
-count are preserved, and only reviewed policy-derived columns are appended. No row is deleted, clipped, repaired,
-resampled, or imputed.
+Non-destructive Google Fitness feature-file curation engine. The engine consumes one accepted native feature CSV
+and writes one curated CSV. Native columns remain an unchanged prefix, native row order and row count are preserved,
+and only reviewed policy-derived columns are appended. No row is deleted, clipped, repaired, resampled, or imputed.
 """
 
 
@@ -146,15 +145,15 @@ _REQUIRED_PROVISIONAL_DECISIONS: tuple[str, ...] = (
 
 
 def validate_engine_contract() -> tuple[str, ...]:
-    """Validate the exact reviewed decision boundary executed by CWP3."""
+    """Validate the exact reviewed decision boundary executed by the engine."""
 
     issues = list(validate_engine_rule_coverage())
     for decision_id in _REQUIRED_ACCEPTED_DECISIONS:
         if get_decision(decision_id).status is not DecisionStatus.ACCEPTED:
-            issues.append(f"CWP3 executable decision is not accepted: {decision_id}")
+            issues.append(f"Executable curation decision is not accepted: {decision_id}")
     for decision_id in _REQUIRED_PROVISIONAL_DECISIONS:
         if get_decision(decision_id).status is not DecisionStatus.PROVISIONAL:
-            issues.append(f"CWP3 abstention boundary changed from provisional: {decision_id}")
+            issues.append(f"Curation abstention boundary changed from provisional: {decision_id}")
     return tuple(sorted(set(issues)))
 
 
@@ -441,4 +440,4 @@ def curate_feature_file(native_path: Path, destination: Path, feature: str | Non
 
 _ENGINE_CONTRACT_ISSUES = validate_engine_contract()
 if _ENGINE_CONTRACT_ISSUES:
-    raise RuntimeError("Invalid Google Fitness CWP3 engine contract: " + "; ".join(_ENGINE_CONTRACT_ISSUES))
+    raise RuntimeError("Invalid Google Fitness curation engine contract: " + "; ".join(_ENGINE_CONTRACT_ISSUES))

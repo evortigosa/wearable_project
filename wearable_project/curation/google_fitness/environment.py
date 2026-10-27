@@ -13,8 +13,6 @@ import subprocess
 from typing import Any
 import wearable_project
 from wearable_project import __release_label__, __version__
-from .acceptance import ACCEPTANCE_REPORT_SCHEMA_VERSION, ACCEPTANCE_VERSION
-from .cohort_acceptance import COHORT_ACCEPTANCE_VERSION, COHORT_REPORT_SCHEMA_VERSION
 from .audit_models import AUDIT_VERSION, REPORT_SCHEMA_VERSION
 from .contract import CURATED_SCHEMA_VERSION, CONTRACT_SCHEMA_VERSION, contract_fingerprint
 from .decisions import decisions_fingerprint
@@ -22,7 +20,6 @@ from .engine import ENGINE_VERSION
 from .evidence import evidence_fingerprint
 from .guidance import guidance_fingerprint
 from .pipeline import PIPELINE_VERSION
-from .schema_migration import SCHEMA_MIGRATION_AUDIT_VERSION, SCHEMA_MIGRATION_REPORT_VERSION
 from .registry import CURATION_REGISTRY_VERSION, POLICY_CONTRACT_VERSION, registry_fingerprint
 from .rules import rules_fingerprint
 from .state import CURATION_STATE_SCHEMA_VERSION
@@ -44,10 +41,8 @@ except ImportError:  # Allows the centralized generator to add the first Google 
 
 _TRACKED_MODULES = (
     "__init__.py",
-    "acceptance.py",
     "audit.py",
     "audit_models.py",
-    "cohort_acceptance.py",
     "context.py",
     "contract.py",
     "decisions.py",
@@ -61,7 +56,6 @@ _TRACKED_MODULES = (
     "provenance.py",
     "registry.py",
     "rules.py",
-    "schema_migration.py",
     "state.py",
     "strategies.py",
     "unit_resolution.py",
@@ -76,12 +70,6 @@ class CurationEnvironmentManifest:
     imported_package_path: str
     distribution_package_path: str | None
     import_source_kind: str
-    acceptance_version: str
-    acceptance_report_schema_version: str
-    cohort_acceptance_version: str
-    cohort_report_schema_version: str
-    schema_migration_audit_version: str
-    schema_migration_report_version: str
     audit_version: str
     audit_report_schema_version: str
     curation_registry_version: str
@@ -198,12 +186,6 @@ def environment_manifest() -> CurationEnvironmentManifest:
         imported_package_path=str(imported),
         distribution_package_path=distribution_path,
         import_source_kind=source_kind,
-        acceptance_version=ACCEPTANCE_VERSION,
-        acceptance_report_schema_version=ACCEPTANCE_REPORT_SCHEMA_VERSION,
-        cohort_acceptance_version=COHORT_ACCEPTANCE_VERSION,
-        cohort_report_schema_version=COHORT_REPORT_SCHEMA_VERSION,
-        schema_migration_audit_version=SCHEMA_MIGRATION_AUDIT_VERSION,
-        schema_migration_report_version=SCHEMA_MIGRATION_REPORT_VERSION,
         audit_version=AUDIT_VERSION,
         audit_report_schema_version=REPORT_SCHEMA_VERSION,
         curation_registry_version=CURATION_REGISTRY_VERSION,

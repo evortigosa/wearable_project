@@ -284,8 +284,8 @@ _SOURCES = (
         EvidenceKind.PROJECT_NATIVE_ACCEPTANCE,
         "HPP wearable project",
         EvidenceGrade.A_DIRECT,
-        "Each accepted Google Fitness native snapshot is state-backed and must demonstrate exact raw-to-native "
-        "accounting with no silent candidate loss.",
+        "Each accepted Google Fitness native snapshot is state-backed and must demonstrate exact raw-to-native accounting "
+        "with no silent candidate loss.",
         ("native_product_stability", "curation_input_contract"),
         (
             "Participant, file and row counts are snapshot-specific and must be read from the native state and CWP2 "

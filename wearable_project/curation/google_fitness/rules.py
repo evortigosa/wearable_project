@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Stable rule catalog for Google Fitness curation. CWP1 declares rule identity, evidence, flags and
-status/inclusion effects. The future curation engine must execute these definitions without changing native
-values or silently deleting rows.
+Stable rule catalog for Google Fitness curation. This module declares rule identity, evidence, flags and
+status/inclusion effects. The curation engine executes these definitions without changing native values or
+silently deleting rows.
 """
 
 
@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Mapping
 from .evidence import EVIDENCE
 from .models import InclusionEffect, RuleClass, Severity, StatusEffect, to_primitive
+
 
 EXPECTED_RULES_FINGERPRINT = "eea0cfe8bb82be0c84c5e52b5178ee48074081931fcbe5f20175700510e0e56e"
 

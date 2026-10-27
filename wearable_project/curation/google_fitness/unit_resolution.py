@@ -1,21 +1,15 @@
 """
 Wearable Data Processing and Modeling project
-
-Measurement-level unit annotations for Google Fitness CWP3.
-
-CWP3 executes only the unit decisions approved by CWP2 0.1.1.  StepCount is
-resolved to counts.  Calories, Distance, Weight, Height, and activity
-submeasurements remain raw because their cohort-exporter mappings are not
-proven.  No value is converted or guessed.
+Measurement-level unit annotations for Google Fitness curation. The engine executes only reviewed unit decisions.
+StepCount is resolved to counts. Calories, Distance, Weight, Height, and activity submeasurements remain raw
+because their cohort-exporter mappings are not proven. No value is converted or guessed.
 """
 
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 import math
 from typing import Mapping
-
 from .models import FeaturePolicy
 
 
@@ -93,7 +87,6 @@ def resolve_units(feature: str, row: Mapping[str, str], policy: FeaturePolicy) -
             unit_evidence=f"exporter_mapping_pending:proposed_{proposed}",
         )
 
-    # Activity submeasurements remain multiple native fields.  A single scalar
-    # canonical_value would misrepresent the row, so no global unit columns are
-    # emitted for activity and Sleep policies.
+    # Activity submeasurements remain multiple native fields. A single scalar canonical_value would misrepresent
+    # the row, so no global unit columns are emitted for activity and Sleep policies.
     return None

@@ -1,0 +1,740 @@
+[
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:float|end:int|quantity:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "walking",
+      "calories": 2.4588124752044678,
+      "device": "Android",
+      "distance": 21.74700927734375,
+      "end": 1629049806393,
+      "quantity": 34,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1629049781453,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:float|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "walking",
+      "calories": 10.886640548706055,
+      "device": "Android",
+      "distance": 146.43679809570312,
+      "end": 1598361371625,
+      "quantity": 218,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1598361230342,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:float|end:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "still",
+      "calories": 10.864280700683594,
+      "device": "Android",
+      "distance": 15.301766395568848,
+      "end": 1592742728303,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1592742156638,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:float|end:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "walking",
+      "calories": 5.337064743041992,
+      "device": "Android",
+      "distance": 110.81417083740234,
+      "end": 1578383122169,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1578383061972,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:int|end:int|quantity:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "calories": 221.12380981445312,
+      "device": "Android",
+      "distance": 736,
+      "end": 1570418557237,
+      "quantity": 1713,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1570406400000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:int|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "calories": 11.315972328186035,
+      "device": "Android",
+      "distance": 0,
+      "end": 1620745860000,
+      "quantity": 10,
+      "source_id": "com.xiaomi.hm.health",
+      "source_name": "Android",
+      "start": 1620745260000,
+      "tracked": false
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:int|end:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "walking",
+      "calories": 48.947086334228516,
+      "device": "Android",
+      "distance": 549,
+      "end": 1560864382823,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1560863894708,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|distance:int|end:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "still",
+      "calories": 0.08623889088630676,
+      "device": "Android",
+      "distance": 0,
+      "end": 1624904254395,
+      "source_id": "com.lge.lifetracker",
+      "source_name": "Android",
+      "start": 1624904253395,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "still",
+      "calories": 26.637571334838867,
+      "device": "Android",
+      "end": 1580633764054,
+      "quantity": 7,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1580632319531,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:float|device:str|end:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "walking",
+      "calories": 6.713554859161377,
+      "device": "Android",
+      "end": 1643799039088,
+      "source_id": "com.google.android.fit",
+      "source_name": "Android",
+      "start": 1643798968419,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:int|device:str|distance:float|end:int|quantity:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "calories": 1502,
+      "device": "Android",
+      "distance": 2666.056396484375,
+      "end": 1608854399999,
+      "quantity": 4717,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1608768000000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:int|device:str|distance:float|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "biking",
+      "calories": 793,
+      "device": "Android",
+      "distance": 22321.41015625,
+      "end": 1592280539000,
+      "quantity": 545,
+      "source_id": "nl.appyhapps.healthsync",
+      "source_name": "Android",
+      "start": 1592276383000,
+      "tracked": false
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:int|device:str|distance:float|end:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "running",
+      "calories": 1,
+      "device": "Android",
+      "distance": 4.833959579467773,
+      "end": 1616905424744,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1616905411874,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:int|device:str|distance:float|end:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "biking",
+      "calories": 5,
+      "device": "Android",
+      "distance": 79.1811752319336,
+      "end": 1593584460000,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1593584400000,
+      "tracked": false
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:int|device:str|distance:int|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "walking",
+      "calories": 5,
+      "device": "Android Wear",
+      "distance": 87,
+      "end": 1617722187000,
+      "quantity": 108,
+      "source_id": "com.mc.miband1",
+      "source_name": "Android Wear",
+      "start": 1617722133000,
+      "tracked": false
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:int|device:str|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "biking",
+      "calories": 6,
+      "device": "Android",
+      "end": 1604394300000,
+      "quantity": 107,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1604394240000,
+      "tracked": false
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|calories:int|device:str|end:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "biking",
+      "calories": 66,
+      "device": "Android",
+      "end": 1634416869062,
+      "source_id": "com.google.android.fit",
+      "source_name": "Android",
+      "start": 1634416209062,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|distance:float|end:int|quantity:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "distance": 25.733488082885742,
+      "end": 1627556848138,
+      "quantity": 61,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1627554537539,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|distance:float|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "distance": 5073.4697265625,
+      "end": 1604015999999,
+      "quantity": 8407,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1603929600000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|distance:float|end:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "distance": 1982.1138916015625,
+      "end": 1626825599999,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1626739200000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|distance:float|end:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "distance": 0.21716488897800446,
+      "end": 1504483199999,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1504396800000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|distance:int|end:int|quantity:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "distance": 3265,
+      "end": 1637625599999,
+      "quantity": 5520,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1637539200000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|distance:int|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "distance": 0,
+      "end": 1609235760000,
+      "quantity": 4,
+      "source_id": "com.xiaomi.hm.health",
+      "source_name": "Android",
+      "start": 1609228140000,
+      "tracked": false
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|distance:int|end:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "distance": 1751,
+      "end": 1432857599999,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1432771200000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|end:int|quantity:int|source_id:null|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "end": 1627477014271,
+      "quantity": 14,
+      "source_id": null,
+      "source_name": "Android",
+      "start": 1627476462999,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Activities",
+    "item_schema": "<item>:dict|activity_name:str|device:str|end:int|quantity:int|source_id:str|source_name:str|start:int|tracked:bool",
+    "raw_item": {
+      "activity_name": "unknown",
+      "device": "Android",
+      "end": 1592697599999,
+      "quantity": 2145,
+      "source_id": "com.google.android.gms",
+      "source_name": "Android",
+      "start": 1592611200000,
+      "tracked": true
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Calories",
+    "item_schema": "<item>:dict|calorie:float|day:str|end_date:str|start_date:str",
+    "raw_item": {
+      "calorie": 1456.25,
+      "day": "Sat",
+      "end_date": "2019-08-17T23:59:59.999Z",
+      "start_date": "2019-08-17T00:00:00.000Z"
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Calories",
+    "item_schema": "<item>:dict|calorie:int|day:str|end_date:str|start_date:str",
+    "raw_item": {
+      "calorie": 1723,
+      "day": "יום ג׳",
+      "end_date": "2019-10-22T23:59:59.999Z",
+      "start_date": "2019-10-22T00:00:00.000Z"
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Calories",
+    "item_schema": "<item>:dict|calorie:float|day:str|end_date:str|start_date:str",
+    "raw_item": {
+      "calorie": 1533.25,
+      "day": "Fr.",
+      "end_date": "2017-09-15T23:59:59.999Z",
+      "start_date": "2017-09-15T00:00:00.000Z"
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Calories",
+    "item_schema": "<item>:dict|calorie:int|day:str|end_date:str|start_date:str",
+    "raw_item": {
+      "calorie": 0,
+      "day": "יום ה׳",
+      "end_date": "2021-04-15T23:59:59.999Z",
+      "start_date": "2021-04-15T00:00:00.000Z"
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Distance",
+    "item_schema": "<item>:dict|day:str|distance:float|end_date:str|start_date:str",
+    "raw_item": {
+      "day": "שבת",
+      "distance": 565.2640380859375,
+      "end_date": "2020-10-03T13:35:19.980Z",
+      "start_date": "2020-10-03T10:26:49.381Z"
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Distance",
+    "item_schema": "<item>:dict|day:str|distance:int|end_date:str|start_date:str",
+    "raw_item": {
+      "day": "שבת",
+      "distance": 0,
+      "end_date": "2023-03-18T21:59:00.000Z",
+      "start_date": "2023-03-18T00:00:00.000Z"
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Distance",
+    "item_schema": "<item>:dict|day:str|distance:float|end_date:str|start_date:str",
+    "raw_item": {
+      "day": "יום ה׳",
+      "distance": 1045.56591796875,
+      "end_date": "2023-11-23T20:00:20.135Z",
+      "start_date": "2023-11-23T06:02:20.409Z"
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Distance",
+    "item_schema": "<item>:dict|day:str|distance:int|end_date:str|start_date:str",
+    "raw_item": {
+      "day": "Sat",
+      "distance": 0,
+      "end_date": "2024-01-06T21:59:00.000Z",
+      "start_date": "2024-01-06T00:00:00.000Z"
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Height",
+    "item_schema": "<item>:dict|added_by:str|day:str|end_date:str|start_date:str|value:float",
+    "raw_item": {
+      "added_by": "com.google.android.apps.fitness",
+      "day": "Mon",
+      "end_date": "2022-08-22T17:27:02.394Z",
+      "start_date": "2022-08-22T17:27:02.394Z",
+      "value": 1.7400000095367432
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "StepCount",
+    "item_schema": "<item>:dict|_payload_shape_warning:str|value:int",
+    "raw_item": 15843
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "StepCount",
+    "item_schema": "<item>:dict|raw_steps:list|raw_steps[].app_name:str|raw_steps[].app_package_name:str|raw_steps[].data_source_id:str|raw_steps[].data_type_name:str|raw_steps[].device_manufacturer:str|raw_steps[].device_model:str|raw_steps[].device_type:str|raw_steps[].device_uid:str|raw_steps[].end_date:int|raw_steps[].origin_data_source_id:str|raw_steps[].start_date:int|raw_steps[].steps:int|raw_steps[]:dict|source:str|steps:list|steps[].date:str|steps[].value:int|steps[]:dict",
+    "raw_item": {
+      "raw_steps": [
+        {
+          "app_name": "Google Play Services",
+          "app_package_name": "com.google.android.gms",
+          "data_source_id": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "data_type_name": "com.google.step_count.delta",
+          "device_manufacturer": "samsung",
+          "device_model": "SM-A307FN",
+          "device_type": "phone",
+          "device_uid": "16326da1",
+          "end_date": 1675632125736,
+          "origin_data_source_id": "derived:com.google.step_count.cumulative:com.google.android.gms:samsung:SM-A307FN:16326da1:soft_step_counter",
+          "start_date": 1675574733659,
+          "steps": 6079
+        }
+      ],
+      "source": "com.google.android.gms:estimated_steps",
+      "steps": [
+        {
+          "date": "2023-02-05",
+          "value": 6079
+        }
+      ]
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "StepCount",
+    "item_schema": "<item>:dict|raw_steps:list|raw_steps[].app_name:str|raw_steps[].app_package_name:str|raw_steps[].data_source_id:str|raw_steps[].data_type_name:str|raw_steps[].end_date:int|raw_steps[].origin_data_source_id:str|raw_steps[].start_date:int|raw_steps[].steps:int|raw_steps[]:dict|source:str|steps:list|steps[].date:str|steps[].value:int|steps[]:dict",
+    "raw_item": {
+      "raw_steps": [
+        {
+          "app_name": "Health Sync",
+          "app_package_name": "nl.appyhapps.healthsync",
+          "data_source_id": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "data_type_name": "com.google.step_count.delta",
+          "end_date": 1655586960000,
+          "origin_data_source_id": "raw:com.google.step_count.delta:nl.appyhapps.healthsync:HealthSync - step count",
+          "start_date": 1655529240000,
+          "steps": 16600
+        }
+      ],
+      "source": "com.google.android.gms:estimated_steps",
+      "steps": [
+        {
+          "date": "2022-06-19",
+          "value": 16600
+        }
+      ]
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "StepCount",
+    "item_schema": "<item>:dict|raw_steps:list|raw_steps[].app_package_name:str|raw_steps[].data_source_id:str|raw_steps[].data_type_name:str|raw_steps[].device_manufacturer:str|raw_steps[].device_model:str|raw_steps[].device_type:str|raw_steps[].device_uid:str|raw_steps[].end_date:int|raw_steps[].origin_data_source_id:str|raw_steps[].start_date:int|raw_steps[].steps:int|raw_steps[]:dict|source:str|steps:list|steps[].date:str|steps[].value:int|steps[]:dict",
+    "raw_item": {
+      "raw_steps": [
+        {
+          "app_package_name": "com.mc.simplehealth",
+          "data_source_id": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "data_type_name": "com.google.step_count.delta",
+          "device_manufacturer": "",
+          "device_model": "",
+          "device_type": "watch",
+          "device_uid": "2e5ca176",
+          "end_date": 1710189360000,
+          "origin_data_source_id": "raw:com.google.step_count.delta:com.mc.simplehealth:::2e5ca176:Simple Health - steps",
+          "start_date": 1710129060000,
+          "steps": 10820
+        }
+      ],
+      "source": "com.google.android.gms:estimated_steps",
+      "steps": [
+        {
+          "date": "2024-03-11",
+          "value": 10820
+        }
+      ]
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "StepCount",
+    "item_schema": "<item>:dict|raw_steps:list|raw_steps[].app_package_name:str|raw_steps[].data_source_id:str|raw_steps[].data_type_name:str|raw_steps[].end_date:int|raw_steps[].origin_data_source_id:str|raw_steps[].start_date:int|raw_steps[].steps:int|raw_steps[]:dict|source:str|steps:list|steps[].date:str|steps[].value:int|steps[]:dict",
+    "raw_item": {
+      "raw_steps": [
+        {
+          "app_package_name": "com.sec.android.app.shealth",
+          "data_source_id": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "data_type_name": "com.google.step_count.delta",
+          "end_date": 1713477599998,
+          "origin_data_source_id": "raw:com.google.step_count.delta:com.sec.android.app.shealth:health_platform",
+          "start_date": 1713398400000,
+          "steps": 7965
+        }
+      ],
+      "source": "com.google.android.gms:estimated_steps",
+      "steps": [
+        {
+          "date": "2024-04-19",
+          "value": 7965
+        }
+      ]
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "StepCount",
+    "item_schema": "<item>:dict|raw_steps:list|raw_steps[].data_source_id:str|raw_steps[].data_type_name:str|raw_steps[].device_manufacturer:str|raw_steps[].device_model:str|raw_steps[].device_type:str|raw_steps[].device_uid:str|raw_steps[].end_date:int|raw_steps[].origin_data_source_id:str|raw_steps[].start_date:int|raw_steps[].steps:int|raw_steps[]:dict|source:str|steps:list|steps[].date:str|steps[].value:int|steps[]:dict",
+    "raw_item": {
+      "raw_steps": [
+        {
+          "data_source_id": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "data_type_name": "com.google.step_count.delta",
+          "device_manufacturer": "OPPO",
+          "device_model": "CPH2333",
+          "device_type": "phone",
+          "device_uid": "834aa7f2",
+          "end_date": 1687885602631,
+          "origin_data_source_id": "raw:com.google.step_count.cumulative:OPPO:CPH2333:834aa7f2:pedometer  Non-wakeup",
+          "start_date": 1687837775089,
+          "steps": 1228
+        }
+      ],
+      "source": "com.google.android.gms:estimated_steps",
+      "steps": [
+        {
+          "date": "2023-06-27",
+          "value": 1228
+        }
+      ]
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "StepCount",
+    "item_schema": "<item>:dict|raw_steps:list|raw_steps[].data_source_id:str|raw_steps[].data_type_name:str|raw_steps[].end_date:int|raw_steps[].origin_data_source_id:str|raw_steps[].start_date:int|raw_steps[].steps:int|raw_steps[]:dict|source:str|steps:list|steps[].date:str|steps[].value:int|steps[]:dict",
+    "raw_item": {
+      "raw_steps": [
+        {
+          "data_source_id": "derived:com.google.step_count.delta:com.google.android.gms:aggregated",
+          "data_type_name": "com.google.step_count.delta",
+          "end_date": 1706119899233,
+          "origin_data_source_id": "raw:com.google.step_count.cumulative:samsung:SM-G781B:631cb615:step_counter  Non-wakeup",
+          "start_date": 1706078010985,
+          "steps": 7438
+        }
+      ],
+      "source": "com.google.android.gms:merge_step_deltas",
+      "steps": [
+        {
+          "date": "2024-01-24",
+          "value": 7438
+        }
+      ]
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Weight",
+    "item_schema": "<item>:dict|added_by:str|day:str|end_date:str|start_date:str|value:float",
+    "raw_item": {
+      "added_by": "com.yunmai.scaleen",
+      "day": "יום ד׳",
+      "end_date": "2021-07-28T04:50:09.072Z",
+      "start_date": "2021-07-28T04:13:16.361Z",
+      "value": 86.55000305175781
+    }
+  },
+  {
+    "collecting_method_version": "1.0",
+    "feature": "Weight",
+    "item_schema": "<item>:dict|added_by:str|day:str|end_date:str|start_date:str|value:int",
+    "raw_item": {
+      "added_by": "monitoryourweight.bustan.net",
+      "day": "יום ג׳",
+      "end_date": "2020-09-01T02:18:53.006Z",
+      "start_date": "2020-09-01T02:18:53.006Z",
+      "value": 77
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Weight",
+    "item_schema": "<item>:dict|_payload_shape_warning:str|value:null",
+    "raw_item": null
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Weight",
+    "item_schema": "<item>:dict|added_by:str|day:str|end_date:str|start_date:str|value:float",
+    "raw_item": {
+      "added_by": "com.myfitnesspal.android",
+      "day": "Fri",
+      "end_date": "2018-02-15T22:00:00.000Z",
+      "start_date": "2018-02-15T22:00:00.000Z",
+      "value": 71.10009002685547
+    }
+  },
+  {
+    "collecting_method_version": "2.0",
+    "feature": "Weight",
+    "item_schema": "<item>:dict|added_by:str|day:str|end_date:str|start_date:str|value:int",
+    "raw_item": {
+      "added_by": "fitapp.fittofit",
+      "day": "Sun",
+      "end_date": "2020-03-08T21:59:59.000Z",
+      "start_date": "2020-03-08T21:59:59.000Z",
+      "value": 60
+    }
+  }
+]

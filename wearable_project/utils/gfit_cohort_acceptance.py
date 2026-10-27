@@ -30,7 +30,7 @@ import sys
 import tempfile
 import time
 from typing import Any, Mapping, Sequence
-from wearable_project.curation.google_fitness.acceptance import run_acceptance
+from wearable_project.utils.gfit_acceptance import run_acceptance
 from wearable_project.curation.google_fitness.contract import CURATED_SCHEMA_VERSION, contract_fingerprint
 from wearable_project.curation.google_fitness.decisions import decisions_fingerprint
 from wearable_project.curation.google_fitness.engine import ENGINE_VERSION, sha256_file

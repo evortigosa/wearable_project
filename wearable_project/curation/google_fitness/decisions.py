@@ -1,8 +1,7 @@
 """
 Wearable Data Processing and Modeling project
-Reviewed and provisional calibration decisions for Google Fitness curation. CWP1 records decisions before an
-executable engine exists. Accepted decisions may constrain later implementation; provisional decisions must be
-confirmed by CWP2 full-native calibration reports before they become executable policy.
+Reviewed and provisional calibration decisions for Google Fitness curation. Accepted decisions constrain the executable
+engine; provisional decisions remain blocked until the required full-native calibration evidence is reviewed.
 """
 
 

@@ -1,22 +1,17 @@
 """
 Wearable Data Processing and Modeling project
-
-Group-aware curation context for Google Fitness feature files.
-
-CWP3 keeps group logic separate from row-local rule execution.  The context
-builders never delete, reorder, or modify native rows.  They return immutable
-per-row annotations that the curation engine may append as derived metadata.
+Group-aware curation context for Google Fitness feature files. Group-aware logic is kept separate from row-local
+rule execution. The context builders never delete, reorder, or modify native rows. They return immutable per-row
+annotations that the curation engine may append as derived metadata.
 """
 
 
 from __future__ import annotations
-
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
 from typing import Mapping, Sequence
-
 from .models import CurationStatus, StepCountRole
 
 

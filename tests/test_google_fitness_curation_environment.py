@@ -11,14 +11,19 @@ from wearable_project.utils.release_manifest import EXPECTED_GFIT_CURATION_MODUL
 
 
 def test_google_curation_environment_integrity_is_complete() -> None:
+    expected_modules = {
+        "__init__.py", "audit.py", "audit_models.py", "context.py", "contract.py",
+        "decisions.py", "engine.py", "environment.py", "evidence.py", "explain.py",
+        "guidance.py", "models.py", "pipeline.py", "provenance.py", "registry.py",
+        "rules.py", "state.py", "strategies.py", "unit_resolution.py",
+    }
+    assert set(_TRACKED_MODULES) == expected_modules
     manifest = environment_manifest()
     assert set(manifest.module_integrity) == set(_TRACKED_MODULES)
     assert all(manifest.module_integrity.values())
     assert all(manifest.semantic_integrity.values())
-    assert manifest.cohort_acceptance_version == "google-fitness-curation-cohort-acceptance-schema-v2-0.2.0"
-    assert manifest.cohort_report_schema_version == "google-fitness-curation-cohort-acceptance-report-v2-0.2.0"
-    assert manifest.schema_migration_audit_version == "google-fitness-curation-schema-migration-audit-v2-0.1.0"
-    assert manifest.schema_migration_report_version == "google-fitness-curation-schema-migration-report-v2-0.1.0"
+    assert manifest.audit_version == "google-fitness-curation-audit-1.0.0"
+    assert manifest.audit_report_schema_version == "google-fitness-curation-audit-report-1.0.0"
     assert not [warning for warning in manifest.warnings if "release manifest" in warning]
 
 

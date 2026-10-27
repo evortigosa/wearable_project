@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Complete CWP1 policy registry for Google Fitness curation. The registry covers every accepted native feature
-while remaining independent of Apple HealthKit scientific policy. It is policy-only: no native or curated
-file is read or written here.
+Complete policy registry for Google Fitness curation. The registry covers every accepted native feature while
+remaining independent of Apple HealthKit scientific policy. It is policy-only: no native or curated file is
+read or written here.
 """
 
 
@@ -1037,9 +1037,9 @@ def validate_registry() -> RegistryValidationResult:
         policy = CURATION_POLICIES[feature]
         unit = policy.measurements[0].unit_by_version[0]
         if unit.raw_unit_status is not RawUnitStatus.EXPORTER_MAPPING_PENDING:
-            issues.append(f"{feature} must remain exporter-mapping-pending in CWP3")
+            issues.append(f"{feature} must remain exporter-mapping-pending")
         if unit.execution_mode is not PolicyExecutionMode.CONSERVATIVE_ANNOTATION:
-            issues.append(f"{feature} must remain conservative annotation in CWP3")
+            issues.append(f"{feature} must remain conservative annotation")
 
     return RegistryValidationResult(tuple(sorted(set(issues))))
 

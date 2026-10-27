@@ -1,0 +1,19 @@
+{
+  "accepted_registry_fingerprint": "3b10ffc152f3b1ad3b966b367e1c40b1eeb8ba670bfdabecb46c9ca8bab47d68",
+  "accepted_registry_version": "2026-10-google-fitness-native-wp1",
+  "activity_destination_count": 62,
+  "activity_route_count": 66,
+  "derivation": "One row per accepted raw activity label; boolean field-presence columns indicate whether the field was observed at least once for that label in the full cohort. Counts and participant identifiers are intentionally excluded from the registry fixture.",
+  "description": "WP1 activity-routing evidence fixture derived from the accepted full-cohort Phase 0 census.",
+  "native_feature_count": 67,
+  "phase0_acceptance_status": "pass",
+  "profiler_version": "mixed-source-profiler-1.2.1",
+  "sleep_route_count": 5,
+  "source_archive_sha256": "a0926f7865263d6977a8535bc675dd975d4ae6881cdaccf458d715c3019288e0",
+  "source_feature_version_count": 10,
+  "source_reports": {
+    "activity_label_inventory.csv": "090372abd1944c094971eaee1ee97d2128e53531dcd91e1fa5dbe1dd3c12b86c",
+    "phase0_acceptance.json": "01abab71b9f5edf24323aee994a88455dfbd4519026b0fdf3b9c7a6f74e81b1b",
+    "source_feature_versions.csv": "4578a57c0165b79b4696617c55dec1092371f403e11d7bd731391d11869ad0b7"
+  }
+}

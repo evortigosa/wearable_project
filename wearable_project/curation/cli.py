@@ -162,7 +162,8 @@ def add_curation_commands(commands: Any) -> None:
 
     run_command = commands.add_parser("run", help="Run source-specific native processing and then curation")
     run = _add_apple_only_source(
-        run_command, handler=_run_apple_healthkit,
+        run_command,
+        handler=_run_apple_healthkit,
         help_text="Run Apple HealthKit processing followed by Apple HealthKit curation",
     )
     run.add_argument("--input", type=Path, required=True, help="Raw cumulative export root")
@@ -273,62 +274,6 @@ def add_curation_commands(commands: Any) -> None:
     google.add_argument("--no-progress", action="store_true")
     google.add_argument("--json-summary", action="store_true")
 
-    acceptance_command = commands.add_parser(
-        "curation-acceptance", help="Run formal source-specific native-to-curated acceptance checks",
-    )
-    google = _add_google_only_source(
-        acceptance_command, handler=_curation_acceptance_google_fitness,
-        help_text="Accept a Google Fitness native/curated product pair",
-    )
-    google.add_argument("--input-native", type=Path, required=True)
-    google.add_argument("--input-curated", type=Path, required=True)
-    google.add_argument("--output", type=Path, required=True)
-    google.add_argument("--workers", type=int, default=4)
-    google.add_argument("--max-in-flight", type=int)
-    google.add_argument("--reference-manifest", type=Path)
-    google.add_argument("--no-verify-hashes", action="store_true")
-    google.add_argument("--overwrite", action="store_true")
-    google.add_argument("--no-progress", action="store_true")
-    google.add_argument("--json-summary", action="store_true")
-
-    cohort_acceptance_command = commands.add_parser(
-        "curation-cohort-acceptance",
-        help="Run formal full-cohort source-specific native-to-curated acceptance",
-    )
-    google = _add_google_only_source(
-        cohort_acceptance_command, handler=_curation_cohort_acceptance_google_fitness,
-        help_text="Accept a complete Google Fitness native/curated cohort pair",
-    )
-    google.add_argument("--input-native", type=Path, required=True)
-    google.add_argument("--input-curated", type=Path, required=True)
-    google.add_argument("--output", type=Path, required=True)
-    google.add_argument("--expected-snapshot", type=Path, required=True)
-    google.add_argument("--workers", type=int, default=8)
-    google.add_argument("--max-in-flight", type=int)
-    google.add_argument("--overwrite", action="store_true")
-    google.add_argument("--no-progress", action="store_true")
-    google.add_argument("--json-summary", action="store_true")
-
-    migration_command = commands.add_parser(
-        "curation-schema-migration-audit",
-        help="Compare frozen Google Fitness curation schema v1 with schema v2",
-    )
-    google = _add_google_only_source(
-        migration_command,
-        handler=_curation_schema_migration_google_fitness,
-        help_text="Audit semantic equivalence between Google Fitness curated schema v1 and v2",
-    )
-    google.add_argument("--input-native", type=Path, required=True)
-    google.add_argument("--input-curated-v1", type=Path, required=True)
-    google.add_argument("--input-curated-v2", type=Path, required=True)
-    google.add_argument("--output", type=Path, required=True)
-    google.add_argument("--workers", type=int, default=8)
-    google.add_argument("--max-in-flight", type=int)
-    google.add_argument("--max-examples", type=int, default=100)
-    google.add_argument("--overwrite", action="store_true")
-    google.add_argument("--no-progress", action="store_true")
-    google.add_argument("--json-summary", action="store_true")
-
     environment_command = commands.add_parser("curation-environment", help="Report curation fingerprints and source integrity")
     apple, google = _add_source_pair(
         environment_command,
@@ -382,7 +327,9 @@ def _curate_apple_healthkit(args: argparse.Namespace) -> int:
 def _curation_report_apple_healthkit(args: argparse.Namespace) -> int:
     from wearable_project.curation.apple_healthkit.state import format_curation_report, load_curation_report
 
-    state_file = args.state_file or (args.output.expanduser().resolve() / ".wearable_curation_state.sqlite")
+    state_file = args.state_file or (
+        args.output.expanduser().resolve() / ".wearable_curation_state.sqlite"
+    )
     try:
         report = load_curation_report(
             state_file,
@@ -551,7 +498,8 @@ def _evidence_apple_healthkit(args: argparse.Namespace) -> int:
                     source.__dict__
                     if hasattr(source, "__dict__")
                     else {
-                        field: getattr(source, field) for field in source.__dataclass_fields__
+                        field: getattr(source, field)
+                        for field in source.__dataclass_fields__
                     }
                 )
                 for source in sources
@@ -699,7 +647,10 @@ def _policy_decisions_apple_healthkit(args: argparse.Namespace) -> int:
     selected = tuple(args.decision_features or known_decisions())
     unknown = sorted(set(selected) - set(known_decisions()))
     if unknown:
-        print(f"ERROR: unknown calibration decision feature(s): {', '.join(unknown)}", file=sys.stderr,)
+        print(
+            f"ERROR: unknown calibration decision feature(s): {', '.join(unknown)}",
+            file=sys.stderr,
+        )
         return 2
     errors = validate_decisions()
     rows = [
@@ -768,7 +719,10 @@ def _curation_registry_apple_healthkit(args: argparse.Namespace) -> int:
             if get_policy(feature).identity.maturity.value == "unknown"
         ]
         if unknown:
-            print(f"ERROR: unknown curation feature(s): {', '.join(unknown)}", file=sys.stderr,)
+            print(
+                f"ERROR: unknown curation feature(s): {', '.join(unknown)}",
+                file=sys.stderr,
+            )
             return 2
     validation = validate_registry()
     if args.format == "json":
@@ -784,12 +738,18 @@ def _curation_registry_apple_healthkit(args: argparse.Namespace) -> int:
         ) + "\n"
     elif args.format == "csv":
         if args.include_evidence or args.include_rules:
-            print("ERROR: --include-evidence/--include-rules require --format json", file=sys.stderr,)
+            print(
+                "ERROR: --include-evidence/--include-rules require --format json",
+                file=sys.stderr,
+            )
             return 2
         rendered = matrix_csv(features)
     else:
         if args.include_evidence or args.include_rules:
-            print("ERROR: --include-evidence/--include-rules require --format json", file=sys.stderr,)
+            print(
+                "ERROR: --include-evidence/--include-rules require --format json",
+                file=sys.stderr,
+            )
             return 2
         rendered = matrix_table(features) + "\n"
 
@@ -843,93 +803,6 @@ def _curate_google_fitness(args: argparse.Namespace) -> int:
         for participant, message in sorted(summary.failures.items()):
             print(f"FAILED {participant}: {message}")
     return 1 if summary.failed else 0
-
-
-def _curation_acceptance_google_fitness(args: argparse.Namespace) -> int:
-    from wearable_project.curation.google_fitness.acceptance import run_acceptance
-
-    try:
-        result = run_acceptance(
-            args.input_native,
-            args.input_curated,
-            args.output,
-            workers=args.workers,
-            max_in_flight=args.max_in_flight,
-            reference_manifest=args.reference_manifest,
-            verify_hashes=not args.no_verify_hashes,
-            overwrite=args.overwrite,
-            no_progress=args.no_progress,
-        )
-    except Exception as exc:
-        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
-    if args.json_summary:
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    else:
-        print(
-            f"Google Fitness CWP5 acceptance {result['status'].upper()}: "
-            f"{result['passed_check_count']}/{result['check_count']} checks passed; "
-            f"{result['snapshot']['feature_files']} files; "
-            f"{result['snapshot']['curated_rows']} rows"
-        )
-    return 0 if result["status"] == "pass" else 1
-
-
-def _curation_cohort_acceptance_google_fitness(args: argparse.Namespace) -> int:
-    from wearable_project.curation.google_fitness.cohort_acceptance import run_cohort_acceptance
-
-    try:
-        result = run_cohort_acceptance(
-            args.input_native,
-            args.input_curated,
-            args.output,
-            expected_snapshot=args.expected_snapshot,
-            workers=args.workers,
-            max_in_flight=args.max_in_flight,
-            overwrite=args.overwrite,
-            no_progress=args.no_progress,
-        )
-    except Exception as exc:
-        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
-    if args.json_summary:
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    else:
-        snapshot = result["product_acceptance"]["snapshot"]
-        print(
-            f"Google Fitness CWP6 cohort acceptance {result['status'].upper()}: "
-            f"{result['passed_check_count']}/{result['check_count']} checks passed; "
-            f"{snapshot['feature_files']} files; {snapshot['curated_rows']} rows"
-        )
-    return 0 if result["status"] == "pass" else 1
-
-
-def _curation_schema_migration_google_fitness(args: argparse.Namespace) -> int:
-    from wearable_project.curation.google_fitness.schema_migration import run_schema_migration_audit
-
-    try:
-        result = run_schema_migration_audit(
-            args.input_native,
-            args.input_curated_v1,
-            args.input_curated_v2,
-            args.output,
-            workers=args.workers,
-            max_in_flight=args.max_in_flight,
-            max_examples=args.max_examples,
-            overwrite=args.overwrite,
-            no_progress=args.no_progress,
-        )
-    except Exception as exc:
-        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
-    if args.json_summary:
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    else:
-        print(
-            f"Google Fitness curation schema migration audit {result['status'].upper()}: "
-            f"{result['participants_compared']:,} participants; {result['rows']:,} rows; {result['issue_count']} issue(s)"
-        )
-    return 0 if result["status"] == "pass" else 1
 
 
 def _curation_report_google_fitness(args: argparse.Namespace) -> int:
@@ -1176,7 +1049,7 @@ def _curation_audit_google_fitness(args: argparse.Namespace) -> int:
     else:
         acceptance = summary["acceptance"]
         print(
-            f"Google Fitness CWP2 audit {acceptance['status'].upper()}: "
+            f"Google Fitness curation audit {acceptance['status'].upper()}: "
             f"{summary['audited_rows']:,} rows in {summary['audited_files']:,} files; "
             f"reports written to {summary['output']}"
         )

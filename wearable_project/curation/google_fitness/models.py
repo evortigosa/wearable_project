@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Typed, source-specific policy contracts for Google Fitness curation. CWP1 is declaration-only: these objects
-describe what a later curation audit and engine are allowed to do. They deliberately contain no CSV I/O, no row
-mutation, and no dependency on Apple HealthKit scientific policies.
+Typed, source-specific policy contracts for Google Fitness curation. These objects define what the curation audit
+and engine are allowed to do. They deliberately contain no CSV I/O, no row mutation, and no dependency on
+Apple HealthKit scientific policies.
 """
 
 

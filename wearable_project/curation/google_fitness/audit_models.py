@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Deterministic aggregation primitives for the Google Fitness CWP2 native audit. The classes in this module are
-intentionally independent of CSV I/O. Worker processes build compact participant-local aggregates and the
-parent merges them in participant order, so scientific reports do not depend on worker completion order.
+Deterministic aggregation primitives for the Google Fitness native curation audit. The classes in this module are
+intentionally independent of CSV I/O. Worker processes build compact participant-local aggregates and the parent
+merges them in participant order, so scientific reports do not depend on worker completion order.
 """
 
 
@@ -15,8 +15,8 @@ import math
 from typing import Any, Iterable
 
 
-AUDIT_VERSION = "google-fitness-curation-audit-cwp2-0.1.1"
-REPORT_SCHEMA_VERSION = "google-fitness-curation-audit-report-0.1.1"
+AUDIT_VERSION = "google-fitness-curation-audit-1.0.0"
+REPORT_SCHEMA_VERSION = "google-fitness-curation-audit-report-1.0.0"
 DEFAULT_SAMPLE_SIZE = 4096
 
 
