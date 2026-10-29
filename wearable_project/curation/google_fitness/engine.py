@@ -29,6 +29,7 @@ from .models import DecisionStatus, FeaturePolicy, StepCountRole, to_primitive
 from .registry import get_policy, registry_fingerprint
 from .rules import rules_fingerprint
 from .strategies import RowAnnotation, annotate_row, validate_engine_rule_coverage
+from wearable_project.processing.google_fitness.writer import _new_temporary_file
 
 
 ENGINE_VERSION = "google-fitness-curation-engine-schema-v2-0.2.0"
@@ -338,11 +339,9 @@ def curate_feature_file(native_path: Path, destination: Path, feature: str | Non
     )
     os.close(annotation_fd)
     annotations_path = Path(annotation_name)
-    output_fd, output_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".curated.tmp", dir=destination.parent
-    )
-    os.close(output_fd)
-    output_path = Path(output_name)
+    # Created the way open() creates files, so the published curated file follows the umask: mkstemp would make it
+    # private (mode 600), and the rename would carry that mode into the curated root.
+    output_path = _new_temporary_file(destination.parent, f".{destination.name}.", ".curated.tmp")
 
     try:
         with annotations_path.open("w", encoding="utf-8") as annotation_file:

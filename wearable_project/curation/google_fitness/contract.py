@@ -11,10 +11,10 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-import tempfile
 from typing import Any, Mapping
 from wearable_project.exceptions import CurationError
 from wearable_project.processing.google_fitness.registry import SOURCE_KEY
+from wearable_project.processing.google_fitness.writer import _new_temporary_file
 from .decisions import decisions_fingerprint
 from .evidence import evidence_fingerprint
 from .guidance import guidance_fingerprint
@@ -312,10 +312,10 @@ def write_contract_atomic(
         pipeline_version=pipeline_version,
         state_schema_version=state_schema_version,
     )
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temporary = Path(temporary_name)
+    # Created the way open() creates files, so the contract follows the umask like the curated files beside it.
+    temporary = _new_temporary_file(path.parent, f".{path.name}.", ".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with temporary.open("w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())

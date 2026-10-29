@@ -16,7 +16,7 @@ from wearable_project.processing.google_fitness.pipeline import (
 )
 from wearable_project.processing.google_fitness.registry import SOURCE_KEY
 from wearable_project.processing.google_fitness.writer import (
-    FeatureOutputInfo, STATE_FILENAME, StoredParticipantState,
+    FeatureOutputInfo, STATE_FILENAME, StoredParticipantState, read_only_mode,
 )
 
 
@@ -94,7 +94,7 @@ class ReadOnlyState:
         self.path = path
         self.connection: sqlite3.Connection | None = None
         if path.is_file():
-            self.connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            self.connection = sqlite3.connect(f"file:{path}?{read_only_mode(path)}", uri=True)
             self.connection.row_factory = sqlite3.Row
             try:
                 row = self.connection.execute("SELECT value FROM metadata WHERE key='source_key'").fetchone()

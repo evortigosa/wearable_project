@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import pytest
 from wearable_project.curation.google_fitness import (
     ENGINE_VERSION, curate_feature_file, validate_curated_feature_file, validate_engine_contract,
@@ -32,6 +33,7 @@ from wearable_project.curation.google_fitness.strategies import (
     ENGINE_RULE_IMPLEMENTATION, annotate_row, validate_engine_rule_coverage,
 )
 from wearable_project.processing.google_fitness.registry import NATIVE_FEATURE_SPECS
+from wearable_project.processing.google_fitness.writer import STATE_FILENAME
 
 
 _SAMPLE_NATIVE_ROOT_TEXT = os.environ.get("WEARABLE_GOOGLE_NATIVE_SAMPLE")
@@ -561,8 +563,14 @@ def test_accepted_native_sample_curates_non_destructively(tmp_path: Path) -> Non
         total_files += 1
         assert validate_curated_feature_file(native, destination, native.stem) == result.info.native_rows
 
-    assert total_files == 37
-    assert total_rows == 145_493
+    # What processing recorded for the accepted sample: every recorded file is curated, with every recorded row.
+    state = sqlite3.connect(f"file:{(SAMPLE_NATIVE_ROOT / STATE_FILENAME).as_posix()}?mode=ro&immutable=1", uri=True)
+    try:
+        recorded_files, recorded_rows = state.execute("SELECT COUNT(*), SUM(row_count) FROM feature_outputs").fetchone()
+    finally:
+        state.close()
+    assert total_files == recorded_files
+    assert total_rows == recorded_rows
     assert sum(info.native_rows for info in infos) == sum(info.curated_rows for info in infos)
     after = {
         path.relative_to(SAMPLE_NATIVE_ROOT).as_posix(): _hash(path)

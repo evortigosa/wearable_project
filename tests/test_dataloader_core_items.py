@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 import pandas as pd
 import pytest
+import _sample_facts as facts
 from wearable_project.DataLoaders import DataLoaderStateError, LoaderData
 from wearable_project.DataLoaders._base import AppleHealthFeatureLoader
 from wearable_project.DataLoaders.ActivitySummaryLoader import ActivitySummaryLoader
@@ -141,7 +142,7 @@ def test_native_validation_modes(tmp_path: Path):
 def test_native_size_estimate_comes_from_the_verified_manifest():
     estimate = StepCountLoader(phase="native", root=NATIVE_SAMPLE).get_data().load_report["size_estimate"]
     assert estimate["source"] == "native_state"
-    assert estimate["rows_expected"] == 52_247
+    assert estimate["rows_expected"] == facts.rows(NATIVE_SAMPLE, "StepCount")
 
 
 @needs_sample
@@ -279,15 +280,23 @@ def test_harmonization_invariants_for_every_feature_and_phase():
 
 @needs_sample
 @pytest.mark.parametrize("loader, phase, expected", [
-    (WeightLoader, "curated", {"curation": 82, "unresolved": 375}),
-    (WeightLoader, "native", {"unresolved": 457}),
-    (EnergyConsumedLoader, "curated", {"unresolved": 832}),
-    (EnergyConsumedLoader, "native", {"unresolved": 832}),
+    # Counted from the sample's files when the test runs: rows with a curated canonical value are harmonized by
+    # curation, and the rest stay unresolved.
+    (WeightLoader, "curated", lambda: {
+        "curation": facts.nonblank(CURATED_SAMPLE, "Weight", "canonical_value"),
+        "unresolved": (facts.rows(CURATED_SAMPLE, "Weight")
+                       - facts.nonblank(CURATED_SAMPLE, "Weight", "canonical_value")),
+    }),
+    (WeightLoader, "native", lambda: {"unresolved": facts.rows(NATIVE_SAMPLE, "Weight")}),
+    (EnergyConsumedLoader, "curated", lambda: {"unresolved": facts.rows(CURATED_SAMPLE, "EnergyConsumed")}),
+    (EnergyConsumedLoader, "native", lambda: {"unresolved": facts.rows(NATIVE_SAMPLE, "EnergyConsumed")}),
     (OxygenSaturationLoader, "curated", {"curation": 4_757}),
     (OxygenSaturationLoader, "native", {"processing": 4_757}),
     (HeartRateLoader, "curated", {"registry": 379_245}),
 ])
 def test_harmonization_sources(loader, phase, expected):
+    if callable(expected):
+        expected = expected()
     report = loader(phase=phase, root=ROOTS[phase]).get_data().with_harmonized_values().load_report
     assert report["derived"]["harmonized_values"]["sources"] == expected
 

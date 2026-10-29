@@ -37,7 +37,7 @@ def write_month(root: Path, participant: str, filename: str, rows: list[tuple[st
 
 def run_process(input_root: Path, output_root: Path, *, expect_success: bool = True) -> subprocess.CompletedProcess[str]:
     command = [
-        sys.executable, "-m", "wearable_project", "process",
+        sys.executable, "-m", "wearable_project", "process", "apple-healthkit",
         "--input", str(input_root), "--output", str(output_root),
         "--workers", "1", "--max-in-flight", "1", "--json-summary",
     ]

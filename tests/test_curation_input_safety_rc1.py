@@ -105,7 +105,7 @@ def test_cli_returns_layout_error_for_curated_input(tmp_path: Path, capsys: pyte
     _minimal_native_csv(root)
     (root / CURATION_STATE_FILENAME).touch()
     result = main([
-        "curate", "--input-native", str(root), "--output", str(output), "--workers", "1",
+        "curate", "apple-healthkit", "--input-native", str(root), "--output", str(output), "--workers", "1",
     ])
     captured = capsys.readouterr()
     assert result == 2

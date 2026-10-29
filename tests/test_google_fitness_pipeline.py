@@ -247,6 +247,19 @@ def test_state_source_guard_rejects_other_source(tmp_path: Path) -> None:
         StateDatabase(path)
 
 
+def test_state_schema_guard_names_the_stored_version(tmp_path: Path) -> None:
+    path = tmp_path / ".wearable_state.sqlite"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+    connection.execute("INSERT INTO metadata VALUES('source_key','google_fitness')")
+    connection.execute("INSERT INTO metadata VALUES('state_schema_version','google-fitness-native-state-older')")
+    connection.commit()
+    connection.close()
+    expected = "incompatible Google Fitness state schema: 'google-fitness-native-state-older'"
+    with pytest.raises(OutputValidationError, match=expected):
+        StateDatabase(path)
+
+
 def test_scan_and_process_reports_record_hash_validation_mode(tmp_path: Path) -> None:
     raw = _fixture(tmp_path)
     output = tmp_path / "cleaned"

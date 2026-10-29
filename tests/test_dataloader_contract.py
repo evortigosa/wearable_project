@@ -21,6 +21,7 @@ import warnings
 from pathlib import Path
 import pandas as pd
 import pytest
+import _sample_facts as facts
 from wearable_project.DataLoaders import DataLoaderStateError, LoaderData
 from wearable_project.DataLoaders._base import AppleHealthFeatureLoader
 from wearable_project.DataLoaders.ActivitySummaryLoader import ActivitySummaryLoader
@@ -190,7 +191,7 @@ def test_rows_reconstructed_are_reported():
     report = StepCountLoader(root=CURATED_SAMPLE).get_data().load_report
     assert report["dense_reconstruction"] is True
     # StepCount stores none of the four curation columns, so every row of every file is reconstructed.
-    assert report["rows_reconstructed"] == {column: 52_247 for column in DENSE}
+    assert report["rows_reconstructed"] == {column: facts.rows(CURATED_SAMPLE, "StepCount") for column in DENSE}
 
 
 def test_blank_acquisition_and_flags_are_filled_but_blank_status_is_not(tmp_path: Path):
@@ -253,7 +254,7 @@ def test_sample_root_verifies_cleanly():
         report = StepCountLoader(root=CURATED_SAMPLE).get_data().load_report
     assert report["state_verified"] is True
     assert report["state_verification_note"] is None
-    assert report["files_verified"] == report["files_read"] == 10
+    assert report["files_verified"] == report["files_read"] == facts.files(CURATED_SAMPLE, "StepCount")
     assert report["participants_with_diverged_policy"] == []
     assert report["manifest_files_missing"] == []
 
@@ -358,11 +359,11 @@ def test_migrated_database_skips_inclusion_counts_and_flags_unverified_inclusion
                       "excluded_by_default_rows = 0 where feature = 'StepCount'")
     report = StepCountLoader(root=root).get_data().load_report
     assert report["state_verified"] is True
-    assert report["inclusion_counts_unverifiable"] == 10
+    assert report["inclusion_counts_unverifiable"] == facts.files(CURATED_SAMPLE, "StepCount")
 
     with pytest.warns(UserWarning, match="without count verification"):
         filtered = StepCountLoader(root=root).get_data(default_inclusion_only=True)
-    assert filtered.load_report["default_inclusion_rows_unverified"] == 52_247
+    assert filtered.load_report["default_inclusion_rows_unverified"] == facts.rows(CURATED_SAMPLE, "StepCount")
 
 
 @needs_sample

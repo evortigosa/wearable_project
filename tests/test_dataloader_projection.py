@@ -14,6 +14,7 @@ import warnings
 from pathlib import Path
 import pandas as pd
 import pytest
+import _sample_facts as facts
 from wearable_project.curation.apple_healthkit import schema as S
 from wearable_project.curation.apple_healthkit.schema import ColumnRole
 from wearable_project.processing.apple_healthkit.cleaners import (
@@ -365,8 +366,9 @@ def test_default_inclusion_only_still_filters_under_the_projection():
     """
     projected = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True)
     full = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True, projection="full")
-    assert projected.load_report["rows"] == full.load_report["rows"] == 82
-    assert projected.load_report["default_inclusion_rows_dropped"] == 375
+    included = facts.included(CURATED_SAMPLE, "Weight")
+    assert projected.load_report["rows"] == full.load_report["rows"] == included
+    assert projected.load_report["default_inclusion_rows_dropped"] == facts.rows(CURATED_SAMPLE, "Weight") - included
 
 
 @needs_sample
@@ -423,9 +425,9 @@ def test_schema_is_imported_on_first_get_data():
     script = (
         "import sys\n"
         "from wearable_project.DataLoaders.StepCountLoader import StepCountLoader\n"
-        "assert 'wearable_project.curation.schema' not in sys.modules\n"
+        "assert 'wearable_project.curation.apple_healthkit.schema' not in sys.modules\n"
         f"StepCountLoader(root={str(CURATED_SAMPLE)!r}).get_data(registration_codes='10K_0000000000')\n"
-        "assert 'wearable_project.curation.schema' in sys.modules\n"
+        "assert 'wearable_project.curation.apple_healthkit.schema' in sys.modules\n"
         "print('deferred')\n"
     )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)

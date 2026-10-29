@@ -30,6 +30,7 @@ from wearable_project.processing.apple_healthkit.pipeline import (
     PARSER_VERSION, PlanAction, discover_participants, plan_participant, resolve_export_root,
 )
 from wearable_project.processing.apple_healthkit.registry import REGISTRY_VERSION
+from wearable_project.processing.apple_healthkit.tracker import read_only_mode
 from wearable_project.processing.apple_healthkit.writer import (
     FeatureOutputInfo, StoredParticipantState, existing_output_is_usable, source_signature,
 )
@@ -188,7 +189,7 @@ class ReadOnlyNativeState:
     def __enter__(self) -> "ReadOnlyNativeState":
         if not self.exists:
             return self
-        uri = self.path.as_uri() + "?mode=ro"
+        uri = self.path.as_uri() + "?" + read_only_mode(self.path)
         try:
             self.connection = sqlite3.connect(uri, uri=True)
         except sqlite3.Error as exc:

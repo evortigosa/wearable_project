@@ -33,6 +33,7 @@ with ``show_ids=True``.
 from __future__ import annotations
 import json
 import textwrap
+import warnings
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
@@ -3306,3 +3307,20 @@ def plot_feature_correlations(summaries: "sm.Summaries", features: Iterable[str]
     data["participants"] = data["participants"].astype(float)
     data.loc[data["suppressed"], "participants"] = np.nan  # a hidden pair shows neither its correlation nor its count
     return _finish(fig, data, path, dpi)
+
+
+_OLD_NAMES = {
+    "feature_colour": "feature_color",
+    "CATEGORY_COLOURS": "CATEGORY_COLORS",
+    "GLUCOSE_COLOURS": "GLUCOSE_COLORS",
+    "SLEEP_COLOURS": "SLEEP_COLORS",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _OLD_NAMES:
+        new = _OLD_NAMES[name]
+        warnings.warn(f"data_plots.{name} is now data_plots.{new}; the old name will be removed in a future release",
+                      DeprecationWarning, stacklevel=2)
+        return globals()[new]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

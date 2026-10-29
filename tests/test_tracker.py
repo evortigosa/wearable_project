@@ -61,7 +61,7 @@ def write_rows(path: Path, participant: str) -> None:
 
 def run_process(input_root: Path, output_root: Path) -> dict:
     command = [
-        sys.executable, "-m", "wearable_project", "process", "--input", str(input_root), "--output",
+        sys.executable, "-m", "wearable_project", "process", "apple-healthkit", "--input", str(input_root), "--output",
         str(output_root), "--workers", "1", "--max-in-flight", "1", "--row-error-policy", "skip-row",
         "--json-summary",
     ]
@@ -119,7 +119,7 @@ def test_processing_tracker_reports_run_and_snapshot_metrics(tmp_path: Path) -> 
     assert noop["snapshot"]["canonical_rows"] == 2
 
     command = [
-        sys.executable, "-m", "wearable_project", "report",
+        sys.executable, "-m", "wearable_project", "report", "apple-healthkit",
         "--output", str(output_root), "--json", "--include-details",
     ]
     persisted = subprocess.run(
@@ -186,7 +186,7 @@ def test_planning_failure_is_persisted_without_aborting_other_participants(tmp_p
     write_rows(input_root / "BAD" / "2024-01.csv", "BAD")
 
     command = [
-        sys.executable, "-m", "wearable_project", "process", "--input", str(input_root), "--output",
+        sys.executable, "-m", "wearable_project", "process", "apple-healthkit", "--input", str(input_root), "--output",
         str(output_root), "--workers", "1", "--max-in-flight", "1", "--row-error-policy", "skip-row",
         "--json-summary",
     ]
@@ -215,7 +215,8 @@ def test_report_explains_pre_telemetry_state_database(tmp_path: Path) -> None:
                )"""
         )
     command = [
-        sys.executable, "-m", "wearable_project", "report", "--state-file", str(state_file), "--json",
+        sys.executable, "-m", "wearable_project", "report", "apple-healthkit", "--state-file", str(state_file),
+        "--json",
     ]
     result = subprocess.run(
         command, cwd=Path(__file__).parents[1], text=True, capture_output=True,

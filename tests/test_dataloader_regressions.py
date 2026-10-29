@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import pytest
+import _sample_facts as facts
 from wearable_project.DataLoaders import DataLoaderStateError
 from wearable_project.DataLoaders._base import AppleHealthFeatureLoader
 from wearable_project.DataLoaders.ActivitySummaryLoader import ActivitySummaryLoader
@@ -243,7 +244,8 @@ def test_hidden_folders_are_not_participants(tmp_path: Path):
     shutil.copytree(root / P1, root / ".scratch_copy")
     data = StepCountLoader(phase="native", root=root).get_data()
     assert not any(".scratch" in code for code in data.df_metadata.index)
-    assert StepCountLoader(phase="native", root=root).profile().summary["participants"] == 10
+    participants = StepCountLoader(phase="native", root=root).profile().summary["participants"]
+    assert participants == facts.files(NATIVE_SAMPLE, "StepCount")
 
 
 @needs_sample

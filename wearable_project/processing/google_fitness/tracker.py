@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Mapping
 from wearable_project.processing.google_fitness.registry import SOURCE_KEY
-from wearable_project.processing.google_fitness.writer import STATE_FILENAME
+from wearable_project.processing.google_fitness.writer import STATE_FILENAME, read_only_mode
 
 
 def peak_rss_bytes() -> int:
@@ -235,7 +235,7 @@ def load_processing_report(
     path = Path(state_file)
     if not path.is_file():
         raise FileNotFoundError(path)
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{path}?{read_only_mode(path)}", uri=True)
     connection.row_factory = sqlite3.Row
     try:
         _source_guard(connection)

@@ -91,6 +91,26 @@ def _new_temporary_file(directory: Path, prefix: str, suffix: str) -> Path:
     raise FileExistsError(f"could not create a temporary file in {directory}")
 
 
+def read_only_mode(database: Path) -> str:
+    """
+    SQLite URI parameters for reading a state database without ever writing beside it.
+    A plain ``mode=ro`` connection to a WAL database must create the ``-shm`` index next to it: it fails for a reader
+    without write access to the root, and otherwise leaves ``-shm`` and ``-wal`` files in the data tree. With no write
+    pending, nothing can change under the reader, so the database is opened immutable, which never writes. A non-empty
+    write-ahead log or rollback journal, the evidence of a writer at work that the DataLoaders also use, may still hold
+    committed pages, so the database is then read normally to see them.
+    """
+
+    for suffix in ("-wal", "-journal"):
+        side = database.with_name(database.name + suffix)
+        try:
+            if side.is_file() and side.stat().st_size > 0:
+                return "mode=ro"
+        except OSError:
+            return "mode=ro"
+    return "mode=ro&immutable=1"
+
+
 def _schema_for_feature(feature: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     if feature == UNREGISTERED_ACTIVITY_POLICY.native_feature:
         return (
@@ -336,7 +356,7 @@ class StateDatabase:
                 )
             if existing.get("state_schema_version") not in (None, STATE_SCHEMA_VERSION):
                 raise OutputValidationError(
-                    "incompatible Google Fitness state schema: {existing['state_schema_version']!r}"
+                    f"incompatible Google Fitness state schema: {existing['state_schema_version']!r}"
                 )
 
         self.connection.executescript(

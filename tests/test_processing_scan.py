@@ -48,7 +48,7 @@ def write_month(root: Path, participant: str, filename: str, *, value: float = 1
 
 def run_process(input_root: Path, output_root: Path) -> None:
     command = [
-        sys.executable, "-m", "wearable_project", "process",
+        sys.executable, "-m", "wearable_project", "process", "apple-healthkit",
         "--input", str(input_root), "--output", str(output_root),
         "--workers", "1", "--max-in-flight", "1", "--json-summary",
     ]
@@ -176,7 +176,7 @@ def test_process_scan_cli_json_and_exit_modes(tmp_path: Path) -> None:
     input_root, output_root = tmp_path / "input", tmp_path / "output"
     write_month(input_root, "P1", "2024-12.csv")
     command = [
-        sys.executable, "-m", "wearable_project", "process-scan",
+        sys.executable, "-m", "wearable_project", "process-scan", "apple-healthkit",
         "--input", str(input_root), "--output", str(output_root),
         "--workers", "1", "--json", "--include-details", "--no-progress",
     ]
@@ -203,7 +203,7 @@ def test_process_scan_report_file(tmp_path: Path) -> None:
     input_root, output_root, report_path = tmp_path / "input", tmp_path / "output", tmp_path / "scan.json"
     write_month(input_root, "P1", "2024-12.csv")
     command = [
-        sys.executable, "-m", "wearable_project", "process-scan",
+        sys.executable, "-m", "wearable_project", "process-scan", "apple-healthkit",
         "--input", str(input_root), "--output", str(output_root),
         "--workers", "1", "--json", "--include-details", "--no-progress",
         "--report-output", str(report_path),
@@ -288,7 +288,7 @@ def test_scan_exposes_stored_versions_and_mismatch_only_warning(tmp_path: Path) 
 
 def test_processing_environment_cli_json() -> None:
     command = [
-        sys.executable, "-m", "wearable_project", "processing-environment", "--json",
+        sys.executable, "-m", "wearable_project", "processing-environment", "apple-healthkit", "--json",
     ]
     result = subprocess.run(
         command, cwd=Path(__file__).parents[1], text=True, capture_output=True,
@@ -301,6 +301,6 @@ def test_processing_environment_cli_json() -> None:
     assert payload["registry_version"]
     assert set(payload["core_module_integrity"]) == {
         "__init__.py", "cleaners.py", "parser.py", "pipeline.py",
-        "registry.py", "resampling.py", "tracker.py", "writer.py",
+        "registry.py", "resampling.py", "scan.py", "tracker.py", "writer.py",
     }
     assert all(payload["core_module_integrity"].values())

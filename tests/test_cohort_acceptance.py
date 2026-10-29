@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 import pytest
 from wearable_project.utils import cohort_acceptance
@@ -53,11 +54,31 @@ def _checks(result, level):
     return {(f["phase"], f["feature"], f["check"]) for f in result["findings"] if f["level"] == level}
 
 
+def _sharing_warnings(features) -> set:
+    """The sharing warnings the samples' own permission bits call for: none where they are open to their group."""
+
+    expected = set()
+    for phase, root in (("native", NATIVE), ("curated", CURATED)):
+        folders = [root, *(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))]
+        for feature in features:
+            if any(not os.stat(p).st_mode & stat.S_IRGRP for p in root.glob(f"[!.]*/{feature}.csv")):
+                expected.add((phase, feature, "files not readable by their group"))
+        if any(os.stat(p).st_mode & (stat.S_IRGRP | stat.S_IXGRP) != stat.S_IRGRP | stat.S_IXGRP for p in folders):
+            expected.add((phase, None, "folders not open to their group"))
+        database = root / {"native": ".wearable_state.sqlite", "curated": ".wearable_curation_state.sqlite"}[phase]
+        if database.is_file() and not os.stat(database).st_mode & stat.S_IRGRP:
+            expected.add((phase, None, "state database not readable by its group"))
+    return expected
+
+
 @needs_samples
 def test_the_healthy_samples_pass_and_are_left_untouched(tmp_path):
     before = {root: _fingerprint(root) for root in (NATIVE, CURATED)}
     code, result = _run(tmp_path, NATIVE, CURATED, "--participants", "10")
-    assert code == 0 and result["verdict"] == "PASS" and result["findings"] == []
+    expected = _sharing_warnings(result["features"])  # what the samples' own file modes call for, if anything
+    assert code == 0 and result["verdict"] == ("PASS WITH WARNINGS" if expected else "PASS")
+    assert {(f["phase"], f["feature"], f["check"]) for f in result["findings"]} == expected
+    assert all(f["level"] == "WARN" for f in result["findings"])
     for phase in ("native", "curated"):
         assert len(result["profiles"][phase]) == len(result["loads"][phase]) == len(result["features"]) == 33
     assert len(result["participants_sampled"]) == 10
@@ -73,7 +94,8 @@ def test_a_damaged_file_fails_the_run(tmp_path):
     lines[-2] = last[:-1] + ("7" if last[-1] != "7" else "3")  # same size, still valid
     victim.unlink()
     victim.write_text("\n".join(lines))
-    code, result = _run(tmp_path, native, CURATED, "--features", "StepCount", "--participants", "10")
+    # Every participant is loaded, so the damaged file is always among them, whatever the sample's size.
+    code, result = _run(tmp_path, native, CURATED, "--features", "StepCount", "--participants", "0")
     assert code == 1 and result["verdict"] == "FAIL"
     assert ("native", "StepCount", "verified load") in _checks(result, "FAIL")
 

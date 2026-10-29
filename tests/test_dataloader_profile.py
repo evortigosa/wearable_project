@@ -20,6 +20,7 @@ import warnings
 from pathlib import Path
 import pandas as pd
 import pytest
+import _sample_facts as facts
 from wearable_project.DataLoaders import DataLoaderSizeError, DataLoaderStateError, ProfileReport
 from wearable_project.DataLoaders._base import AppleHealthFeatureLoader
 from wearable_project.DataLoaders._profile import ACQUISITION_CAVEAT
@@ -137,9 +138,11 @@ def test_profile_describes_exactly_what_get_data_returns_for_every_feature_and_p
 def test_profile_inclusion_matches_the_default_inclusion_subset():
     profile = WeightLoader(root=CURATED_SAMPLE).profile()
     subset = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True)
-    assert profile.summary["default_inclusion"] == {"included": 82, "excluded": 375, "unverifiable_files": 0}
-    assert len(subset.df) == 82
-    assert subset.load_report["size_estimate"]["rows_expected"] == 82
+    included = facts.included(CURATED_SAMPLE, "Weight")
+    excluded = facts.rows(CURATED_SAMPLE, "Weight") - included
+    assert profile.summary["default_inclusion"] == {"included": included, "excluded": excluded, "unverifiable_files": 0}
+    assert len(subset.df) == included
+    assert subset.load_report["size_estimate"]["rows_expected"] == included
 
 
 # ================================================================== profile(): content
@@ -158,8 +161,8 @@ def test_profile_returns_a_report_with_summary_participants_and_text():
 def test_profile_as_dict_is_json_serialisable():
     payload = WeightLoader(root=CURATED_SAMPLE).profile().as_dict()
     decoded = json.loads(json.dumps(payload))
-    assert decoded["summary"]["rows"] == 457
-    assert len(decoded["participants"]) == 7
+    assert decoded["summary"]["rows"] == facts.rows(CURATED_SAMPLE, "Weight")
+    assert len(decoded["participants"]) == facts.files(CURATED_SAMPLE, "Weight")
 
 
 @needs_sample
@@ -186,8 +189,10 @@ def test_profile_unit_resolution_is_not_applicable_where_the_registry_fixes_the_
     """0% would misreport HeartRate as unresolved; its unit is fixed, not undetermined."""
     assert HeartRateLoader(root=CURATED_SAMPLE).profile().summary["unit_resolution"]["resolved_fraction"] is None
     weight = WeightLoader(root=CURATED_SAMPLE).profile().summary["unit_resolution"]
-    assert weight["canonical_value_rows"] == 82 and weight["ambiguous_unit_rows"] == 375
-    assert math.isclose(weight["resolved_fraction"], 82 / 457)
+    canonical = facts.nonblank(CURATED_SAMPLE, "Weight", "canonical_value")
+    assert weight["canonical_value_rows"] == canonical
+    assert weight["ambiguous_unit_rows"] == facts.equal(CURATED_SAMPLE, "Weight", "curation_unit_status", "ambiguous")
+    assert math.isclose(weight["resolved_fraction"], canonical / facts.rows(CURATED_SAMPLE, "Weight"))
     oxygen = OxygenSaturationLoader(root=CURATED_SAMPLE).profile().summary["unit_resolution"]
     assert oxygen["resolved_fraction"] == 1.0
     assert "not applicable" in HeartRateLoader(root=CURATED_SAMPLE).profile().text
@@ -203,7 +208,7 @@ def test_profile_status_counts_match_the_curated_rows():
 def test_native_profile_reports_rows_but_no_curation_sections():
     summary = StepCountLoader(phase="native", root=NATIVE_SAMPLE).profile().summary
     assert summary["source"] == "native_state"
-    assert summary["rows"] == 52_247
+    assert summary["rows"] == facts.rows(NATIVE_SAMPLE, "StepCount")
     for section in ("status_counts", "default_inclusion", "acquisition", "unit_resolution", "policy"):
         assert summary[section] is None
 
@@ -240,7 +245,7 @@ def test_profile_without_state_falls_back_to_the_filesystem(tmp_path: Path):
     summary = profile.summary
     assert summary["source"] == "filesystem"
     assert summary["rows"] is None
-    assert summary["bytes_on_disk"] > 0 and summary["files_on_disk"] == 10
+    assert summary["bytes_on_disk"] > 0 and summary["files_on_disk"] == facts.files(CURATED_SAMPLE, "StepCount")
     assert summary["load"]["default_get_data_rows"] is None
     assert "not checked" in profile.text
 
@@ -299,7 +304,7 @@ def test_profile_flags_migrated_inclusion_counts(tmp_path: Path):
     _edit_state(root, CURATED_STATE, "update curation_outputs set included_by_default_rows = 0, "
                                      "excluded_by_default_rows = 0 where feature = 'StepCount'")
     profile = StepCountLoader(root=root).profile()
-    assert profile.summary["default_inclusion"]["unverifiable_files"] == 10
+    assert profile.summary["default_inclusion"]["unverifiable_files"] == facts.files(CURATED_SAMPLE, "StepCount")
     assert profile.participants["included_by_default_rows"].isna().all()
 
 
@@ -332,7 +337,7 @@ def test_oversized_request_is_refused_before_any_csv_is_parsed(count_csv_reads):
 
 @needs_sample
 def test_native_oversized_request_is_refused_from_native_state(count_csv_reads):
-    with pytest.raises(DataLoaderSizeError, match="would return 52,247 rows"):
+    with pytest.raises(DataLoaderSizeError, match=f"would return {facts.rows(NATIVE_SAMPLE, 'StepCount'):,} rows"):
         StepCountLoader(phase="native", root=NATIVE_SAMPLE).get_data(max_rows=10_000)
     assert count_csv_reads["n"] == 0
 
@@ -379,10 +384,11 @@ def test_none_disables_the_limit():
 
 @needs_sample
 def test_default_inclusion_estimate_counts_only_included_rows(count_csv_reads):
-    data = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True, max_rows=82)
-    assert len(data.df) == 82
+    included = facts.included(CURATED_SAMPLE, "Weight")
+    data = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True, max_rows=included)
+    assert len(data.df) == included
     with pytest.raises(DataLoaderSizeError):
-        WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True, max_rows=81)
+        WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True, max_rows=included - 1)
 
 
 @needs_sample
@@ -408,7 +414,7 @@ def test_invalid_limits_are_rejected(tmp_path: Path, value):
 
 def test_default_limit_is_published():
     from wearable_project.DataLoaders import DEFAULT_MAX_ROWS
-    assert AppleHealthFeatureLoader.default_max_rows == DEFAULT_MAX_ROWS == 25_000_000
+    assert AppleHealthFeatureLoader.default_max_rows == DEFAULT_MAX_ROWS == 50_000_000
 
 
 def test_size_error_is_distinct_from_read_errors():
@@ -421,9 +427,9 @@ def test_size_estimate_is_reported():
     report = StepCountLoader(root=CURATED_SAMPLE).get_data().load_report
     estimate = report["size_estimate"]
     assert estimate["source"] == "curation_state"
-    assert estimate["rows_expected"] == estimate["rows_stored"] == 52_247
-    assert estimate["participants"] == 10
-    assert report["max_rows"] == 25_000_000
+    assert estimate["rows_expected"] == estimate["rows_stored"] == facts.rows(CURATED_SAMPLE, "StepCount")
+    assert estimate["participants"] == facts.files(CURATED_SAMPLE, "StepCount")
+    assert report["max_rows"] == 50_000_000
 
 
 # ========================================================= writer-activity guard, both journals
@@ -434,7 +440,7 @@ def test_native_hot_journal_is_refused_like_a_curated_one(tmp_path: Path):
     with pytest.raises(DataLoaderStateError, match="uncommitted writes"):
         StepCountLoader(phase="native", root=root).get_data()
     data = StepCountLoader(phase="native", root=root, state_validation="off").get_data()
-    assert len(data.df) == 52_247
+    assert len(data.df) == facts.rows(NATIVE_SAMPLE, "StepCount")
     assert data.load_report["size_estimate"] is None
 
 
@@ -467,7 +473,7 @@ def test_coverage_follows_row_filters():
     data = HeartRateLoader(root=CURATED_SAMPLE).get_data(start_date="2024-01-01")
     assert sum(data.load_report["acquisition_method_counts"].values()) == len(data.df)
     subset = WeightLoader(root=CURATED_SAMPLE).get_data(default_inclusion_only=True)
-    assert sum(subset.load_report["acquisition_method_counts"].values()) == 82
+    assert sum(subset.load_report["acquisition_method_counts"].values()) == facts.included(CURATED_SAMPLE, "Weight")
 
 
 @needs_sample
@@ -485,7 +491,7 @@ def test_native_coverage_uses_stored_values_without_manufacturing_labels():
     blood_alcohol = BloodAlcoholContentLoader(phase="native", root=NATIVE_SAMPLE).get_data().load_report
     assert set(blood_alcohol["acquisition_method_counts"]) <= {"calculator_estimate", "unclassified"}
     steps = StepCountLoader(phase="native", root=NATIVE_SAMPLE).get_data().load_report
-    assert steps["acquisition_method_counts"] == {"unclassified": 52_247}
+    assert steps["acquisition_method_counts"] == {"unclassified": facts.rows(NATIVE_SAMPLE, "StepCount")}
     assert steps["acquisition_classified_fraction"] == 0.0
 
 

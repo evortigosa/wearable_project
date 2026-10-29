@@ -6,6 +6,7 @@ configuration behaved. It does not compute cohort statistics from physiological 
 participant feature CSVs.
 """
 
+
 from __future__ import annotations
 import json
 import math
@@ -17,6 +18,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from wearable_project.processing.apple_healthkit.registry import is_registered_feature
+
+
+def read_only_mode(database: Path) -> str:
+    """
+    SQLite URI parameters for reading a state database without ever writing beside it.
+    A plain ``mode=ro`` connection to a WAL database must create the ``-shm`` index next to it: it fails for a reader
+    without write access to the root, and otherwise leaves ``-shm`` and ``-wal`` files in the data tree. With no write
+    pending, nothing can change under the reader, so the database is opened immutable, which never writes. A non-empty
+    write-ahead log or rollback journal, the evidence of a writer at work that the DataLoaders also use, may still hold
+    committed pages, so the database is then read normally to see them.
+    """
+
+    for suffix in ("-wal", "-journal"):
+        side = database.with_name(database.name + suffix)
+        try:
+            if side.is_file() and side.stat().st_size > 0:
+                return "mode=ro"
+        except OSError:
+            return "mode=ro"
+    return "mode=ro&immutable=1"
 
 
 def now_utc() -> str:
@@ -727,7 +748,7 @@ def load_processing_report(
     path = state_file.expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Processing state database does not exist: {path}")
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{path}?{read_only_mode(path)}", uri=True)
     connection.row_factory = sqlite3.Row
     try:
         table = connection.execute(

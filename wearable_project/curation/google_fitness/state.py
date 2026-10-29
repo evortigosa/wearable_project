@@ -22,6 +22,7 @@ from wearable_project.curation.google_fitness.registry import registry_fingerpri
 from wearable_project.curation.google_fitness.rules import rules_fingerprint
 from wearable_project.exceptions import OutputValidationError
 from wearable_project.processing.google_fitness.registry import SOURCE_KEY
+from wearable_project.processing.google_fitness.writer import read_only_mode
 
 
 CURATION_STATE_FILENAME = ".wearable_curation_state.sqlite"
@@ -122,7 +123,7 @@ class CurationStateDatabase:
         if read_only:
             if not self.path.is_file():
                 raise FileNotFoundError(self.path)
-            self.connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+            self.connection = sqlite3.connect(f"file:{self.path}?{read_only_mode(self.path)}", uri=True)
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.connection = sqlite3.connect(self.path)
