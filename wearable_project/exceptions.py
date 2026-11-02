@@ -52,6 +52,10 @@ class DataLoaderConfigurationError(DataLoaderError, ValueError):
     """Invalid loader phase, filter, or option."""
 
 
+class DataLoaderSourceError(DataLoaderConfigurationError):
+    """A feature/source pairing or managed-root source identity is incompatible with the requested loader."""
+
+
 class DataLoaderPathError(DataLoaderError, FileNotFoundError):
     """Configured native/curated data root is unavailable."""
 

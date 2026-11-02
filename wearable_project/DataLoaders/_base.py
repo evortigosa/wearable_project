@@ -26,7 +26,12 @@ import warnings
 import numpy as np
 import pandas as pd
 from wearable_project.exceptions import (
-    DataLoaderConfigurationError, DataLoaderError, DataLoaderPathError, DataLoaderReadError,
+    DataLoaderConfigurationError, DataLoaderError, DataLoaderPathError, DataLoaderReadError, DataLoaderSourceError,
+)
+from wearable_project.DataLoaders._contracts import LoaderFeatureContract, RootIdentity, SourceAdapter
+from wearable_project.DataLoaders._sources import (
+    DEFAULT_APPLE_HEALTHKIT_CURATED_ROOT, DEFAULT_APPLE_HEALTHKIT_NATIVE_ROOT, WearableSource, get_source_adapter,
+    normalize_source, probe_root_identity, sources_for_feature,
 )
 from wearable_project.DataLoaders._profile import ProfileReport, format_bytes, render_profile_text
 from wearable_project.DataLoaders._units import stored_unit
@@ -35,12 +40,9 @@ from wearable_project.processing.apple_healthkit.registry import get_feature_spe
 
 ProcessingPhase = Literal["native", "curated"]
 
-DEFAULT_NATIVE_ROOT = Path(
-    "/net/mraid20/ifs/wisdom/segal_lab/genie/LabData/Data/10K/aws_lab_files/third-party/EV_cleaned_apple_healthkit"
-)
-DEFAULT_CURATED_ROOT = Path(
-    "/net/mraid20/ifs/wisdom/segal_lab/genie/LabData/Data/10K/aws_lab_files/third-party/EV_curated_apple_healthkit"
-)
+# Backward-compatible aliases.  Source-specific defaults live in ``DataLoaders._sources``.
+DEFAULT_NATIVE_ROOT = DEFAULT_APPLE_HEALTHKIT_NATIVE_ROOT
+DEFAULT_CURATED_ROOT = DEFAULT_APPLE_HEALTHKIT_CURATED_ROOT
 
 _TEMPORAL_COLUMNS = (
     "start_date",
@@ -63,10 +65,10 @@ _PHASE_STATE_FILES: dict[ProcessingPhase, str] = {
 
 class DataLoaderStateError(DataLoaderReadError):
     """
-    A curated file disagrees with the curation state database that recorded it, or that database cannot
-    be read safely. Subclasses ``DataLoaderReadError`` so existing handlers for read failures still apply.
-    Typical causes are a damaged CSV, a stale state database, a loader incompatible with the writer version,
-    or an undocumented serialization change.
+    A native or curated file disagrees with the state database that recorded it, or that database cannot be
+    read safely. Subclasses ``DataLoaderReadError`` so existing handlers for read failures still apply. Typical
+    causes are a damaged CSV, stale state, an incompatible writer/loader contract, or an undocumented
+    serialization change.
     """
 
 
@@ -154,6 +156,13 @@ def _parsed_utc_dtype() -> Any:
     """
 
     return pd.to_datetime(pd.Series(["2000-01-01T00:00:00Z"]), utc=True, errors="raise", format="mixed").dtype
+
+
+@lru_cache(maxsize=1)
+def _parsed_calendar_date_dtype() -> Any:
+    """The timezone-naive dtype used for source calendar-date labels such as Google summary_date."""
+
+    return pd.to_datetime(pd.Series(["2000-01-01"]), errors="raise", format="%Y-%m-%d").dtype
 
 
 # Text a flag column may hold, compared case-insensitively after trimming.
@@ -290,11 +299,13 @@ class LoaderData:
 
 class AppleHealthFeatureLoader:
     """
-    Base class for one Apple HealthKit feature. Subclasses only declare ``feature_name`` and, when necessary,
-    a different date anchor. Stored data are never modified by a loader.
+    Production-compatible loader base for Apple HealthKit features and the shared source-dispatch engine.
+    Existing subclasses continue to default to Apple HealthKit. An explicit ``source`` selects another
+    source-qualified adapter when that feature is available there. Stored data are never modified by a loader.
     """
 
     feature_name: ClassVar[str]
+    default_source: ClassVar[WearableSource | str | None] = WearableSource.APPLE_HEALTHKIT
     date_column: ClassVar[str] = "start_date"
     date_semantics: ClassVar[str] = "event_start"
     registration_prefix: ClassVar[str] = "10K_"
@@ -303,18 +314,19 @@ class AppleHealthFeatureLoader:
     default_max_rows: ClassVar[int | None] = DEFAULT_MAX_ROWS
 
     def __init__(
-        self, phase: ProcessingPhase | str = "curated", *,
-        native_root: str | Path = DEFAULT_NATIVE_ROOT,
-        curated_root: str | Path = DEFAULT_CURATED_ROOT,
-        root: str | Path | None = None,
-        state_validation: StateValidation | str = "auto",
+        self, phase: ProcessingPhase | str = "curated", *, native_root: str | Path = DEFAULT_NATIVE_ROOT,
+        curated_root: str | Path = DEFAULT_CURATED_ROOT, root: str | Path | None = None,
+        state_validation: StateValidation | str = "auto", source: WearableSource | str | None = None,
     ) -> None:
         """
+        ``source`` selects the scientific source contract. Existing public loaders default to Apple HealthKit;
+        source selection is explicit and is verified against managed-root state before a feature CSV is parsed.
         ``state_validation`` governs how files are checked against the phase's state database, the curation
         state for curated roots and the processing state for native roots: ``"auto"`` verifies every file when
         the database exists and reports the load as unverified when it does not; ``"required"`` fails when the
-        database is absent; ``"off"`` skips verification.  Dense reconstruction of the curated logical schema
-        happens in every mode.  No filesystem access happens here.
+        database is absent; ``"off"`` skips file verification. Source identity checks remain active in every
+        mode. Dense reconstruction of the curated logical schema happens in every mode. No filesystem access
+        happens here.
         """
 
         normalized_phase = str(phase).strip().lower()
@@ -332,9 +344,40 @@ class AppleHealthFeatureLoader:
             )
         self.phase: ProcessingPhase = normalized_phase  # type: ignore[assignment]
         self.state_validation: StateValidation = normalized_validation  # type: ignore[assignment]
-        self.native_root = Path(native_root).expanduser()
-        self.curated_root = Path(curated_root).expanduser()
+        self.source = normalize_source(source, default=self.default_source)
+        self._source_adapter: SourceAdapter = get_source_adapter(self.source)
+        feature = getattr(self, "feature_name", None)
+        if not feature:
+            raise DataLoaderConfigurationError("a wearable feature loader must declare feature_name")
+        if not self._source_adapter.supports_feature(feature, self.phase):
+            supported = sources_for_feature(feature, phase=self.phase)
+            supported_text = ", ".join(item.value for item in supported) or "none"
+            raise DataLoaderSourceError(
+                f"{type(self).__name__} represents feature {feature!r}, which is not available for source "
+                f"{self.source.value!r}; supported source(s): {supported_text}"
+            )
+        if self.source is not WearableSource.APPLE_HEALTHKIT:
+            contract = self._source_adapter.date_contract(feature)
+            # One public feature class may expose a distinct temporal contract for another source. Apple keeps
+            # resolving the established class attributes directly, including custom subclass overrides.
+            self.date_column = contract.column
+            self.date_semantics = contract.semantics
+        configured_native = Path(native_root).expanduser()
+        configured_curated = Path(curated_root).expanduser()
+        # Preserve the production constructor defaults exactly.  When a non-Apple source is explicitly selected,
+        # those legacy Apple defaults act as compatibility sentinels and resolve to that source's own roots.
+        self.native_root = (
+            self._source_adapter.native_root
+            if self.source is not WearableSource.APPLE_HEALTHKIT and configured_native == DEFAULT_NATIVE_ROOT
+            else configured_native
+        )
+        self.curated_root = (
+            self._source_adapter.curated_root
+            if self.source is not WearableSource.APPLE_HEALTHKIT and configured_curated == DEFAULT_CURATED_ROOT
+            else configured_curated
+        )
         self._root_override = Path(root).expanduser() if root is not None else None
+        self._last_root_identity: RootIdentity | None = None
 
     @property
     def _data_index_names(self) -> list[str]:
@@ -391,7 +434,59 @@ class AppleHealthFeatureLoader:
                 f"{detected_phase} data (found {_PHASE_STATE_FILES[detected_phase]!r}); "
                 f"pass phase={detected_phase!r} or point root at a {self.phase} tree"
             )
+        identity = probe_root_identity(root, detected_phase)
+        self._last_root_identity = identity
+        if identity.source is not None and identity.source is not self.source:
+            raise DataLoaderSourceError(
+                f"source={self.source.value!r} was requested for {self.feature_name}, but {root} is a managed "
+                f"{identity.source.value!r} {detected_phase or self.phase} root ({identity.evidence}). "
+                f"Use source={identity.source.value!r} or point root at a {self.source.value!r} product."
+            )
+        self._source_adapter.validate_root_identity(identity, self.phase)
         return root, detected_phase
+
+    @property
+    def source_verified(self) -> bool:
+        """Whether the most recently checked managed root proved this instance's requested source."""
+
+        identity = self._last_root_identity
+        return bool(identity is not None and identity.verified and identity.source is self.source)
+
+    @staticmethod
+    def detect_source(root: str | Path) -> WearableSource | None:
+        """Return a managed root's established source, or ``None`` for an unmanaged/unrecognized tree."""
+
+        path = Path(root).expanduser()
+        phase = AppleHealthFeatureLoader.detect_phase(path)
+        return probe_root_identity(path, phase).source
+
+    def _require_loading_implemented(self, operation: str) -> None:
+        if operation in {"get_data", "profile"} and self.phase in self._source_adapter.implemented_phases:
+            return
+        if operation == "info" and self.source is WearableSource.APPLE_HEALTHKIT:
+            return
+        if self.source is WearableSource.GOOGLE_FITNESS and self.phase == "curated":
+            detail = (
+                "Google Fitness curated schema-v2 loading is reserved for Increment 3 because sparse physical "
+                "decisions and contract-defined virtual columns must be validated together."
+            )
+        elif self.source is WearableSource.GOOGLE_FITNESS and operation == "info":
+            detail = "Google Fitness static information reports are scheduled after the native loader contract."
+        else:
+            detail = "The selected source/phase operation is not implemented."
+        raise DataLoaderConfigurationError(
+            f"{operation} for source={self.source.value!r}, phase={self.phase!r} is not enabled. {detail}"
+        )
+
+    def _loader_schema(self) -> Any:
+        """Projection/dtype schema selected by the instance's source-qualified feature contract."""
+
+        if self.source is WearableSource.APPLE_HEALTHKIT:
+            return _projection_schema()
+        return self._source_adapter.projection_schema(self.feature_name, self.phase)
+
+    def _feature_loader_contract(self) -> LoaderFeatureContract:
+        return self._source_adapter.feature_contract(self.feature_name, self.phase)
 
     def info(self, *, include_evidence: bool = False):
         """
@@ -400,6 +495,7 @@ class AppleHealthFeatureLoader:
         report; ``loader.info().as_dict()`` returns the structured form.
         """
 
+        self._require_loading_implemented("info")
         # Local import avoids a module cycle: DataLoaders.info imports this base class to construct
         # feature-specific reports.
         from wearable_project.DataLoaders.info import _feature_report
@@ -421,20 +517,18 @@ class AppleHealthFeatureLoader:
             Optional HPP registration code(s), e.g. ``"10K_XXXXXXXXXX"``. Bare participant folder IDs and integers
             are accepted as well. ``None`` discovers every participant containing this feature.
         start_date, end_date:
-            Optional inclusive UTC bounds applied to the feature's HPP ``Date`` anchor. For almost all features
-            this is ``start_date``. For ``ActivitySummary`` it is the retained outer ``datetime`` because
-            curation intentionally does not invent a canonical summary day.
+            Optional inclusive UTC bounds applied to the source-qualified HPP ``Date`` anchor. Apple
+            ``ActivitySummary`` uses its retained outer ``datetime``; Google ``Weight``/``Height`` use
+            ``end_date``; Google ``StepCount`` uses ``outer_datetime`` without claiming a canonical event day.
         columns:
             Optional subset of data columns returned after indexing. The source date column is still read as
             needed to construct ``Date``. An explicit list overrides ``projection`` entirely, so any stored
             column remains reachable by name.
         projection:
-            Named column set, declared in ``curation.schema``. ``"default"`` returns timing, measurements,
-            units, curation verdicts, acquisition, UTC offset, quality flags and feature-specific context.
-            ``"analysis"`` adds the unit-resolution audit trail, device descriptors, deduplication bookkeeping
-            and the IANA time zone. ``"full"`` returns every stored column, including identifiers, free-text
-            device labels, the raw metadata payload and the ECG waveform; it reproduces the pre-0.2.0 loader
-            behavior. Withheld column names are listed in ``LoaderData.metadata``.
+            Source-qualified named column set. ``"default"`` exposes the normal analytical core;
+            ``"analysis"`` adds reviewed provenance/audit context; ``"full"`` returns every stored column,
+            including identifiers and source payload fields. Exact roles differ by source and feature. Withheld
+            names are listed in ``LoaderData.load_report["columns_withheld"]``.
         default_inclusion_only:
             Curated-only opt-in filter. When true, retain rows whose ``include_by_default`` is true.
             The default is false so ``get_data()`` never silently hides review/excluded rows.
@@ -457,6 +551,7 @@ class AppleHealthFeatureLoader:
         """
 
         root, detected_phase = self._checked_root()
+        self._require_loading_implemented("get_data")
 
         if default_inclusion_only and self.phase != "curated":
             raise DataLoaderConfigurationError("default_inclusion_only is only defined for phase='curated'")
@@ -467,7 +562,7 @@ class AppleHealthFeatureLoader:
         if isinstance(columns, str):
             columns = [columns]
         projection = str(projection).strip().lower()
-        schema = _projection_schema()
+        schema = self._loader_schema()
         if not schema.is_known_projection(projection):
             raise DataLoaderConfigurationError(
                 f"unknown projection {projection!r}; choose one of "
@@ -490,6 +585,23 @@ class AppleHealthFeatureLoader:
                 installed_fingerprint = self._installed_policy_fingerprint()
         else:
             manifest, state_note = self._open_native_manifest(root)
+
+        requested_empty_for_source: list[str] = []
+        if (
+            self.source is WearableSource.GOOGLE_FITNESS
+            and self.phase == "native"
+            and registration_codes is not None
+            and manifest is not None
+        ):
+            statuses = self._source_adapter.participant_statuses(root)
+            requested_empty_for_source = sorted(
+                participant_id
+                for participant_id in participant_ids
+                if statuses.get(participant_id) == "complete_empty"
+            )
+            if requested_empty_for_source:
+                empty = set(requested_empty_for_source)
+                missing_requested = [participant_id for participant_id in missing_requested if participant_id not in empty]
 
         frames: list[pd.DataFrame] = []
         files_read = 0
@@ -550,6 +662,8 @@ class AppleHealthFeatureLoader:
                 )
         acquisition_total: Counter[str] = Counter()
         acquisition_by_participant: dict[str, Counter[str]] = {}
+        google_version_counts: Counter[str] = Counter()
+        google_tracking_counts: Counter[str] = Counter()
         retained_rows = 0
 
         for participant_id in participant_ids:
@@ -609,6 +723,13 @@ class AppleHealthFeatureLoader:
                         "cannot be verified and may be foreign, a stray copy, or partially written. For a "
                         "deliberately assembled sample tree, pass state_validation='off'."
                     )
+                if self.source is WearableSource.GOOGLE_FITNESS:
+                    recorded_filename = entry.get("filename")
+                    if recorded_filename is not None and str(recorded_filename) != self.filename:
+                        raise DataLoaderStateError(
+                            f"{path} disagrees with its feature_outputs row: state records filename "
+                            f"{recorded_filename!r}, expected {self.filename!r}"
+                        )
                 self._verify_native(frame, path, entry)
                 verified_participants.add(participant_id)
 
@@ -630,6 +751,7 @@ class AppleHealthFeatureLoader:
                     f"{path}: data row {int(absent[absent].index[0]) + 1} has no {self.date_column}; every row "
                     "needs its date anchor to be placed on the Date index"
                 )
+            self._source_adapter.validate_frame(frame, path, self.feature_name, self.phase)
             files_parsed += 1
             for column, dtype in frame.dtypes.items():
                 column_dtypes.setdefault(column, []).append(dtype)
@@ -658,6 +780,19 @@ class AppleHealthFeatureLoader:
             acquisition = self._acquisition_counts(frame)
             acquisition_total.update(acquisition)
             acquisition_by_participant[participant_id] = acquisition
+            if self.source is WearableSource.GOOGLE_FITNESS:
+                if "collecting_method_version" in frame.columns:
+                    google_version_counts.update(
+                        str(value) for value in frame["collecting_method_version"].dropna()
+                    )
+                if "tracked" in frame.columns:
+                    tracked = self._as_nullable_boolean(frame["tracked"])
+                    if tracked is not None:
+                        google_tracking_counts.update({
+                            "true": int(tracked.eq(True).fillna(False).sum()),  # noqa: E712 - pandas scalar comparison
+                            "false": int(tracked.eq(False).fillna(False).sum()),  # noqa: E712
+                            "missing": int(tracked.isna().sum()),
+                        })
             retained_rows += int(len(frame))
             if limit is not None and retained_rows > limit:
                 raise DataLoaderSizeError(
@@ -737,7 +872,12 @@ class AppleHealthFeatureLoader:
                     combined[name] = pd.Series(index=combined.index, dtype=merged_dtypes.get(name, np.dtype(object)))
             combined = combined.loc[:, schema_columns]
             if sort_index:
-                combined = combined.sort_index()
+                # Google StepCount alternatives legitimately share the same outer timestamp. A stable sort keeps
+                # their source payload order deterministic while preserving the established Apple behavior.
+                combined = (
+                    combined.sort_index(kind="mergesort")
+                    if self.source is WearableSource.GOOGLE_FITNESS else combined.sort_index()
+                )
         else:
             combined = self._empty_frame(
                 schema_columns if files_parsed else requested_columns, dtypes=merged_dtypes,
@@ -754,7 +894,13 @@ class AppleHealthFeatureLoader:
             in_scope = set(manifest) if registration_codes is None else set(manifest) & set(participant_ids)
             manifest_files_missing = sorted(in_scope - set(read_participants))
         requested_without_file = (
-            sorted(set(participant_ids) - set(read_participants) - set(manifest_files_missing) - set(missing_requested))
+            sorted(
+                set(participant_ids)
+                - set(read_participants)
+                - set(manifest_files_missing)
+                - set(missing_requested)
+                - set(requested_empty_for_source)
+            )
             if registration_codes is not None else []
         )
 
@@ -765,6 +911,11 @@ class AppleHealthFeatureLoader:
         report: dict[str, Any] = {
             "feature": self.feature_name,
             "phase": self.phase,
+            "wearable_source": self.source.value,
+            "source_verified": self.source_verified,
+            "source_identity_evidence": (
+                self._last_root_identity.evidence if self._last_root_identity is not None else None
+            ),
             "root": str(root),
             "date_column": self.date_column,
             "date_semantics": self.date_semantics,
@@ -800,13 +951,28 @@ class AppleHealthFeatureLoader:
             "acquisition_classified_fraction": self._classified_fraction(acquisition_total),
         }
 
+        source_contract = dict(self._source_adapter.contract_metadata(self.feature_name, self.phase))
+        if source_contract:
+            report["source_contract"] = source_contract
+        if self.source is WearableSource.GOOGLE_FITNESS:
+            report["requested_participants_empty_for_source"] = requested_empty_for_source
+            report["collecting_method_version_counts"] = dict(sorted(google_version_counts.items()))
+            report["tracking_counts"] = dict(sorted(google_tracking_counts.items()))
+
         if undeclared_columns:
-            warnings.warn(
-                f"{len(undeclared_columns)} column(s) in {self.feature_name} files have no declared role in "
-                f"curation.schema: {', '.join(sorted(undeclared_columns))}. They are returned only by "
-                "projection='full' or an explicit columns= request. Add them to COLUMN_ROLES.",
-                UserWarning, stacklevel=2,
-            )
+            if self.source is WearableSource.APPLE_HEALTHKIT:
+                warning_text = (
+                    f"{len(undeclared_columns)} column(s) in {self.feature_name} files have no declared role in "
+                    f"curation.schema: {', '.join(sorted(undeclared_columns))}. They are returned only by "
+                    "projection='full' or an explicit columns= request. Add them to COLUMN_ROLES."
+                )
+            else:
+                warning_text = (
+                    f"{len(undeclared_columns)} column(s) in {self.feature_name} files have no declared role in the "
+                    f"{self.source.value} DataLoader schema: {', '.join(sorted(undeclared_columns))}. They are "
+                    "returned only by projection='full' or an explicit columns= request. Add them to the source schema."
+                )
+            warnings.warn(warning_text, UserWarning, stacklevel=2)
         if diverged_participants:
             warnings.warn(
                 f"{len(set(diverged_participants))} {self.feature_name} file(s) were curated under a policy "
@@ -867,6 +1033,7 @@ class AppleHealthFeatureLoader:
 
         registration_codes = self._resolve_alias("registration_codes", registration_codes, "reg_ids", reg_ids)
         root, _ = self._checked_root()
+        self._require_loading_implemented("profile")
         dense = self.phase == "curated"
         requested = registration_codes is not None
         participant_ids, _ = self._resolve_participants(root, registration_codes)
@@ -965,6 +1132,11 @@ class AppleHealthFeatureLoader:
         summary: dict[str, Any] = {
             "feature": self.feature_name,
             "phase": self.phase,
+            "wearable_source": self.source.value,
+            "source_verified": self.source_verified,
+            "source_identity_evidence": (
+                self._last_root_identity.evidence if self._last_root_identity is not None else None
+            ),
             "root": str(root),
             "source": source,
             "source_note": note if state is None else None,
@@ -1010,6 +1182,9 @@ class AppleHealthFeatureLoader:
                 "exceeds_max_rows": bool(limit is not None and get_data_rows is not None and get_data_rows > limit),
             },
         }
+        source_contract = dict(self._source_adapter.contract_metadata(self.feature_name, self.phase))
+        if source_contract:
+            summary["source_contract"] = source_contract
         return ProfileReport(summary=summary, participants=participants, text=render_profile_text(summary))
 
     @staticmethod
@@ -1218,10 +1393,18 @@ class AppleHealthFeatureLoader:
         ``"1.10"`` keeps its stored text, and a column whose cells are all empty is not typed as a number.
         """
 
-        from wearable_project.curation.apple_healthkit import schema
-
-        text_columns = {column: str for column in schema.categorical_columns(self.feature_name)}
+        contract = self._feature_loader_contract()
+        text_columns = {column: str for column in contract.text_columns}
         try:
+            if self.source is WearableSource.GOOGLE_FITNESS:
+                # A managed root with the accepted registry cannot contain undeclared columns, but trimmed or
+                # forward-looking sample trees can. Their type is unknown, so text is the only lossless default:
+                # it preserves lexical evidence such as leading zeros and the literal token "None" until the
+                # future column receives an explicit source contract.
+                with path.open(newline="", encoding="utf-8") as handle:
+                    header = next(csv.reader(handle), [])
+                registered = set(contract.physical_columns)
+                text_columns.update({column: str for column in header if column not in registered})
             frame = pd.read_csv(
                 path, low_memory=False, keep_default_na=False, na_values=[""], float_precision="round_trip",
                 dtype=text_columns,
@@ -1246,17 +1429,9 @@ class AppleHealthFeatureLoader:
         return frame
 
     def _numeric_columns(self) -> set[str]:
-        """Columns that hold numbers: the feature's numeric measurements, canonical values, whole-number columns."""
+        """Source-qualified columns that must contain numbers before dtype normalization."""
 
-        from wearable_project.curation.apple_healthkit import schema
-        from wearable_project.processing.apple_healthkit.registry import get_feature_spec
-
-        categorical = schema.categorical_columns(self.feature_name)
-        measurements = {
-            column for column in get_feature_spec(self.feature_name).measurement_columns
-            if column not in categorical and schema.role_of(column) is not schema.ColumnRole.PAYLOAD
-        }
-        return measurements | {"canonical_value"} | set(schema.INTEGER_COLUMNS)
+        return set(self._feature_loader_contract().numeric_columns)
 
     def _check_content(self, frame: pd.DataFrame, path: Path) -> None:
         """
@@ -1266,7 +1441,7 @@ class AppleHealthFeatureLoader:
         only examine columns that did not already parse cleanly, so clean files cost nothing.
         """
 
-        from wearable_project.curation.apple_healthkit import schema
+        schema = self._loader_schema()
 
         for column in sorted(self._numeric_columns() & set(frame.columns)):
             values = frame[column]
@@ -1319,10 +1494,12 @@ class AppleHealthFeatureLoader:
                         "the file is refused rather than read with values missing or misplaced"
                     )
 
-    @staticmethod
-    def _parse_temporal_columns(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
+    def _parse_temporal_columns(self, frame: pd.DataFrame, path: Path) -> pd.DataFrame:
+        """Parse source instants as UTC and source calendar labels without inventing a timezone."""
+
+        contract = self._feature_loader_contract()
         frame = frame.copy()
-        for column in _TEMPORAL_COLUMNS:
+        for column in contract.timestamp_columns:
             if column not in frame.columns:
                 continue
             try:
@@ -1331,10 +1508,31 @@ class AppleHealthFeatureLoader:
                 raise DataLoaderReadError(
                     f"failed parsing timestamp column {column!r} in {path}: {exc}"
                 ) from exc
-            # An empty or all-blank column has no values to infer a resolution from; give it the one the
-            # parser gives stored timestamps, so a header-only file is typed like any other.
             if bool(parsed.isna().all()) and parsed.dtype != _parsed_utc_dtype():
                 parsed = parsed.astype(_parsed_utc_dtype())
+            frame[column] = parsed
+        for column in contract.calendar_date_columns:
+            if column not in frame.columns:
+                continue
+            values = frame[column]
+            present = values.notna()
+            if bool(present.any()):
+                text = values.loc[present].astype("string")
+                malformed = ~text.str.fullmatch(r"\d{4}-\d{2}-\d{2}").fillna(False)
+                if bool(malformed.any()):
+                    row = int(malformed[malformed].index[0])
+                    raise DataLoaderReadError(
+                        f"{path}: calendar-date column {column!r} must use YYYY-MM-DD; "
+                        f"data row {row + 1} holds {values.loc[row]!r}"
+                    )
+            try:
+                parsed = pd.to_datetime(values, errors="raise", format="%Y-%m-%d")
+            except Exception as exc:
+                raise DataLoaderReadError(
+                    f"failed parsing calendar-date column {column!r} in {path}: {exc}"
+                ) from exc
+            if bool(parsed.isna().all()) and parsed.dtype != _parsed_calendar_date_dtype():
+                parsed = parsed.astype(_parsed_calendar_date_dtype())
             frame[column] = parsed
         return frame
 
@@ -1423,10 +1621,12 @@ class AppleHealthFeatureLoader:
         try:
             with closing(sqlite3.connect(uri, uri=True)) as connection:
                 connection.row_factory = sqlite3.Row
-                rows = connection.execute(
-                    "SELECT participant_id, row_count, size_bytes, sha256 FROM feature_outputs WHERE feature = ?",
-                    (self.feature_name,),
-                ).fetchall()
+                query = (
+                    "SELECT * FROM feature_outputs WHERE feature = ?"
+                    if self.source is WearableSource.GOOGLE_FITNESS
+                    else "SELECT participant_id, row_count, size_bytes, sha256 FROM feature_outputs WHERE feature = ?"
+                )
+                rows = connection.execute(query, (self.feature_name,)).fetchall()
         except sqlite3.Error as exc:
             if database.exists() and not os.access(database, os.R_OK):
                 raise DataLoaderStateError(_permission_denied(database, database.parent)) from exc
@@ -1566,15 +1766,17 @@ class AppleHealthFeatureLoader:
         return inclusion_checked
 
     def _normalize_dtypes(self, frame: pd.DataFrame, schema: Any) -> pd.DataFrame:
-        """Apply the dtypes declared in ``curation.schema``; values are unchanged."""
+        """Apply source-qualified declared dtypes without changing stored values."""
 
-        categorical = schema.categorical_columns(self.feature_name)
-        numeric = self._numeric_columns()
+        contract = self._feature_loader_contract()
+        categorical = contract.categorical_columns
+        strings = contract.string_columns
+        numeric = contract.numeric_columns
+        boolean = contract.boolean_columns
+        integer = contract.integer_columns
         for column in frame.columns:
             values = frame[column]
             if column in numeric and (pd.api.types.is_object_dtype(values) or pd.api.types.is_string_dtype(values)):
-                # Only an empty file or an absent column leaves a numeric column untyped: any text was refused
-                # when its file was read, so this conversion changes no value.
                 values = pd.to_numeric(values)
                 frame[column] = values
             if column in categorical and (
@@ -1582,11 +1784,16 @@ class AppleHealthFeatureLoader:
                 or bool(values.isna().all())
             ):
                 frame[column] = values.astype("category")
-            elif column in schema.NULLABLE_BOOLEAN_COLUMNS:
+            elif column in strings and (
+                pd.api.types.is_object_dtype(values) or pd.api.types.is_string_dtype(values)
+                or bool(values.isna().all())
+            ):
+                frame[column] = values.astype("string")
+            elif column in boolean:
                 converted = self._as_nullable_boolean(values)
                 if converted is not None:
                     frame[column] = converted
-            elif column in schema.INTEGER_COLUMNS:
+            elif column in integer:
                 frame[column] = self._as_nullable_integer(values)
             elif pd.api.types.is_numeric_dtype(values) and not pd.api.types.is_bool_dtype(values):
                 frame[column] = values.astype("float64")
@@ -1669,33 +1876,55 @@ class AppleHealthFeatureLoader:
         return metadata
 
     def _build_df_columns_metadata(self, frame: pd.DataFrame, schema: Any, *, dense: bool) -> pd.DataFrame:
-        """One row per column of ``frame``: role, description, dtype, non-null count, units, dense default."""
+        """One row per returned column: role, description, dtype, non-null count, unit, dense default."""
 
         if not len(frame.columns):
             return _empty_columns_metadata()
-        spec = get_feature_spec(self.feature_name)
-        unit_policy = spec.unit_policy
         records = []
-        for column in frame.columns:
-            role = schema.role_of(column)
-            registry_unit = None
-            if unit_policy is not None:
-                if role is schema.ColumnRole.MEASUREMENT and column in spec.measurement_columns:
-                    registry_unit = stored_unit(self.feature_name, column).unit
-                elif column == "canonical_value":
-                    registry_unit = unit_policy.canonical_unit
-            records.append({
-                "column": column,
-                "role": role.value if role is not None else "undeclared",
-                "description": (
-                    schema.ROLE_DESCRIPTIONS[role] if role is not None
-                    else "No declared role in curation.schema."
-                ),
-                "dtype": str(frame[column].dtype),
-                "non_null": int(frame[column].notna().sum()),
-                "registry_unit": registry_unit,
-                "dense_default": _DENSE_CURATED_DEFAULTS.get(column) if dense else None,
-            })
+        if self.source is WearableSource.APPLE_HEALTHKIT:
+            # Preserve the accepted production Apple metadata contract exactly.
+            spec = get_feature_spec(self.feature_name)
+            unit_policy = spec.unit_policy
+            for column in frame.columns:
+                role = schema.role_of(column)
+                registry_unit = None
+                if unit_policy is not None:
+                    if role is schema.ColumnRole.MEASUREMENT and column in spec.measurement_columns:
+                        registry_unit = stored_unit(self.feature_name, column).unit
+                    elif column == "canonical_value":
+                        registry_unit = unit_policy.canonical_unit
+                records.append({
+                    "column": column,
+                    "role": role.value if role is not None else "undeclared",
+                    "description": (
+                        schema.ROLE_DESCRIPTIONS[role] if role is not None
+                        else "No declared role in curation.schema."
+                    ),
+                    "dtype": str(frame[column].dtype),
+                    "non_null": int(frame[column].notna().sum()),
+                    "registry_unit": registry_unit,
+                    "dense_default": _DENSE_CURATED_DEFAULTS.get(column) if dense else None,
+                })
+        else:
+            contract = self._feature_loader_contract()
+            for column in frame.columns:
+                role = schema.role_of(column)
+                registry_unit = (
+                    self._source_adapter.registry_unit(self.feature_name, column)
+                    if column in contract.measurement_columns else None
+                )
+                records.append({
+                    "column": column,
+                    "role": role.value if role is not None else "undeclared",
+                    "description": (
+                        schema.ROLE_DESCRIPTIONS[role] if role is not None
+                        else f"No declared role in the {self.source.value} DataLoader schema."
+                    ),
+                    "dtype": str(frame[column].dtype),
+                    "non_null": int(frame[column].notna().sum()),
+                    "registry_unit": registry_unit,
+                    "dense_default": None,
+                })
         return pd.DataFrame.from_records(records).set_index("column")
 
     @staticmethod
@@ -1747,3 +1976,9 @@ class AppleHealthFeatureLoader:
         code_level = pd.Index([], dtype=pd.Series(["10K_"]).dtype)
         empty.index = pd.MultiIndex.from_arrays([code_level, date_level], names=self._data_index_names)
         return empty
+
+
+class WearableFeatureLoader(AppleHealthFeatureLoader):
+    """Opt-in neutral base for new feature modules whose default source is declared by the subclass."""
+
+    default_source: ClassVar[WearableSource | str | None] = None

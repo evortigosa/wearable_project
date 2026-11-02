@@ -34,6 +34,22 @@ _CURATION_UNIT_INPUTS = ("canonical_value", "canonical_unit", "curation_unit_sta
 _NATIVE_UNIT_INPUTS = ("canonical_value", "canonical_unit")
 
 
+_GOOGLE_NATIVE_UNIT_CANDIDATES: dict[str, tuple[str, ...]] = {
+    # These are official-type candidates recorded by curation, not accepted exporter mappings. They are
+    # reported only as unresolved evidence; no candidate is assigned to harmonized_unit.
+    "Calories": ("kcal",),
+    "Distance": ("m",),
+    "Height": ("m",),
+    "Weight": ("kg",),
+}
+
+
+def _wearable_source(data: Any) -> str:
+    """Source recorded by get_data; legacy LoaderData without the additive field remains Apple-compatible."""
+
+    return str(data.load_report.get("wearable_source", "apple_healthkit"))
+
+
 def _require(data: Any, needed: Sequence[str], purpose: str) -> None:
     """Raise when an input the stored files carry is missing from this result."""
 
@@ -117,6 +133,62 @@ def with_local_time(data: Any, columns: Sequence[str] | None = None) -> Any:
     return _with_columns(data, frame, descriptions, {}, "local_time", {"columns": list(descriptions)})
 
 
+def _with_google_native_harmonized_values(data: Any, feature: str, phase: str) -> Any:
+    """Google native harmonization without borrowing Apple unit policy."""
+
+    if phase != "native":
+        raise DataLoaderConfigurationError(
+            "Google Fitness curated harmonization requires the schema-v2 virtual-column contract, which is not "
+            "enabled in the native DataLoader checkpoint"
+        )
+    available = set(data.load_report.get("columns_available", data.df.columns))
+    if "value" not in available:
+        raise DataLoaderConfigurationError(
+            f"harmonized values apply to features with one numeric value column; {feature} uses a different "
+            "measurement contract"
+        )
+    _require(data, ["value"], "harmonization")
+    values = data.df["value"]
+    if not pd.api.types.is_numeric_dtype(values) or pd.api.types.is_bool_dtype(values):
+        raise DataLoaderConfigurationError(
+            f"harmonized values apply to numeric values; {feature}'s value holds {values.dtype}"
+        )
+
+    fixed = "count" if feature == "StepCount" else None
+    frame = data.df.copy()
+    size = len(frame)
+    if fixed is None:
+        harmonized = np.full(size, np.nan, dtype=float)
+        units = np.full(size, None, dtype=object)
+        sources = np.full(size, "unresolved", dtype=object)
+    else:
+        harmonized = pd.to_numeric(values, errors="raise").to_numpy(dtype=float)
+        units = np.full(size, fixed, dtype=object)
+        sources = np.full(size, "registry", dtype=object)
+
+    frame[HARMONIZED_VALUE] = pd.Series(harmonized, index=frame.index, dtype="float64")
+    frame[HARMONIZED_UNIT] = pd.Series(pd.Categorical(units), index=frame.index)
+    frame[HARMONIZED_SOURCE] = pd.Series(
+        pd.Categorical(sources, dtype=SOURCE_CATEGORIES), index=frame.index,
+    )
+    counts = {name: int(count) for name, count in pd.Series(sources).value_counts().items()}
+    candidates = _GOOGLE_NATIVE_UNIT_CANDIDATES.get(feature, ())
+    descriptions = {
+        HARMONIZED_VALUE: "The value in a trusted unit, or missing where no layer established one.",
+        HARMONIZED_UNIT: "The unit of harmonized_value.",
+        HARMONIZED_SOURCE: "The layer that established the unit: curation, processing, registry, or unresolved.",
+    }
+    return _with_columns(
+        data, frame, descriptions, {HARMONIZED_VALUE: fixed}, "harmonized_values",
+        {
+            "sources": dict(sorted(counts.items())),
+            "registry_unit": fixed,
+            "unit_withheld_by_curation": bool(candidates),
+            "unit_candidates": list(candidates),
+        },
+    )
+
+
 def with_harmonized_values(data: Any) -> Any:
     """
     Add each row's value in a trusted unit: ``harmonized_value``, ``harmonized_unit``, and
@@ -142,6 +214,13 @@ def with_harmonized_values(data: Any) -> Any:
     if feature is None or phase is None:
         raise DataLoaderConfigurationError(
             "harmonized values need the feature and phase recorded by get_data(); this LoaderData carries none"
+        )
+    source = _wearable_source(data)
+    if source == "google_fitness":
+        return _with_google_native_harmonized_values(data, str(feature), str(phase))
+    if source != "apple_healthkit":
+        raise DataLoaderConfigurationError(
+            f"harmonized values do not support wearable source {source!r}"
         )
     available = set(data.load_report.get("columns_available", data.df.columns))
     if "value" not in available:

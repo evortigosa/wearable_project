@@ -31,6 +31,9 @@ from wearable_project.DataLoaders._base import (
     AppleHealthFeatureLoader, DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, ProcessingPhase,
     _DENSE_CURATED_DEFAULTS, _PHASE_STATE_FILES,
 )
+from wearable_project.DataLoaders._sources import (
+    WearableSource, features_for_source, normalize_source, sources_for_feature,
+)
 from wearable_project.DataLoaders._profile import ACQUISITION_CAVEAT
 from wearable_project.DataLoaders._units import _curation_declaration, stored_unit
 from wearable_project.exceptions import DataLoaderConfigurationError
@@ -148,16 +151,34 @@ class InfoReport:
         return "```text\n" + self.text + "\n```"
 
 
-def available_features() -> tuple[str, ...]:
-    """Return the names of every feature with a public DataLoader class."""
+def available_features(source: WearableSource | str | None = None) -> tuple[str, ...]:
+    """
+    Return the accepted feature catalog for ``source``.  Omitting ``source`` preserves the production Apple
+    HealthKit catalog; it does not return a cross-source union.
+    """
 
-    return tuple(COHORT_OBSERVED_FEATURES)
+    canonical = normalize_source(source, default=WearableSource.APPLE_HEALTHKIT)
+    return features_for_source(canonical)
+
+
+def available_sources(feature: str) -> tuple[str, ...]:
+    """Return canonical source names that provide ``feature``; matching is case-insensitive."""
+
+    value = str(feature).strip()
+    union = {name.casefold(): name for source in WearableSource for name in features_for_source(source)}
+    canonical = union.get(value.casefold())
+    if canonical is None:
+        raise DataLoaderConfigurationError(
+            f"unknown DataLoader feature {feature!r}; choose a feature from available_features(source=...)"
+        )
+    return tuple(source.value for source in sources_for_feature(canonical))
 
 
 def info(
     feature: str | None = None, *, phase: ProcessingPhase | str = "curated",
     native_root: str | Path = DEFAULT_NATIVE_ROOT, curated_root: str | Path = DEFAULT_CURATED_ROOT,
     root: str | Path | None = None, include_evidence: bool = False,
+    source: WearableSource | str | None = None,
 ) -> InfoReport:
     """
     Return DataLoader usage and feature-contract information.
@@ -177,33 +198,43 @@ def info(
         reported even when this is false.
     """
 
+    canonical_source = normalize_source(source, default=WearableSource.APPLE_HEALTHKIT)
+    if canonical_source is not WearableSource.APPLE_HEALTHKIT:
+        raise DataLoaderConfigurationError(
+            "Google Fitness information reports are not enabled in the compatibility-foundation checkpoint; "
+            "available_features(source='google_fitness') already exposes the accepted catalog."
+        )
     if feature is None:
         return _overview_report(
             native_root=Path(native_root).expanduser(), curated_root=Path(curated_root).expanduser(),
         )
 
-    canonical = _normalize_feature(feature)
+    canonical = _normalize_feature(feature, source=canonical_source)
     loader_cls = _loader_class(canonical)
     loader = loader_cls(
         phase=phase,
         native_root=native_root,
         curated_root=curated_root,
         root=root,
+        source=canonical_source,
     )
     return _feature_report(loader, include_evidence=include_evidence)
 
 
 # ------------------------------------------------------------------------------------------ helpers
-def _normalize_feature(feature: str) -> str:
+def _normalize_feature(
+    feature: str, *, source: WearableSource | str = WearableSource.APPLE_HEALTHKIT,
+) -> str:
+    names = features_for_source(source)
     value = str(feature).strip()
-    if value in COHORT_OBSERVED_FEATURES:
+    if value in names:
         return value
-    folded = {name.casefold(): name for name in COHORT_OBSERVED_FEATURES}
+    folded = {name.casefold(): name for name in names}
     canonical = folded.get(value.casefold())
     if canonical is None:
         raise DataLoaderConfigurationError(
-            f"unknown DataLoader feature {feature!r}; choose one of: "
-            + ", ".join(COHORT_OBSERVED_FEATURES)
+            f"unknown DataLoader feature {feature!r} for source {normalize_source(source).value!r}; choose one of: "
+            + ", ".join(names)
         )
     return canonical
 
