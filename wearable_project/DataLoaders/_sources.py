@@ -3,7 +3,8 @@ Wearable Data Processing and Modeling project
 Source identifiers, compatibility aliases, source-qualified roots, feature catalogs, and managed-root probing.
 Source selection is never inferred from a feature filename. A caller selects a scientific source contract and
 managed-root metadata verifies that choice before a feature CSV is parsed. Unmanaged trimmed trees remain
-loadable, but are explicitly reported as source-unverified.
+loadable, but are explicitly reported as source-unverified; a present but unsafe or unknown managed state is
+refused rather than silently downgraded to unmanaged.
 """
 
 
@@ -49,6 +50,21 @@ APPLE_HEALTHKIT_PUBLIC_FEATURES: tuple[str, ...] = (
     "StepCount", "TotalFat", "Vo2Max", "WaistCircumference", "WalkingHeartRate", "Weight",
 )
 
+
+GOOGLE_FITNESS_PUBLIC_FEATURES: tuple[str, ...] = (
+    "Aerobics", "Basketball", "Biking", "BikingHand", "BikingMountain", "BikingRoad",
+    "BikingSpinning", "BikingStationary", "BikingUtility", "Boxing", "Calisthenics", "Calories",
+    "CircuitTraining", "Crossfit", "Dancing", "Distance", "Elliptical", "Ergometer", "Gardening",
+    "GuidedBreathing", "Gymnastics", "Handball", "Height", "Hiking", "HorsebackRiding", "InVehicle",
+    "IntervalTraining", "IntervalTrainingHighIntensity", "JumpRope", "Kayaking", "KickScooter",
+    "Kickboxing", "MartialArts", "Meditation", "OtherActivity", "Pilates", "RockClimbing", "Rowing",
+    "RowingMachine", "Running", "RunningJogging", "RunningSand", "RunningTreadmill", "SkatingCross",
+    "SkiingCrossCountry", "Sleep", "StairClimbing", "StairClimbingMachine", "StepCount", "Still",
+    "StrengthTraining", "Swimming", "SwimmingOpenWater", "SwimmingPool", "Tennis", "UnknownActivity",
+    "Volleyball", "VolleyballBeach", "VolleyballIndoor", "Walking", "WalkingFitness", "WalkingNordic",
+    "WalkingTreadmill", "Weight", "Weightlifting", "Yoga", "Zumba",
+)
+
 _SOURCE_ALIASES: dict[str, WearableSource] = {
     "apple": WearableSource.APPLE_HEALTHKIT,
     "applehealth": WearableSource.APPLE_HEALTHKIT,
@@ -89,18 +105,18 @@ def normalize_source(
 
 @lru_cache(maxsize=1)
 def _apple_native_features() -> tuple[str, ...]:
-    # Deferred so the public catalog remains cheap and independent from curation imports.
-    from wearable_project.processing.apple_healthkit.registry import known_features
+    # Deferred through the Apple adapter package so this source-neutral router never imports a scientific
+    # processing registry directly.
+    from wearable_project.DataLoaders.apple_healthkit.contracts import native_features
 
-    return tuple(known_features())
+    return native_features()
 
 
-@lru_cache(maxsize=1)
 def _google_features() -> tuple[str, ...]:
-    # Deferred so importing an Apple feature loader does not import the Google processing stack.
-    from wearable_project.processing.google_fitness.registry import feature_names
-
-    return tuple(feature_names())
+    # Checked against the processing and curation registries by release tests. Keeping the public catalog here
+    # lets construction and discovery remain independent of the processing package's intentionally broad
+    # ``__init__`` imports.
+    return GOOGLE_FITNESS_PUBLIC_FEATURES
 
 
 def public_features_for_source(source: WearableSource | str) -> tuple[str, ...]:
@@ -157,8 +173,29 @@ def get_source_adapter(source: WearableSource | str) -> SourceAdapter:
     return GoogleFitnessAdapter()
 
 
-def _read_state_identity(database: Path) -> tuple[set[str], dict[str, str], str | None]:
-    """Read only table names and key/value metadata from a state database; never create SQLite side files."""
+_STATE_ACTIVE_SUFFIXES = ("-wal", "-journal")
+
+
+def _active_state_sidecar(database: Path) -> Path | None:
+    for suffix in _STATE_ACTIVE_SUFFIXES:
+        candidate = Path(f"{database}{suffix}")
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate
+        except OSError:
+            # The state database is managed evidence. If its sidecar cannot be inspected, identity is not safe.
+            return candidate
+    return None
+
+
+def _read_state_identity(
+    database: Path,
+) -> tuple[set[str], dict[str, frozenset[str]], dict[str, str], str | None]:
+    """Read table/column structure and key/value metadata without creating SQLite side files."""
+
+    active = _active_state_sidecar(database)
+    if active is not None:
+        return set(), {}, {}, f"active state sidecar has uncommitted writes: {active}"
 
     uri = f"{database.resolve().as_uri()}?immutable=1"
     try:
@@ -167,26 +204,71 @@ def _read_state_identity(database: Path) -> tuple[set[str], dict[str, str], str 
                 str(row[0])
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             }
+            columns_by_table = {
+                table: frozenset(
+                    str(row[1])
+                    for row in connection.execute(
+                        f'PRAGMA table_info("{table.replace(chr(34), chr(34) * 2)}")'
+                    ).fetchall()
+                )
+                for table in tables
+            }
             metadata: dict[str, str] = {}
             if "metadata" in tables:
-                columns = {
-                    str(row[1]) for row in connection.execute("PRAGMA table_info(metadata)").fetchall()
-                }
-                if {"key", "value"} <= columns:
-                    metadata = {
-                        str(key): str(value)
-                        for key, value in connection.execute("SELECT key, value FROM metadata").fetchall()
-                    }
-            return tables, metadata, None
+                columns = columns_by_table["metadata"]
+                if not {"key", "value"} <= columns:
+                    return tables, columns_by_table, {}, "metadata table lacks required key/value columns"
+                for raw_key, raw_value in connection.execute("SELECT key, value FROM metadata").fetchall():
+                    if raw_key is None or not str(raw_key).strip():
+                        return tables, columns_by_table, {}, "metadata table contains a blank key"
+                    key = str(raw_key)
+                    if key in metadata:
+                        return tables, columns_by_table, {}, f"metadata table repeats key {key!r}"
+                    if raw_value is None:
+                        return tables, columns_by_table, {}, f"metadata key {key!r} has a NULL value"
+                    metadata[key] = str(raw_value)
+            return tables, columns_by_table, metadata, None
     except sqlite3.Error as exc:
-        return set(), {}, str(exc)
+        return set(), {}, {}, str(exc)
+
+
+def _schema_source_signature(
+    tables: set[str], columns_by_table: dict[str, frozenset[str]], phase: str,
+) -> tuple[WearableSource | None, str | None]:
+    """Establish source from genuinely source-unique state structure; reject contradictory signatures."""
+
+    signatures: list[tuple[WearableSource, str]] = []
+    if phase == "native":
+        if {"feature_outputs", "run_tracking", "run_diagnostics"} <= tables:
+            signatures.append((WearableSource.APPLE_HEALTHKIT, "legacy Apple native state schema signature"))
+        if {"feature_outputs", "source_occurrences", "malformed_candidates"} <= tables:
+            signatures.append((WearableSource.GOOGLE_FITNESS, "Google native state schema signature"))
+    elif phase == "curated":
+        output_columns = columns_by_table.get("curation_outputs", frozenset())
+        apple_unique = {
+            "ambiguous_unit_rows", "scale_transition_rows", "raw_unit_counts_json",
+            "canonical_unit_counts_json", "unknown_category_counts_json",
+        }
+        google_unique = {
+            "active_materialized_columns_json", "derivation_counts_json", "tracking_counts_json",
+            "step_count_role_counts_json",
+        }
+        if "curation_unit_epochs" in tables or apple_unique <= output_columns:
+            signatures.append((WearableSource.APPLE_HEALTHKIT, "legacy Apple curated state schema signature"))
+        if google_unique <= output_columns:
+            signatures.append((WearableSource.GOOGLE_FITNESS, "Google curated state schema signature"))
+    sources = {source for source, _ in signatures}
+    if len(sources) > 1:
+        descriptions = "; ".join(description for _, description in signatures)
+        return None, f"state structure matches conflicting source signatures: {descriptions}"
+    return signatures[0] if signatures else (None, None)
 
 
 def probe_root_identity(root: Path, phase: str | None) -> RootIdentity:
     """
     Establish source identity from managed-root state metadata/schema without reading feature CSVs.
-    ``phase`` should come from the state filename.  When no unique phase marker exists, the root is treated as
-    unmanaged/ambiguous and no source claim is made, preserving the accepted behavior for trimmed sample trees.
+    ``phase`` should come from the state filename. When no state marker exists, the root is an unmanaged trimmed
+    tree and no source claim is made. Ambiguous or malformed markers are rejected by the loader before this probe.
     """
 
     if phase not in {"native", "curated"}:
@@ -202,11 +284,18 @@ def probe_root_identity(root: Path, phase: str | None) -> RootIdentity:
             evidence=f"{filename} absent",
         )
 
-    tables, metadata, error = _read_state_identity(database)
+    tables, columns_by_table, metadata, error = _read_state_identity(database)
     if error is not None:
         return RootIdentity(
             source=None, phase=phase, managed=True, verified=False,
             evidence=f"state identity unreadable: {error}", state_database=database,
+        )
+
+    schema_source, schema_evidence = _schema_source_signature(tables, columns_by_table, phase)
+    if schema_source is None and schema_evidence is not None:
+        return RootIdentity(
+            source=None, phase=phase, managed=True, verified=False,
+            evidence=schema_evidence, state_database=database, metadata=metadata, tables=tuple(sorted(tables)),
         )
 
     declared = metadata.get("source_key")
@@ -219,33 +308,30 @@ def probe_root_identity(root: Path, phase: str | None) -> RootIdentity:
                 evidence=f"unrecognized state source_key={declared!r}", state_database=database,
                 metadata=metadata, tables=tuple(sorted(tables)),
             )
+        if schema_source is not None and schema_source is not source:
+            return RootIdentity(
+                source=None, phase=phase, managed=True, verified=False,
+                evidence=(
+                    f"state metadata source_key={declared!r} disagrees with {schema_evidence}"
+                ),
+                state_database=database, metadata=metadata, tables=tuple(sorted(tables)),
+            )
+        evidence = f"state metadata source_key={declared!r}"
+        if schema_evidence is not None:
+            evidence += f" corroborated by {schema_evidence}"
         return RootIdentity(
-            source=source, phase=phase, managed=True, verified=True,
-            evidence=f"state metadata source_key={declared!r}", state_database=database,
-            metadata=metadata, tables=tuple(sorted(tables)),
+            source=source, phase=phase, managed=True, verified=True, evidence=evidence,
+            state_database=database, metadata=metadata, tables=tuple(sorted(tables)),
         )
 
-    # Legacy Apple state predates source_key metadata.  Its source is nevertheless unambiguous from tables that
-    # do not occur in the Google state schemas.  Keep the signatures narrow so an unknown future schema is
-    # reported unverified instead of guessed.
-    if phase == "native" and {"feature_outputs", "run_tracking", "run_diagnostics"} <= tables:
-        source = WearableSource.APPLE_HEALTHKIT
-        evidence = "legacy Apple native state schema signature"
-    elif phase == "curated" and {"curation_outputs", "curation_unit_epochs"} <= tables:
-        source = WearableSource.APPLE_HEALTHKIT
-        evidence = "legacy Apple curated state schema signature"
-    elif phase == "native" and {"feature_outputs", "source_occurrences", "malformed_candidates"} <= tables:
-        source = WearableSource.GOOGLE_FITNESS
-        evidence = "Google native state schema signature"
-    else:
+    if schema_source is None:
         return RootIdentity(
             source=None, phase=phase, managed=True, verified=False,
             evidence="state schema has no recognized source signature", state_database=database,
             metadata=metadata, tables=tuple(sorted(tables)),
         )
-
     return RootIdentity(
-        source=source, phase=phase, managed=True, verified=True, evidence=evidence,
+        source=schema_source, phase=phase, managed=True, verified=True, evidence=str(schema_evidence),
         state_database=database, metadata=metadata, tables=tuple(sorted(tables)),
     )
 
@@ -256,6 +342,7 @@ __all__ = [
     "DEFAULT_APPLE_HEALTHKIT_NATIVE_ROOT",
     "DEFAULT_GOOGLE_FITNESS_CURATED_ROOT",
     "DEFAULT_GOOGLE_FITNESS_NATIVE_ROOT",
+    "GOOGLE_FITNESS_PUBLIC_FEATURES",
     "WearableSource",
     "features_for_source",
     "get_source_adapter",

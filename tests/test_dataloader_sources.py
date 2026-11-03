@@ -253,6 +253,9 @@ def test_apple_loader_reports_unverified_source_for_an_unmanaged_trimmed_tree(tm
     assert profile.summary["source_verified"] is False
 
 
-def test_source_qualified_information_refuses_to_return_apple_policy_for_google():
-    with pytest.raises(DataLoaderConfigurationError, match="static information reports are not yet source-qualified"):
-        DataLoaders.info("StepCount", source="google_fitness")
+def test_source_qualified_information_dispatches_to_google_contracts():
+    report = DataLoaders.info("StepCount", source="google_fitness")
+    assert report.payload["wearable_source"] == "google_fitness"
+    assert report.payload["feature"] == "StepCount"
+    assert report.payload["date_index"]["column"] == "outer_datetime"
+    assert report.payload["harmonization"]["established_unit"] == "count"

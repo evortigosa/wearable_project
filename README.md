@@ -58,7 +58,7 @@ wearable_project/
 │   │   ├── _derived.py            # Source-aware derived helpers
 │   │   ├── _profile.py            # profile(): what a root holds, without parsing any feature file
 │   │   ├── _units.py              # Accepted Apple unit registry compatibility layer
-│   │   └── info.py                # Apple feature reports plus source-qualified feature discovery
+│   │   └── info.py                # Source-aware static feature reports and discovery
 │   ├── processing/                # Stage 1: raw exports -> native root
 │   │   ├── parser.py              # Streaming parser for the cumulative monthly CSV exports
 │   │   ├── registry.py            # Feature families and unit policies for native rows
@@ -131,6 +131,7 @@ from wearable_project import DataLoaders
 from wearable_project.DataLoaders import StepCountLoader
 
 print(DataLoaders.info("StepCount"))       # Apple contract; omitted source remains Apple-compatible
+print(DataLoaders.info("StepCount", source="google_fitness"))  # Google contract
 
 apple = StepCountLoader().get_data(registration_codes=["10K_XXXXXXXXXX"])
 apple.df.head()                            # indexed by RegistrationCode and Date
@@ -471,6 +472,7 @@ All loader errors derive from `DataLoaderError`:
 print(DataLoaders.info())                                   # production Apple loading contract
 print(DataLoaders.info("Sleep", include_evidence=True))     # one Apple feature, with its evidence
 print(HeartRateLoader(phase="native").info())               # the same, for this loader's phase and root
+print(DataLoaders.info("StepCount", source="google_fitness", include_evidence=True))
 print(DataLoaders.available_features(source="google_fitness"))
 print(DataLoaders.available_sources("StepCount"))
 ```
@@ -484,9 +486,11 @@ A feature report explains:
 - its dtypes and caveats;
 - runnable examples.
 
-`info()` currently states the Apple feature contract; Google native contracts are documented in
-[`docs/GOOGLE_FITNESS_NATIVE_DATALOADERS.md`](docs/GOOGLE_FITNESS_NATIVE_DATALOADERS.md). `profile()` reports what a
-particular managed root holds without parsing feature CSVs.
+`info()` is source-aware and static: it reads executable package contracts but never a data root. `profile()`
+reports what a particular managed root holds without parsing feature CSVs. The internal boundary and compatibility
+rationale are documented in [`docs/DATALOADER_SOURCE_AWARE_FOUNDATION.md`](docs/DATALOADER_SOURCE_AWARE_FOUNDATION.md)
+and the completed architecture audit in
+[`docs/DATALOADER_FRAMEWORK_AUDIT.md`](docs/DATALOADER_FRAMEWORK_AUDIT.md).
 
 ## Statistics, metrics, figures and reports
 

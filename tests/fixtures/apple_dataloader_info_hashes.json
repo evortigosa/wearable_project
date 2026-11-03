@@ -1,0 +1,270 @@
+{
+  "ActiveEnergyBurned:curated": {
+    "payload_sha256": "dd7865eb016dfcf2c671cebbe39b33aa7b3df3f811efe95b94aecd4066e6ab73",
+    "text_sha256": "7cc9b14ba1bb0a8f8db9d89324128ae38ec0e47a9cc19ab7cf35be7162752089"
+  },
+  "ActiveEnergyBurned:native": {
+    "payload_sha256": "5fd031cda1744cda526d48aefb97b27191185c50927bb935f2a9c94c70bd9fe2",
+    "text_sha256": "4fccd5c5407570ab5ce7882967ed4062113a5ff1affe06d4869bfc1ec94b6d12"
+  },
+  "ActivitySummary:curated": {
+    "payload_sha256": "50ff035bb960d474bcd8e8d2dac40aed98e390dded4a3975b7bde31790b7ead5",
+    "text_sha256": "01a175dd0e69f5cd8c64b5cf9294fd1d38ca7a708b3686b8f53758f67805a134"
+  },
+  "ActivitySummary:native": {
+    "payload_sha256": "80f8bf78136f007d2428d2e613f5ff1741de29737c99c5f9f43b80632a55fc1a",
+    "text_sha256": "4ceb7ac3c437504a4320c585a675946d6fa6fe84fdc5902b673f704c1ae5c98c"
+  },
+  "BMI:curated": {
+    "payload_sha256": "0ea6ab474a5f67acede3e5cd55bc2c84cc7899d10b447d0eac68570eb4f0f59b",
+    "text_sha256": "bd4eac1861e6bdd60e508bfd15bd3b263ef8e124608b5d901e8536a02cf6e32b"
+  },
+  "BMI:native": {
+    "payload_sha256": "291084fdca81be155b86774f920942dc39b2a3bd8f64c901ecd9c54676f8634e",
+    "text_sha256": "d33d9478b73ddd27fce2bc9a17e8c3e8e087b4b1d062be817dc74ba6c13686cc"
+  },
+  "BasalEnergyBurned:curated": {
+    "payload_sha256": "1312f09ce050d28b84d41e268ca25f869d54b5dd730fe048290f4c7cc3fc2cac",
+    "text_sha256": "02da4cd283d5bcb7c00e67aba328117e9d8bcc9aadfddc941dedc0068a6f4248"
+  },
+  "BasalEnergyBurned:native": {
+    "payload_sha256": "63ac71bd38b9725b5788b12fece45badd74ba64f24548cc3f6e47fb8a7775505",
+    "text_sha256": "3037bb1e7c1f95fce32f7d35cfdfcc8ff4cd5b311e4501b11a7d48d81d996fdb"
+  },
+  "BloodAlcoholContent:curated": {
+    "payload_sha256": "49a6911af5a04a5e2e83ae506f30f0ffe95345765310999f7b595932743ad279",
+    "text_sha256": "2d3ae77b0dd6517c6ca57dddce128f97444772844dbd842f2142d00c2740d07d"
+  },
+  "BloodAlcoholContent:native": {
+    "payload_sha256": "7392349fc41b7407370c6befaa40859e66e5c04ce5d30669f1e71d2eb9ce9f95",
+    "text_sha256": "42ccb7d5d1e093e9894f1e5352624e6fb36e7f0a26c367d39c69cf276dcf96c6"
+  },
+  "BloodGlucose:curated": {
+    "payload_sha256": "5f657e75a856e7b4c9772cd6e38b5d0b5178dfccfc8db749e1874fa4bb23a897",
+    "text_sha256": "cf7a049362e6216147ea5b5aa7a28d81e1077ea2ca64ec2532816f6571abd953"
+  },
+  "BloodGlucose:native": {
+    "payload_sha256": "4321444755c1d1b7737ea09bb058b01269b556569fae0b671c91c7f4b13c0e59",
+    "text_sha256": "ddf2f4312c8a41f3c9a08e8f60b0b6040cc39e5e3b242a8d137a7d68ca3b4934"
+  },
+  "BloodPressure:curated": {
+    "payload_sha256": "0bbfed5b78081d790f3fc576b4cfed2e32786de9f0dd877ab51a379f6434f3b6",
+    "text_sha256": "3bc2293c46b614a16aeba10b4dd691d3191dc09825af3cdd54effe8684d9ba28"
+  },
+  "BloodPressure:native": {
+    "payload_sha256": "a5d62d646a88f549131fa0bbdcc0209470397b5650a8d4dc559dba57a74fef47",
+    "text_sha256": "e236ec566b5787c2072dda34f8c99827b2fed9f9d64b996a69915f0a24790779"
+  },
+  "BodyFatPercentage:curated": {
+    "payload_sha256": "c287e8e9e1f953e509d9a16d46d640d7c7f8951b88c756038d26063bb4a58f84",
+    "text_sha256": "40e3022abc5b46c2c3de71f8879cb71fba9f7902bbdac306479396a2587085a5"
+  },
+  "BodyFatPercentage:native": {
+    "payload_sha256": "0b851b14c8bdb0e7b4a51bf6f131c8cef8e138a6a031c72aaad80244b06f6fc2",
+    "text_sha256": "c0c3f4a2329debeaa9a338c3d43bf8731cf593741315f7681a4f7ffbcc64089d"
+  },
+  "BodyTemperature:curated": {
+    "payload_sha256": "fa0d89faa4c7fbdcbfd57382b076e86fd2c33f8086d97036202378f6fa7f38d4",
+    "text_sha256": "9399bc573cea6b76dfcd337e8d5a25e752c24f092562bf1d4f3047dd65929631"
+  },
+  "BodyTemperature:native": {
+    "payload_sha256": "84517ce7e65c18dfce7465d0dc0cc1a63a7f269d29b12bd4d6e8ae37435f4b2a",
+    "text_sha256": "18e3125f19876d323f6a6da06bc44f9bd7978aa6e22cdbaf7e685063da9b3d74"
+  },
+  "Carbohydrates:curated": {
+    "payload_sha256": "96322b5b5d52acf6db235da8964587c3f75fd943bc333c22cd717a0d11a27023",
+    "text_sha256": "13840142a1db7a3168b6b0f039b1b185562a2f368ba36c2c48b98eb89786637e"
+  },
+  "Carbohydrates:native": {
+    "payload_sha256": "319e99f3d625a35812c90f70163c29b59a3b817e013f7433e9015b4543d85c36",
+    "text_sha256": "72c9c1e1bef763bffffd79ab39805576794daf20252801bce0692340045309df"
+  },
+  "DailyDistanceCycling:curated": {
+    "payload_sha256": "6ca9f2d4a480e25ae130a92bf3f66d80223966a34e3bfb4d3851428a2a9f81cc",
+    "text_sha256": "002bcfe2224b6250f857e748601963541aac66e8ce524582caef47069b2a5787"
+  },
+  "DailyDistanceCycling:native": {
+    "payload_sha256": "cff1a7155cb40b4e88d042242a24c6a2e60090781562d57ad6c5b3c267de19d6",
+    "text_sha256": "858e608fcb9d71773fabfe21d12c886e665b2d6eb35111e4c1ac641bfffc04ce"
+  },
+  "DailyDistanceSwimming:curated": {
+    "payload_sha256": "cd606e63b057814c014a212633f6b4b051a5eabd258bdcdadf08775be2c0e7fe",
+    "text_sha256": "3c2d0566ab0e76a31d44b1f0bf109620a069a3d19ce6426020b00e40ae68aa38"
+  },
+  "DailyDistanceSwimming:native": {
+    "payload_sha256": "8488073a3b7bc890d1f9680517f3d530a3a8d11326b6e1d5e6eaff04830f6d01",
+    "text_sha256": "9c854aff3c1a2cea1535d8ca56be184bc7bca9a7b59cc359df2c466947ecd1c0"
+  },
+  "DistanceWalkingRunning:curated": {
+    "payload_sha256": "a0aeafa579f10b3ce32b5e08d57ea7e01a5a64abe39f9a5ad467c898d1ebbd0c",
+    "text_sha256": "1e0ef550b1022ec56272b5e7abd8409772ffb0f935a9e4bc50e9c4dc8924bb34"
+  },
+  "DistanceWalkingRunning:native": {
+    "payload_sha256": "334d3b2efef885bd5ce695996bc31702eaf8a4b7c2f4accd03e5d4fda11307e2",
+    "text_sha256": "e0a048257063753c4229ea2955bbad3259b563a7dce89a77fdf0555989a2bf4e"
+  },
+  "Electrocardiogram:curated": {
+    "payload_sha256": "9d3b3a7287ed4853914254610291a3405d246d4c6a24a3a053e9fe93f9d1d520",
+    "text_sha256": "92be20f00fa8e30537678344acdf262bdcb6a2510b13f822a676840a663237de"
+  },
+  "Electrocardiogram:native": {
+    "payload_sha256": "e63a1fc77d45b3ce42ba1a185f374eb68095f55907d3f9455ffe6a830eb7a438",
+    "text_sha256": "1728471430397d872a42e932847253e319729650ddd3a4ceb58775d12e9eeb1b"
+  },
+  "EnergyConsumed:curated": {
+    "payload_sha256": "9240511e753bc532437c3f9aed027a5727d893a9dddf65e53a2b8a3c86083850",
+    "text_sha256": "f5e99eb71c63111b4fd0d50df0c45e427e9def0eb1ed3a88ecd8a5e035221f6b"
+  },
+  "EnergyConsumed:native": {
+    "payload_sha256": "a5f88ba6eba07a5ecac8d0f4ca05981d63d646411dff0791cf5556835b017981",
+    "text_sha256": "b43cec52b73af067639a2ee686de330c5c8cfee91ab5bb1ba9f4be195e019b29"
+  },
+  "FlightsClimbed:curated": {
+    "payload_sha256": "958ef4b22b6f7070f1e28a4e6d53b5dcb936af54bdeeed4e206a62ed1304598d",
+    "text_sha256": "3a8b75606e35f32898129d8a96792a0db0ee90af35d67ec9962917a7d232b79b"
+  },
+  "FlightsClimbed:native": {
+    "payload_sha256": "09bce4c07fff73ec13bf485338bbcc45a7245b4e486be96eb9b8e78d2ce7dd8c",
+    "text_sha256": "b98aff48e50050a6ab3c9b919279bed3a0b82594bff21f4eec9265d9065bb89b"
+  },
+  "HeartRate:curated": {
+    "payload_sha256": "34a0a45f71a8a03e5f2aea9654c3cb738c09630117e3de91abff0fe4d77ff2ba",
+    "text_sha256": "a031b2eb501d043b4eff9f3856b77afc7f6a74cb4f69f5154e71639109b5d361"
+  },
+  "HeartRate:native": {
+    "payload_sha256": "2b095ec99b2b1f1173c8f83b5623148a0f0b540601a5b8af10ae8c2467f0a48d",
+    "text_sha256": "6bc4f1e08b5c22680fb798b4a38c7064f943875069a450b1832f73ec4303b40a"
+  },
+  "HeartRateVariability:curated": {
+    "payload_sha256": "e1537055de9d356afb9035a9977375b1f6f55558d07735711dea80e99be17622",
+    "text_sha256": "3c3aa4e50ffc4bd384688c72bb872d3307b40d29b474f222107c0aa62727720c"
+  },
+  "HeartRateVariability:native": {
+    "payload_sha256": "5705b70c3e8aafffb586ac3759d2c4be2f73a7d4ea5801fc278ac7c29207e667",
+    "text_sha256": "4c2c3e8e0ffbdf5d8be911866037850b956b1f43af6d25ca6bdfcc8f4d69ae42"
+  },
+  "Height:curated": {
+    "payload_sha256": "6ecf10f20e48139ec61f40cc72a909bce2899667ea9ccdc07902d512a3aa5324",
+    "text_sha256": "de9c2d25c3a4e0360dea6078ded79ee82b697ef25e34a8a0f77c8f0a35376ec8"
+  },
+  "Height:native": {
+    "payload_sha256": "be4be45957f096635104200f8da405bb002be5f225ece13346834f7a463067b6",
+    "text_sha256": "14c6c66dd40d3aba0de96248abd9db75484fe6d9e7e21e37e6070c63b2f01366"
+  },
+  "LeanBodyMass:curated": {
+    "payload_sha256": "c6a03e2a6d13382bc02a2b6b26385e7a54059cb60b413a5f7e48b09e553dfe6a",
+    "text_sha256": "8aacfe5f3f0a8dec6fbdb88c1b3b13341e6e06910521bdf5b78e026de9936cde"
+  },
+  "LeanBodyMass:native": {
+    "payload_sha256": "9b8c6a133454b65cd2bed4bacd15f20fce3df000d41c2048143fd44668ec4471",
+    "text_sha256": "144ec9f0fd6c8de737c8ca3cc930b28cb734e0e02016de524a9f6512207a0279"
+  },
+  "Mindful:curated": {
+    "payload_sha256": "6eb70c60fb90099414ac542f3af295f9bfd8232df8d2bd59d142f15ea139db11",
+    "text_sha256": "735bfb2c5d8e55f50d616ff3f71eda5085fd5981954e8969705525cc750f72d2"
+  },
+  "Mindful:native": {
+    "payload_sha256": "59172eb77c29232a9c51c7a6fc5ea70dcb0140771e8465d06f5feee57c88c063",
+    "text_sha256": "976f089b90c58911c96e173b242c9432386f55925b56cd0714169699604e25b0"
+  },
+  "OxygenSaturation:curated": {
+    "payload_sha256": "8af029c471b9f95b7dda767c5081e7df40dcf34616cc68675144cc7451db8ad8",
+    "text_sha256": "51598fa21d1cde85a0406a8972bd4c009607659e2a72b14cbc09833d209d722b"
+  },
+  "OxygenSaturation:native": {
+    "payload_sha256": "49c78838cf1ffd9557b5942bea0c90907ee86edcfb1173a3e3514185c1409ae6",
+    "text_sha256": "d075aaa0202b7592c3886b66cd3fa9bc1701fc325b7345e62cdb43f2f83ac0c4"
+  },
+  "PeakFlow:curated": {
+    "payload_sha256": "9f070b5e8871c1adf75f1fb4e78767c941d288183c31256fd255afed45757c60",
+    "text_sha256": "3ec3e8be2bf3c9dcce46b3b3e832368fe282aeedd6b23142cd5df0eaa9dc11ea"
+  },
+  "PeakFlow:native": {
+    "payload_sha256": "16d4eb29695bcb3c06e8fed6938631e560d7492789054b1bb27f18ea2c293c1d",
+    "text_sha256": "0b02a94797403487fba5c6cc010a625498516ea557af8d0cbd73802da15e4598"
+  },
+  "Protein:curated": {
+    "payload_sha256": "0fef31e23e4e068c95f5d187c1b1142989323609734424bb3d35874ab946c368",
+    "text_sha256": "bfd713e8382d540b40d61a9edd5eddf71ef01a4be491f31550dc70820f2aab5f"
+  },
+  "Protein:native": {
+    "payload_sha256": "c403581f76078c7d41d3a06a703853abbab8df7c80ddeb18f0cfce9a707fca1a",
+    "text_sha256": "bbc4ebf8d91b5ab1cd7fafe5f07a6974ff440a039e8dddbefe43e44c87a041bd"
+  },
+  "RespiratoryRate:curated": {
+    "payload_sha256": "5fe74ef7d5aa44a691f51a144b23596fdd8fb96d4f01c167db12ae6516b4320e",
+    "text_sha256": "a456efcd8f775e789bd915dc831c23158e15b231e05237553b36d20b7e2a62a5"
+  },
+  "RespiratoryRate:native": {
+    "payload_sha256": "df7d9d764d9b0576a32997612232b2eb5b812fb883e82d18881f4092c5cca5fd",
+    "text_sha256": "345e92fb53dbaeb0c1cd370d212545956de0e8c9eebfd363c5c578aaadaeefad"
+  },
+  "RestingHeartRate:curated": {
+    "payload_sha256": "9359d6ae28b753658b02fb28b3bde833707b0407cc6daaadf1b3bc218b8dcb7f",
+    "text_sha256": "a586301493b29b6c1b17d6e0407fc1d1fb87548fc0adcf31c8c7f6e9f253da5b"
+  },
+  "RestingHeartRate:native": {
+    "payload_sha256": "8e6cfbe7a49aed145c17a84ede6421f74a6dc66af1c3ea2132255f39f55542bd",
+    "text_sha256": "3abeb5867de109e82b0448ea90ec92384c451094f806b5044e92777e14fea6f2"
+  },
+  "Sleep:curated": {
+    "payload_sha256": "b7e11d78e17f33e772458c476ba05cf73af7c1aefe8545067d969bec85f612ff",
+    "text_sha256": "2671b3057fd0819e6468874e1aa664b3a2763a0341e5a03b9c517630dded9380"
+  },
+  "Sleep:native": {
+    "payload_sha256": "b303fcccf1a9e0de593810cd60ae365cebd448c9aa513b321dda7f6bee7933b2",
+    "text_sha256": "faa1f6ff72869bc5767bee26ef7388cc20d2dd9c029dbbdece3eaeb3a403023e"
+  },
+  "StepCount:curated": {
+    "payload_sha256": "ae006254e9f901de92b6b1d42bb59ddbdd706b533a955dbfb029f44b52c86261",
+    "text_sha256": "b500cc8ffa29f1cede8d1c58943b918fad4ece3aff7190c0939834cff963c18c"
+  },
+  "StepCount:native": {
+    "payload_sha256": "4cc2c037ad4a57b2dfe0fe650570361a33cd8fdd11bb5fa2df702a9fa2a10315",
+    "text_sha256": "f87310493363537140b5f28ba7fefbdd93b6fdb134e4b884f2030dfa8409289f"
+  },
+  "TotalFat:curated": {
+    "payload_sha256": "106df5ac6bcd79dc267f1841f5bfc194bf302bfe7649887d8334d25bc1fd32e6",
+    "text_sha256": "08f7b6177a042948e6d2f178684afd1f4f604f92debb65854d777967765a604b"
+  },
+  "TotalFat:native": {
+    "payload_sha256": "bb3dd19c50c33584955c7edcd9202478ad948c3693918b71c112ee180253aa72",
+    "text_sha256": "71dc6f4a36734a3ad8f00da12ac5d94e54c12a4e36014b8a5d9f8fe4251676f3"
+  },
+  "Vo2Max:curated": {
+    "payload_sha256": "2eff99f9698a9e97a059092b8a23db7e5aecce82b7b3cabd27edf461cab57e7c",
+    "text_sha256": "c30f1ee2bd7c1ecb72ff271afaad4296f716c4b3bffc866b87d71b46a1fa729c"
+  },
+  "Vo2Max:native": {
+    "payload_sha256": "11b36e56586402658d0a8048c4e172ab6794fa8e59b9cbf1fcdbeebff74874bd",
+    "text_sha256": "7f83a0200916fe840f466b2b3d59cac3642534b50a6a268faa09836c7c20cc99"
+  },
+  "WaistCircumference:curated": {
+    "payload_sha256": "2413609844fdfbd313050cc268bbbb3e3bd97b177ad6e7aa9ba96826f0f15e43",
+    "text_sha256": "c52ac2204cdb9698a04bc574dbcaaf9b43d88f3efe4b75e9c31e94824b7b32b4"
+  },
+  "WaistCircumference:native": {
+    "payload_sha256": "585e8acd6c50e74d76326ef4914e41ac0d06d74d3b9385531dbf4f34e8ef9c4d",
+    "text_sha256": "34afae007f835237a4191bc872fc6519685b9cde741d662d8f9f17382a5de196"
+  },
+  "WalkingHeartRate:curated": {
+    "payload_sha256": "6d4f5aae9a2ca9a10b098e95d21bbf6d743fbab0d5d44576e719a37c08bbd548",
+    "text_sha256": "417043c10de6f869bbcc6f3949ba11b2182586db750ec87b780bc688b52125e0"
+  },
+  "WalkingHeartRate:native": {
+    "payload_sha256": "e9bcd0b1adeb5ca1da0212a3908defd71624beb2adb3f86c862cd052c84b1cf3",
+    "text_sha256": "4685cbd414389356d28874f1a264058b7b1324a4cfdcef8f9e134e8c933f2527"
+  },
+  "Weight:curated": {
+    "payload_sha256": "6813b3a4a2e969307ef610a53a3466593d1392b1633d6391aa1c8f65e5d511f3",
+    "text_sha256": "ef2f7347d79664d7a0f9a0ecad2ecea05107f7fcd46cf713ac897a98b14fa655"
+  },
+  "Weight:native": {
+    "payload_sha256": "33fd81bd35cdea8e37cb8ee750989e530d2628bda8b21fca4850a291a6b8594a",
+    "text_sha256": "fccdfb148f56184cb7221c3e0e786c1a45a9a5fb215bba96a283ab02a64fc980"
+  },
+  "overview": {
+    "payload_sha256": "a3a11cd8a92f9197ff0fb1ac94eccd95ff9cec87995839604d159f172086b4fc",
+    "text_sha256": "b7b272ab6b06987853fdb0304f7ba76c56a305034fba0f04584ac05c013a03e8"
+  }
+}

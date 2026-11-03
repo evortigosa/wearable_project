@@ -437,19 +437,18 @@ def test_size_estimate_is_reported():
 def test_native_hot_journal_is_refused_like_a_curated_one(tmp_path: Path):
     root = _copy_root(tmp_path, NATIVE_SAMPLE, "StepCount", NATIVE_STATE)
     (root / (NATIVE_STATE + "-journal")).write_bytes(b"\0" * 512)
-    with pytest.raises(DataLoaderStateError, match="uncommitted writes"):
-        StepCountLoader(phase="native", root=root).get_data()
-    data = StepCountLoader(phase="native", root=root, state_validation="off").get_data()
-    assert len(data.df) == facts.rows(NATIVE_SAMPLE, "StepCount")
-    assert data.load_report["size_estimate"] is None
+    for mode in ("auto", "off"):
+        with pytest.raises(DataLoaderStateError, match="uncommitted writes"):
+            StepCountLoader(phase="native", root=root, state_validation=mode).get_data()
 
 
 @needs_sample
 def test_curated_hot_rollback_journal_is_refused_like_a_wal(tmp_path: Path):
     root = _copy_root(tmp_path, CURATED_SAMPLE, "StepCount", CURATED_STATE)
     (root / (CURATED_STATE + "-journal")).write_bytes(b"\0" * 512)
-    with pytest.raises(DataLoaderStateError, match="uncommitted writes"):
-        StepCountLoader(root=root).get_data()
+    for mode in ("auto", "off"):
+        with pytest.raises(DataLoaderStateError, match="uncommitted writes"):
+            StepCountLoader(root=root, state_validation=mode).get_data()
 
 
 # ============================================================ acquisition coverage in get_data

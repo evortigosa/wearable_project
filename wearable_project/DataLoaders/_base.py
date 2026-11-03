@@ -28,14 +28,15 @@ import pandas as pd
 from wearable_project.exceptions import (
     DataLoaderConfigurationError, DataLoaderError, DataLoaderPathError, DataLoaderReadError, DataLoaderSourceError,
 )
-from wearable_project.DataLoaders._contracts import LoaderFeatureContract, RootIdentity, SourceAdapter
+from wearable_project.DataLoaders._contracts import (
+    LoadReportContext, LoaderFeatureContract, RootIdentity, SourceAdapter, StateManifestContract,
+    participant_component_issue as _participant_component_issue,
+)
 from wearable_project.DataLoaders._sources import (
     DEFAULT_APPLE_HEALTHKIT_CURATED_ROOT, DEFAULT_APPLE_HEALTHKIT_NATIVE_ROOT, WearableSource, get_source_adapter,
     normalize_source, probe_root_identity, sources_for_feature,
 )
 from wearable_project.DataLoaders._profile import ProfileReport, format_bytes, render_profile_text
-from wearable_project.DataLoaders._units import stored_unit
-from wearable_project.processing.apple_healthkit.registry import get_feature_spec
 
 
 ProcessingPhase = Literal["native", "curated"]
@@ -133,7 +134,7 @@ _PROJECTION_SCHEMA: Any = None
 
 def _projection_schema() -> Any:
     """
-    Import ``curation.schema`` on first use and cache it.
+    Return the established Apple projection schema on first use and cache it.
     Deferred rather than imported at module scope so that importing a feature loader does not pull the
     curation package, whose ``__init__`` eagerly loads the policy, evidence and engine modules. The cost
     is therefore paid once per process, on the first ``get_data`` call, instead of on every import.
@@ -141,8 +142,9 @@ def _projection_schema() -> Any:
 
     global _PROJECTION_SCHEMA
     if _PROJECTION_SCHEMA is None:
-        from wearable_project.curation.apple_healthkit import schema
-        _PROJECTION_SCHEMA = schema
+        from wearable_project.DataLoaders.apple_healthkit.schema import projection_schema
+
+        _PROJECTION_SCHEMA = projection_schema()
     return _PROJECTION_SCHEMA
 
 
@@ -306,6 +308,7 @@ class AppleHealthFeatureLoader:
 
     feature_name: ClassVar[str]
     default_source: ClassVar[WearableSource | str | None] = WearableSource.APPLE_HEALTHKIT
+    adapter_date_contract_by_default: ClassVar[bool] = False
     date_column: ClassVar[str] = "start_date"
     date_semantics: ClassVar[str] = "event_start"
     registration_prefix: ClassVar[str] = "10K_"
@@ -356,10 +359,14 @@ class AppleHealthFeatureLoader:
                 f"{type(self).__name__} represents feature {feature!r}, which is not available for source "
                 f"{self.source.value!r}; supported source(s): {supported_text}"
             )
-        if self.source is not WearableSource.APPLE_HEALTHKIT:
+        compatibility_source = (
+            normalize_source(self.default_source) if self.default_source is not None else None
+        )
+        if self.adapter_date_contract_by_default or self.source is not compatibility_source:
             contract = self._source_adapter.date_contract(feature)
-            # One public feature class may expose a distinct temporal contract for another source. Apple keeps
-            # resolving the established class attributes directly, including custom subclass overrides.
+            # A public feature class may expose a distinct temporal contract for another source. Legacy Apple
+            # classes keep resolving their established class attributes, including custom subclass overrides;
+            # neutral/new classes always take the adapter contract.
             self.date_column = contract.column
             self.date_semantics = contract.semantics
         configured_native = Path(native_root).expanduser()
@@ -368,12 +375,12 @@ class AppleHealthFeatureLoader:
         # those legacy Apple defaults act as compatibility sentinels and resolve to that source's own roots.
         self.native_root = (
             self._source_adapter.native_root
-            if self.source is not WearableSource.APPLE_HEALTHKIT and configured_native == DEFAULT_NATIVE_ROOT
+            if configured_native == DEFAULT_NATIVE_ROOT and self._source_adapter.native_root != DEFAULT_NATIVE_ROOT
             else configured_native
         )
         self.curated_root = (
             self._source_adapter.curated_root
-            if self.source is not WearableSource.APPLE_HEALTHKIT and configured_curated == DEFAULT_CURATED_ROOT
+            if configured_curated == DEFAULT_CURATED_ROOT and self._source_adapter.curated_root != DEFAULT_CURATED_ROOT
             else configured_curated
         )
         self._root_override = Path(root).expanduser() if root is not None else None
@@ -428,6 +435,23 @@ class AppleHealthFeatureLoader:
         root = self.data_root
         if not root.is_dir():
             raise DataLoaderPathError(f"{self.phase} wearable root does not exist or is not a directory: {root}")
+        marker_paths = [(phase, marker, root / marker) for phase, marker in _PHASE_STATE_FILES.items()]
+        invalid_markers = [
+            path for _, _, path in marker_paths
+            if (path.exists() or path.is_symlink()) and not path.is_file()
+        ]
+        if invalid_markers:
+            raise DataLoaderStateError(
+                f"{invalid_markers[0]} exists but is not a state database file; the product root cannot be "
+                "identified safely"
+            )
+        present_markers = [(phase, marker) for phase, marker, path in marker_paths if path.is_file()]
+        if len(present_markers) > 1:
+            markers = ", ".join(repr(marker) for _, marker in present_markers)
+            raise DataLoaderConfigurationError(
+                f"{root} contains both native and curated state markers ({markers}); the product phase is "
+                "ambiguous and the root cannot be loaded safely. Point the loader at one managed product root."
+            )
         detected_phase = self.detect_phase(root)
         if detected_phase is not None and detected_phase != self.phase:
             raise DataLoaderConfigurationError(
@@ -466,26 +490,16 @@ class AppleHealthFeatureLoader:
         return probe_root_identity(path, phase).source
 
     def _require_loading_implemented(self, operation: str) -> None:
-        if operation in {"get_data", "profile"} and self.phase in self._source_adapter.implemented_phases:
+        if operation in {"get_data", "profile", "info"} and self.phase in self._source_adapter.implemented_phases:
             return
-        if operation == "info" and self.source is WearableSource.APPLE_HEALTHKIT:
-            return
-        if self.source is WearableSource.GOOGLE_FITNESS and operation == "info":
-            detail = (
-                "Google Fitness static information reports are not yet source-qualified; use profile() for a "
-                "specific root and the Google Fitness DataLoader documentation for the static contract."
-            )
-        else:
-            detail = "The selected source/phase operation is not implemented."
         raise DataLoaderConfigurationError(
-            f"{operation} for source={self.source.value!r}, phase={self.phase!r} is not enabled. {detail}"
+            f"{operation} for source={self.source.value!r}, phase={self.phase!r} is not enabled. "
+            "The selected source/phase operation is not implemented."
         )
 
     def _loader_schema(self) -> Any:
         """Projection/dtype schema selected by the instance's source-qualified feature contract."""
 
-        if self.source is WearableSource.APPLE_HEALTHKIT:
-            return _projection_schema()
         return self._source_adapter.projection_schema(self.feature_name, self.phase)
 
     def _feature_loader_contract(self) -> LoaderFeatureContract:
@@ -566,6 +580,7 @@ class AppleHealthFeatureLoader:
             columns = [columns]
         projection = str(projection).strip().lower()
         schema = self._loader_schema()
+        loader_contract = self._feature_loader_contract()
         if not schema.is_known_projection(projection):
             raise DataLoaderConfigurationError(
                 f"unknown projection {projection!r}; choose one of "
@@ -584,20 +599,16 @@ class AppleHealthFeatureLoader:
         installed_fingerprint: str | None = None
         if dense:
             manifest, state_note = self._open_manifest(root)
-            if manifest is not None or self.source is WearableSource.GOOGLE_FITNESS:
-                # Google virtual projections are defined by the installed/root contract even when state reads are
-                # disabled. Apple retains its historical behavior of comparing policy only when state is present.
+            if manifest is not None or self._source_adapter.requires_installed_policy_without_state(self.phase):
+                # Some source contracts define executable virtual projections whose installed policy remains
+                # relevant even when state reads are disabled. Legacy Apple behavior consults policy only when a
+                # curation manifest is present.
                 installed_fingerprint = self._installed_policy_fingerprint()
         else:
             manifest, state_note = self._open_native_manifest(root)
 
         requested_empty_for_source: list[str] = []
-        if (
-            self.source is WearableSource.GOOGLE_FITNESS
-            and self.phase == "native"
-            and registration_codes is not None
-            and manifest is not None
-        ):
+        if self.phase == "native" and registration_codes is not None and manifest is not None:
             statuses = self._source_adapter.participant_statuses(root)
             requested_empty_for_source = sorted(
                 participant_id
@@ -670,17 +681,7 @@ class AppleHealthFeatureLoader:
                 )
         acquisition_total: Counter[str] = Counter()
         acquisition_by_participant: dict[str, Counter[str]] = {}
-        google_version_counts: Counter[str] = Counter()
-        google_tracking_counts: Counter[str] = Counter()
-        google_curated_counts: dict[str, Counter[str] | int] = {
-            "curation_status_counts": Counter(),
-            "step_count_role_counts": Counter(),
-            "derivation_method_counts": Counter(),
-            "tracking_status_counts": Counter(),
-            "curation_unit_status_counts": Counter(),
-            "unit_evidence_counts": Counter(),
-            "canonical_value_rows": 0,
-        }
+        source_metrics: dict[str, Counter[str] | int] = {}
         retained_rows = 0
 
         for participant_id in participant_ids:
@@ -714,23 +715,18 @@ class AppleHealthFeatureLoader:
             inclusion_verified = False
             curated_preparation: Any | None = None
             if dense:
-                if self.source is WearableSource.GOOGLE_FITNESS:
-                    curated_preparation = self._source_adapter.prepare_curated_frame(
-                        frame, path, self.feature_name,
-                    )
-                    frame = curated_preparation.frame
-                    filled = dict(curated_preparation.reconstructed_rows)
-                    inclusion_reconstructed_mask = curated_preparation.inclusion_reconstructed_mask
-                    inclusion_reconstructed = bool(inclusion_reconstructed_mask.any())
-                    physical_columns = tuple(curated_preparation.physical_columns)
-                    reconstructed_column_names.update(
-                        dict.fromkeys(curated_preparation.reconstructed_columns)
-                    )
-                    virtual_column_names.update(dict.fromkeys(curated_preparation.virtual_columns))
-                else:
-                    frame, filled, inclusion_reconstructed = self._densify(frame)
-                    if inclusion_reconstructed:
-                        inclusion_reconstructed_mask = pd.Series(True, index=frame.index, dtype=bool)
+                curated_preparation = self._source_adapter.prepare_curated_frame(
+                    frame, path, self.feature_name,
+                )
+                frame = curated_preparation.frame
+                filled = dict(curated_preparation.reconstructed_rows)
+                inclusion_reconstructed_mask = curated_preparation.inclusion_reconstructed_mask
+                inclusion_reconstructed = bool(inclusion_reconstructed_mask.any())
+                physical_columns = tuple(curated_preparation.physical_columns)
+                reconstructed_column_names.update(
+                    dict.fromkeys(curated_preparation.reconstructed_columns)
+                )
+                virtual_column_names.update(dict.fromkeys(curated_preparation.virtual_columns))
                 rows_reconstructed.update(filled)
                 if manifest is not None:
                     entry = manifest.get(participant_id)
@@ -741,13 +737,10 @@ class AppleHealthFeatureLoader:
                             "file cannot be verified and may be foreign or partially written. For a "
                             "deliberately assembled sample tree, pass state_validation='off'."
                         )
-                    if self.source is WearableSource.GOOGLE_FITNESS:
-                        assert curated_preparation is not None
-                        inclusion_verified = self._source_adapter.reconcile_curated_frame(
-                            curated_preparation, path, self.feature_name, entry,
-                        )
-                    else:
-                        inclusion_verified = self._reconcile(frame, path, entry)
+                    assert curated_preparation is not None
+                    inclusion_verified = self._source_adapter.reconcile_curated_frame(
+                        curated_preparation, path, self.feature_name, entry,
+                    )
                     if not inclusion_verified:
                         inclusion_counts_unverifiable += 1
                     verified_participants.add(participant_id)
@@ -765,13 +758,12 @@ class AppleHealthFeatureLoader:
                         "cannot be verified and may be foreign, a stray copy, or partially written. For a "
                         "deliberately assembled sample tree, pass state_validation='off'."
                     )
-                if self.source is WearableSource.GOOGLE_FITNESS:
-                    recorded_filename = entry.get("filename")
-                    if recorded_filename is not None and str(recorded_filename) != self.filename:
-                        raise DataLoaderStateError(
-                            f"{path} disagrees with its feature_outputs row: state records filename "
-                            f"{recorded_filename!r}, expected {self.filename!r}"
-                        )
+                recorded_filename = entry.get("filename")
+                if recorded_filename is not None and str(recorded_filename) != self.filename:
+                    raise DataLoaderStateError(
+                        f"{path} disagrees with its feature_outputs row: state records filename "
+                        f"{recorded_filename!r}, expected {self.filename!r}"
+                    )
                 self._verify_native(frame, path, entry)
                 verified_participants.add(participant_id)
 
@@ -828,32 +820,19 @@ class AppleHealthFeatureLoader:
             acquisition = self._acquisition_counts(frame)
             acquisition_total.update(acquisition)
             acquisition_by_participant[participant_id] = acquisition
-            if self.source is WearableSource.GOOGLE_FITNESS:
-                if "collecting_method_version" in frame.columns:
-                    google_version_counts.update(
-                        str(value) for value in frame["collecting_method_version"].dropna()
-                    )
-                if "tracked" in frame.columns:
-                    tracked = self._as_nullable_boolean(frame["tracked"])
-                    if tracked is not None:
-                        google_tracking_counts.update({
-                            "true": int(tracked.eq(True).fillna(False).sum()),  # noqa: E712 - pandas scalar comparison
-                            "false": int(tracked.eq(False).fillna(False).sum()),  # noqa: E712
-                            "missing": int(tracked.isna().sum()),
-                        })
-                if self.phase == "curated":
-                    logical = self._source_adapter.curated_logical_counts(frame, self.feature_name)
-                    for name in (
-                        "curation_status_counts", "step_count_role_counts", "derivation_method_counts",
-                        "tracking_status_counts", "curation_unit_status_counts", "unit_evidence_counts",
-                    ):
-                        counter = google_curated_counts[name]
-                        assert isinstance(counter, Counter)
-                        counter.update(logical[name])
-                    google_curated_counts["canonical_value_rows"] = (
-                        int(google_curated_counts["canonical_value_rows"])
-                        + int(logical["canonical_value_rows"])
-                    )
+            for name, value in self._source_adapter.frame_load_metrics(
+                frame, self.feature_name, self.phase,
+            ).items():
+                if isinstance(value, Mapping):
+                    current = source_metrics.setdefault(name, Counter())
+                    if not isinstance(current, Counter):
+                        raise RuntimeError(f"source metric {name!r} changed type during aggregation")
+                    current.update({str(key): int(count) for key, count in value.items()})
+                else:
+                    current = source_metrics.get(name, 0)
+                    if isinstance(current, Counter):
+                        raise RuntimeError(f"source metric {name!r} changed type during aggregation")
+                    source_metrics[name] = int(current) + int(value)
             retained_rows += int(len(frame))
             if limit is not None and retained_rows > limit:
                 raise DataLoaderSizeError(
@@ -936,8 +915,8 @@ class AppleHealthFeatureLoader:
                 # Google StepCount alternatives legitimately share the same outer timestamp. A stable sort keeps
                 # their source payload order deterministic while preserving the established Apple behavior.
                 combined = (
-                    combined.sort_index(kind="mergesort")
-                    if self.source is WearableSource.GOOGLE_FITNESS else combined.sort_index()
+                    combined.sort_index(kind=loader_contract.index_sort_kind)
+                    if loader_contract.index_sort_kind is not None else combined.sort_index()
                 )
         else:
             combined = self._empty_frame(
@@ -1015,54 +994,21 @@ class AppleHealthFeatureLoader:
         source_contract = dict(self._source_adapter.contract_metadata(self.feature_name, self.phase))
         if source_contract:
             report["source_contract"] = source_contract
-        if self.source is WearableSource.GOOGLE_FITNESS:
-            report["requested_participants_empty_for_source"] = requested_empty_for_source
-            report["collecting_method_version_counts"] = dict(sorted(google_version_counts.items()))
-            report["tracking_counts"] = dict(sorted(google_tracking_counts.items()))
-            if self.phase == "curated":
-                physical_observed: dict[str, None] = {}
-                for participant_id in sorted(physical_columns_by_participant):
-                    physical_observed.update(dict.fromkeys(physical_columns_by_participant[participant_id]))
-                report.update({
-                    "curation_contract_validated": True,
-                    "curation_contract": dict(self._root_contract_metadata),
-                    "columns_stored": list(physical_observed),
-                    "columns_reconstructed": list(reconstructed_column_names),
-                    "columns_virtual": list(virtual_column_names),
-                    "curation_status_counts": dict(sorted(
-                        google_curated_counts["curation_status_counts"].items()  # type: ignore[union-attr]
-                    )),
-                    "step_count_role_counts": dict(sorted(
-                        google_curated_counts["step_count_role_counts"].items()  # type: ignore[union-attr]
-                    )),
-                    "derivation_method_counts": dict(sorted(
-                        google_curated_counts["derivation_method_counts"].items()  # type: ignore[union-attr]
-                    )),
-                    "tracking_status_counts": dict(sorted(
-                        google_curated_counts["tracking_status_counts"].items()  # type: ignore[union-attr]
-                    )),
-                    "curation_unit_status_counts": dict(sorted(
-                        google_curated_counts["curation_unit_status_counts"].items()  # type: ignore[union-attr]
-                    )),
-                    "unit_evidence_counts": dict(sorted(
-                        google_curated_counts["unit_evidence_counts"].items()  # type: ignore[union-attr]
-                    )),
-                    "canonical_value_rows": int(google_curated_counts["canonical_value_rows"]),
-                })
+        report.update(self._source_adapter.load_report_extension(
+            source_metrics,
+            LoadReportContext(
+                requested_empty_for_source=tuple(requested_empty_for_source),
+                physical_columns_by_participant=physical_columns_by_participant,
+                reconstructed_columns=tuple(reconstructed_column_names),
+                virtual_columns=tuple(virtual_column_names),
+                root_contract_metadata=self._root_contract_metadata,
+            ),
+        ))
 
         if undeclared_columns:
-            if self.source is WearableSource.APPLE_HEALTHKIT:
-                warning_text = (
-                    f"{len(undeclared_columns)} column(s) in {self.feature_name} files have no declared role in "
-                    f"curation.schema: {', '.join(sorted(undeclared_columns))}. They are returned only by "
-                    "projection='full' or an explicit columns= request. Add them to COLUMN_ROLES."
-                )
-            else:
-                warning_text = (
-                    f"{len(undeclared_columns)} column(s) in {self.feature_name} files have no declared role in the "
-                    f"{self.source.value} DataLoader schema: {', '.join(sorted(undeclared_columns))}. They are "
-                    "returned only by projection='full' or an explicit columns= request. Add them to the source schema."
-                )
+            warning_text = self._source_adapter.undeclared_columns_warning(
+                self.feature_name, tuple(sorted(undeclared_columns)),
+            )
             warnings.warn(warning_text, UserWarning, stacklevel=2)
         if diverged_participants:
             warnings.warn(
@@ -1141,7 +1087,7 @@ class AppleHealthFeatureLoader:
         else:
             state, note = self._open_native_manifest(root)
         source = "filesystem" if state is None else ("curation_state" if dense else "native_state")
-        rows_key = "curated_rows" if dense else "row_count"
+        rows_key = self._source_adapter.state_manifest_contract(self.phase).row_count_column
 
         # Without a requested subset, also include every participant the state records, so a file that
         # has disappeared from disk is reported rather than silently absent from the profile.
@@ -1150,11 +1096,7 @@ class AppleHealthFeatureLoader:
             population |= set(state)
 
         records: list[dict[str, Any]] = []
-        acquisition_total: Counter[str] = Counter()
-        status_total: Counter[str] = Counter()
-        unit_status_total: Counter[str] = Counter()
-        included = excluded = unverifiable = canonical_rows = ambiguous_rows = diverged = 0
-        google_curated_entries: list[Mapping[str, Any]] = []
+        curated_entries: list[Mapping[str, Any]] = []
         for participant_id in sorted(population):
             path = root / participant_id / self.filename
             on_disk = path.is_file()
@@ -1175,54 +1117,18 @@ class AppleHealthFeatureLoader:
                 )
             loadable = on_disk and entry is not None
             if dense and entry is not None:
-                if self.source is WearableSource.GOOGLE_FITNESS:
-                    record.update(self._source_adapter.curated_profile_record(entry, installed))
-                    if loadable:
-                        google_curated_entries.append(entry)
-                else:
-                    stored = int(entry["curated_rows"])
-                    inclusion_valid = (
-                        int(entry["included_by_default_rows"]) + int(entry["excluded_by_default_rows"]) == stored
-                    )
-                    acquisition = Counter(json.loads(entry["acquisition_counts_json"] or "{}"))
-                    record.update({
-                        "pass_rows": int(entry["pass_rows"]),
-                        "review_rows": int(entry["review_rows"]),
-                        "exclude_default_rows": int(entry["exclude_default_rows"]),
-                        "included_by_default_rows": int(entry["included_by_default_rows"]) if inclusion_valid else None,
-                        "excluded_by_default_rows": int(entry["excluded_by_default_rows"]) if inclusion_valid else None,
-                        "acquisition_classified_fraction": self._classified_fraction(acquisition),
-                        "canonical_value_rows": int(entry["canonical_value_rows"]),
-                        "ambiguous_unit_rows": int(entry["ambiguous_unit_rows"]),
-                        "policy_current": (
-                            None if installed is None else str(entry["policy_fingerprint"]) == installed
-                        ),
-                    })
-                    if loadable:
-                        status_total.update({
-                            "pass": int(entry["pass_rows"]), "review": int(entry["review_rows"]),
-                            "exclude_default": int(entry["exclude_default_rows"]),
-                        })
-                        if inclusion_valid:
-                            included += int(entry["included_by_default_rows"])
-                            excluded += int(entry["excluded_by_default_rows"])
-                        else:
-                            unverifiable += 1
-                        acquisition_total.update(acquisition)
-                        unit_status_total.update(json.loads(entry["unit_status_counts_json"] or "{}"))
-                        canonical_rows += int(entry["canonical_value_rows"])
-                        ambiguous_rows += int(entry["ambiguous_unit_rows"])
-                        if record["policy_current"] is False:
-                            diverged += 1
+                record.update(self._source_adapter.curated_profile_record(entry, installed))
+                if loadable:
+                    curated_entries.append(entry)
             records.append(record)
 
-        google_profile: Mapping[str, Any] | None = None
-        google_profile_columns: Mapping[str, str] | None = None
-        if dense and state is not None and self.source is WearableSource.GOOGLE_FITNESS:
-            google_profile = self._source_adapter.curated_profile_summary(google_curated_entries, installed)
-            google_profile_columns = self._source_adapter.curated_profile_columns()
+        curated_profile: Mapping[str, Any] | None = None
+        curated_profile_columns: Mapping[str, str] | None = None
+        if dense and state is not None:
+            curated_profile = self._source_adapter.curated_profile_summary(curated_entries, installed)
+            curated_profile_columns = self._source_adapter.curated_profile_columns()
         participants = self._profile_frame(
-            records, dense=dense, with_state=state is not None, curated_columns=google_profile_columns,
+            records, dense=dense, with_state=state is not None, curated_columns=curated_profile_columns,
         )
         loadable_mask = participants["on_disk"].astype(bool)
         if state is not None:
@@ -1248,36 +1154,11 @@ class AppleHealthFeatureLoader:
             "files_on_disk": int(participants["on_disk"].sum()),
             "rows": rows_total,
             "bytes_on_disk": int(participants["bytes_on_disk"].fillna(0).sum()),
-            "status_counts": (
-                google_profile["status_counts"] if google_profile is not None
-                else dict(sorted(status_total.items())) if dense and state is not None else None
-            ),
-            "default_inclusion": (
-                google_profile["default_inclusion"] if google_profile is not None
-                else {"included": included, "excluded": excluded, "unverifiable_files": unverifiable}
-                if dense and state is not None else None
-            ),
-            "acquisition": (
-                google_profile["acquisition"] if google_profile is not None
-                else {"counts": dict(sorted(acquisition_total.items())),
-                      "classified_fraction": self._classified_fraction(acquisition_total)}
-                if dense and state is not None else None
-            ),
-            "unit_resolution": (
-                google_profile["unit_resolution"] if google_profile is not None
-                else {"status_counts": dict(sorted(unit_status_total.items())),
-                      "canonical_value_rows": canonical_rows, "ambiguous_unit_rows": ambiguous_rows,
-                      "resolved_fraction": (
-                          canonical_rows / (canonical_rows + ambiguous_rows)
-                          if canonical_rows + ambiguous_rows else None
-                      )}
-                if dense and state is not None else None
-            ),
-            "policy": (
-                google_profile["policy"] if google_profile is not None
-                else {"installed_fingerprint": installed, "files_diverged": diverged}
-                if dense and state is not None else None
-            ),
+            "status_counts": curated_profile["status_counts"] if curated_profile is not None else None,
+            "default_inclusion": curated_profile["default_inclusion"] if curated_profile is not None else None,
+            "acquisition": curated_profile["acquisition"] if curated_profile is not None else None,
+            "unit_resolution": curated_profile["unit_resolution"] if curated_profile is not None else None,
+            "policy": curated_profile["policy"] if curated_profile is not None else None,
             "integrity": {
                 "files_missing_on_disk": (
                     int((~participants["on_disk"]).sum()) if state is not None else None
@@ -1294,12 +1175,12 @@ class AppleHealthFeatureLoader:
                 "exceeds_max_rows": bool(limit is not None and get_data_rows is not None and get_data_rows > limit),
             },
         }
-        if google_profile is not None:
+        if curated_profile is not None:
             for name in ("provenance", "step_count_roles", "curation_flags", "materialized_columns"):
-                summary[name] = google_profile[name]
-        if self.source is WearableSource.GOOGLE_FITNESS and self.phase == "curated":
-            # The root contract is validated even when state reads are disabled, because sparse defaults and
-            # virtual fields cannot be interpreted safely without it. Expose that fact consistently in profiles.
+                if name in curated_profile:
+                    summary[name] = curated_profile[name]
+        if self.phase == "curated" and self._root_contract_metadata:
+            # Source adapters validate any root-level scientific contract before profile state is interpreted.
             summary["curation_contract"] = dict(self._root_contract_metadata)
 
         source_contract = dict(self._source_adapter.contract_metadata(self.feature_name, self.phase))
@@ -1363,7 +1244,7 @@ class AppleHealthFeatureLoader:
 
         if state is None:
             return None
-        rows_key = "curated_rows" if dense else "row_count"
+        rows_key = self._source_adapter.state_manifest_contract(self.phase).row_count_column
         exact = not date_filtered
         participants = rows_stored = rows_retained = bytes_on_disk = 0
         for participant_id in participant_ids:
@@ -1486,6 +1367,12 @@ class AppleHealthFeatureLoader:
             value = value[len(cls.registration_prefix) :]
         if not value:
             raise DataLoaderConfigurationError("empty participant/registration code")
+        issue = _participant_component_issue(value)
+        if issue is not None:
+            raise DataLoaderConfigurationError(
+                f"participant/registration code {registration_code!r} {issue}; it must name exactly one "
+                "participant directory beneath the configured wearable root"
+            )
         return value
 
     @staticmethod
@@ -1523,7 +1410,7 @@ class AppleHealthFeatureLoader:
         contract = self._feature_loader_contract()
         text_columns = {column: str for column in contract.text_columns}
         try:
-            if self.source is WearableSource.GOOGLE_FITNESS:
+            if contract.unknown_columns_as_text:
                 # A managed root with the accepted registry cannot contain undeclared columns, but trimmed or
                 # forward-looking sample trees can. Their type is unknown, so text is the only lossless default:
                 # it preserves lexical evidence such as leading zeros and the literal token "None" until the
@@ -1695,20 +1582,23 @@ class AppleHealthFeatureLoader:
             raise DataLoaderStateError(
                 f"{active} holds uncommitted writes: a curation run may be in progress or did not shut down "
                 "cleanly, so the state database cannot be read consistently without writing to the data "
-                "tree. Retry once curation has finished, or pass state_validation='off' to load unverified."
+                "tree. Retry once curation has finished. Source identity safety cannot be disabled with "
+                "state_validation='off'."
             )
         uri = f"{database.resolve().as_uri()}?immutable=1"
         try:
             with closing(sqlite3.connect(uri, uri=True)) as connection:
                 connection.row_factory = sqlite3.Row
-                rows = connection.execute(
-                    "SELECT * FROM curation_outputs WHERE feature = ?", (self.feature_name,)
-                ).fetchall()
+                state_contract = self._source_adapter.state_manifest_contract("curated")
+                self._validate_state_manifest_columns(connection, database, state_contract)
+                cursor = connection.execute(state_contract.query, (self.feature_name,))
+                rows = cursor.fetchall()
         except sqlite3.Error as exc:
             if database.exists() and not os.access(database, os.R_OK):
                 raise DataLoaderStateError(_permission_denied(database, database.parent)) from exc
-            raise DataLoaderStateError(f"could not read curation_outputs from {database}: {exc}") from exc
-        return {str(row["participant_id"]): dict(row) for row in rows}, None
+            table = self._source_adapter.state_manifest_contract("curated").table
+            raise DataLoaderStateError(f"could not read {table} from {database}: {exc}") from exc
+        return self._manifest_from_rows(rows, database, state_contract), None
 
     @staticmethod
     def _active_write_file(database: Path) -> Path | None:
@@ -1719,6 +1609,80 @@ class AppleHealthFeatureLoader:
             if side.is_file() and side.stat().st_size > 0:
                 return side
         return None
+
+    @staticmethod
+    def _validate_state_manifest_columns(
+        connection: sqlite3.Connection, database: Path, contract: StateManifestContract,
+    ) -> None:
+        """Reject a managed state table whose schema cannot satisfy the selected source adapter."""
+
+        quoted = contract.table.replace('"', '""')
+        available = {
+            str(row[1])
+            for row in connection.execute(f'PRAGMA table_info("{quoted}")').fetchall()
+        }
+        missing = [column for column in contract.required_columns if column not in available]
+        if missing:
+            raise DataLoaderStateError(
+                f"{database} table {contract.table!r} is missing required loader column(s): "
+                + ", ".join(missing)
+            )
+
+    @staticmethod
+    def _manifest_from_rows(
+        rows: Sequence[sqlite3.Row], database: Path, contract: StateManifestContract,
+    ) -> dict[str, dict[str, Any]]:
+        """Build and validate a participant-keyed manifest before any state value can guide file access."""
+
+        manifest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            raw = row["participant_id"]
+            raw_text = "" if raw is None else str(raw)
+            participant_id = raw_text.strip()
+            if raw_text != participant_id:
+                raise DataLoaderStateError(
+                    f"{database} table {contract.table!r} contains participant_id {raw!r} with leading or "
+                    "trailing whitespace; managed state must name the participant directory exactly"
+                )
+            issue = _participant_component_issue(participant_id)
+            if issue is not None:
+                raise DataLoaderStateError(
+                    f"{database} table {contract.table!r} contains participant_id {raw!r} that {issue}; "
+                    "managed state may reference only one directory directly beneath the product root"
+                )
+            if participant_id in manifest:
+                raise DataLoaderStateError(
+                    f"{database} table {contract.table!r} contains duplicate rows for participant "
+                    f"{participant_id!r} and feature"
+                )
+            entry = dict(row)
+            for column in contract.nonnegative_integer_columns:
+                value = entry.get(column)
+                try:
+                    if isinstance(value, (bool, np.bool_)):
+                        raise ValueError
+                    if isinstance(value, (float, np.floating)) and not float(value).is_integer():
+                        raise ValueError
+                    parsed = int(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise DataLoaderStateError(
+                        f"{database} table {contract.table!r} column {column!r} must contain a "
+                        f"nonnegative integer; found {value!r} for participant {participant_id!r}"
+                    ) from exc
+                if parsed < 0:
+                    raise DataLoaderStateError(
+                        f"{database} table {contract.table!r} column {column!r} must contain a "
+                        f"nonnegative integer; found {value!r} for participant {participant_id!r}"
+                    )
+            for column in contract.sha256_columns:
+                value = entry.get(column)
+                if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{64}", value) is None:
+                    raise DataLoaderStateError(
+                        f"{database} table {contract.table!r} column {column!r} must contain a 64-digit "
+                        f"SHA-256 hex digest; found {value!r} for participant {participant_id!r}"
+                    )
+            manifest[participant_id] = entry
+        return manifest
 
     def _open_native_manifest(self, root: Path) -> tuple[dict[str, dict[str, Any]] | None, str | None]:
         """
@@ -1742,35 +1706,28 @@ class AppleHealthFeatureLoader:
             raise DataLoaderStateError(
                 f"{active} holds uncommitted writes: a processing run may be in progress or did not shut down "
                 "cleanly, so the state database cannot be read consistently without writing to the data "
-                "tree. Retry once processing has finished, or pass state_validation='off' to load unverified."
+                "tree. Retry once processing has finished. Source identity safety cannot be disabled with "
+                "state_validation='off'."
             )
         uri = f"{database.resolve().as_uri()}?immutable=1"
         try:
             with closing(sqlite3.connect(uri, uri=True)) as connection:
                 connection.row_factory = sqlite3.Row
-                query = (
-                    "SELECT * FROM feature_outputs WHERE feature = ?"
-                    if self.source is WearableSource.GOOGLE_FITNESS
-                    else "SELECT participant_id, row_count, size_bytes, sha256 FROM feature_outputs WHERE feature = ?"
-                )
-                rows = connection.execute(query, (self.feature_name,)).fetchall()
+                state_contract = self._source_adapter.state_manifest_contract("native")
+                self._validate_state_manifest_columns(connection, database, state_contract)
+                cursor = connection.execute(state_contract.query, (self.feature_name,))
+                rows = cursor.fetchall()
         except sqlite3.Error as exc:
             if database.exists() and not os.access(database, os.R_OK):
                 raise DataLoaderStateError(_permission_denied(database, database.parent)) from exc
-            raise DataLoaderStateError(f"could not read feature_outputs from {database}: {exc}") from exc
-        return {str(row["participant_id"]): dict(row) for row in rows}, None
+            table = self._source_adapter.state_manifest_contract("native").table
+            raise DataLoaderStateError(f"could not read {table} from {database}: {exc}") from exc
+        return self._manifest_from_rows(rows, database, state_contract), None
 
     def _installed_policy_fingerprint(self) -> str | None:
         """The source-qualified installed curation policy fingerprint, or None when no policy applies."""
 
-        if self.source is not WearableSource.APPLE_HEALTHKIT:
-            return self._source_adapter.installed_policy_fingerprint(self.feature_name, self.phase)
-        from wearable_project.curation.apple_healthkit.registry import get_policy
-
-        try:
-            return str(get_policy(self.feature_name, allow_fallback=False).fingerprint())
-        except KeyError:
-            return None
+        return self._source_adapter.installed_policy_fingerprint(self.feature_name, self.phase)
 
     @classmethod
     def _densify(cls, frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], bool]:
@@ -2010,53 +1967,19 @@ class AppleHealthFeatureLoader:
         if not len(frame.columns):
             return _empty_columns_metadata()
         records = []
-        if self.source is WearableSource.APPLE_HEALTHKIT:
-            # Preserve the accepted production Apple metadata contract exactly.
-            spec = get_feature_spec(self.feature_name)
-            unit_policy = spec.unit_policy
-            for column in frame.columns:
-                role = schema.role_of(column)
-                registry_unit = None
-                if unit_policy is not None:
-                    if role is schema.ColumnRole.MEASUREMENT and column in spec.measurement_columns:
-                        registry_unit = stored_unit(self.feature_name, column).unit
-                    elif column == "canonical_value":
-                        registry_unit = unit_policy.canonical_unit
-                records.append({
-                    "column": column,
-                    "role": role.value if role is not None else "undeclared",
-                    "description": (
-                        schema.ROLE_DESCRIPTIONS[role] if role is not None
-                        else "No declared role in curation.schema."
-                    ),
-                    "dtype": str(frame[column].dtype),
-                    "non_null": int(frame[column].notna().sum()),
-                    "registry_unit": registry_unit,
-                    "dense_default": _DENSE_CURATED_DEFAULTS.get(column) if dense else None,
-                })
-        else:
-            contract = self._feature_loader_contract()
-            for column in frame.columns:
-                role = schema.role_of(column)
-                registry_unit = (
-                    self._source_adapter.registry_unit(self.feature_name, column)
-                    if column in contract.measurement_columns else None
-                )
-                records.append({
-                    "column": column,
-                    "role": role.value if role is not None else "undeclared",
-                    "description": (
-                        schema.ROLE_DESCRIPTIONS[role] if role is not None
-                        else f"No declared role in the {self.source.value} DataLoader schema."
-                    ),
-                    "dtype": str(frame[column].dtype),
-                    "non_null": int(frame[column].notna().sum()),
-                    "registry_unit": registry_unit,
-                    "dense_default": (
-                        self._source_adapter.dense_default(self.feature_name, column, self.phase)
-                        if dense else None
-                    ),
-                })
+        for column in frame.columns:
+            metadata = self._source_adapter.column_metadata(
+                self.feature_name, column, self.phase, schema, dense=dense,
+            )
+            records.append({
+                "column": column,
+                "role": metadata.role,
+                "description": metadata.description,
+                "dtype": str(frame[column].dtype),
+                "non_null": int(frame[column].notna().sum()),
+                "registry_unit": metadata.registry_unit,
+                "dense_default": metadata.dense_default,
+            })
         return pd.DataFrame.from_records(records).set_index("column")
 
     @staticmethod
@@ -2114,3 +2037,4 @@ class WearableFeatureLoader(AppleHealthFeatureLoader):
     """Opt-in neutral base for new feature modules whose default source is declared by the subclass."""
 
     default_source: ClassVar[WearableSource | str | None] = None
+    adapter_date_contract_by_default: ClassVar[bool] = True

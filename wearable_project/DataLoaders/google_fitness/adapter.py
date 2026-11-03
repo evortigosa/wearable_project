@@ -5,25 +5,50 @@ Google Fitness adapter for source-qualified native and curated schema-v2 DataLoa
 
 
 from __future__ import annotations
-from contextlib import closing
 from pathlib import Path
-import sqlite3
-from typing import Any, Mapping
+from collections import Counter
+from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
-from wearable_project.DataLoaders._contracts import DateContract, LoaderFeatureContract, RootIdentity
-from wearable_project.DataLoaders._sources import (
-    DEFAULT_GOOGLE_FITNESS_CURATED_ROOT, DEFAULT_GOOGLE_FITNESS_NATIVE_ROOT, WearableSource,
-    supported_features_for_source,
+from wearable_project.DataLoaders._contracts import (
+    ColumnMetadataContract, CuratedFramePreparation, DateContract, InfoDocument, LoadReportContext,
+    LoaderFeatureContract, RootIdentity, StateManifestContract,
 )
-from wearable_project.DataLoaders.google_fitness.schema import (
-    CURATED_DATALOADER_SCHEMA_VERSION, SCHEMA_VERSION, get_schema,
+from wearable_project.DataLoaders._sources import (
+    DEFAULT_GOOGLE_FITNESS_CURATED_ROOT, DEFAULT_GOOGLE_FITNESS_NATIVE_ROOT, GOOGLE_FITNESS_PUBLIC_FEATURES,
+    WearableSource,
 )
 from wearable_project.exceptions import DataLoaderConfigurationError, DataLoaderReadError
-from wearable_project.processing.google_fitness.registry import (
-    ColumnType, NativeFeatureFamily, REGISTRY_VERSION, SLEEP_STATE_MAPPING, get_feature_spec,
-)
-from wearable_project.processing.google_fitness.writer import STATE_SCHEMA_VERSION
+
+
+_BOOLEAN_TEXT: dict[str, bool] = {
+    "true": True, "t": True, "yes": True, "y": True, "1": True, "1.0": True,
+    "false": False, "f": False, "no": False, "n": False, "0": False, "0.0": False,
+}
+
+
+def _as_nullable_boolean(values: pd.Series) -> pd.Series | None:
+    """Interpret the registered boolean vocabulary without depending on the concrete loader class."""
+
+    if pd.api.types.is_bool_dtype(values):
+        return values.astype("boolean")
+    missing = values.isna().to_numpy(dtype=bool)
+    result = np.zeros(len(values), dtype=bool)
+    if (~missing).any():
+        present = values.to_numpy(dtype=object)[~missing]
+        mapping: dict[Any, bool] = {}
+        for value in pd.unique(present):
+            if isinstance(value, (bool, np.bool_)):
+                token: bool | None = bool(value)
+            elif isinstance(value, (int, float, np.integer, np.floating)) and value in (0, 1):
+                token = bool(value)
+            else:
+                token = _BOOLEAN_TEXT.get(str(value).strip().lower())
+            if token is None:
+                return None
+            mapping[value] = token
+        result[~missing] = [mapping[value] for value in present]
+    return pd.Series(pd.arrays.BooleanArray(result, missing), index=values.index, name=values.name)
 
 
 class GoogleFitnessAdapter:
@@ -44,96 +69,32 @@ class GoogleFitnessAdapter:
         return DEFAULT_GOOGLE_FITNESS_CURATED_ROOT
 
     def features(self, phase: str) -> tuple[str, ...]:
-        return supported_features_for_source(self.source, phase)
+        del phase
+        return GOOGLE_FITNESS_PUBLIC_FEATURES
 
     def supports_feature(self, feature: str, phase: str) -> bool:
-        return feature in self.features(phase)
+        del phase
+        return feature in GOOGLE_FITNESS_PUBLIC_FEATURES
 
     def date_contract(self, feature: str) -> DateContract:
-        if feature == "StepCount":
-            return DateContract("outer_datetime", "source_outer_summary_datetime_not_canonical_event_day")
-        if feature in {"Height", "Weight"}:
-            return DateContract("end_date", "source_reading_interval_end")
-        return DateContract("start_date", "event_start")
+        from wearable_project.DataLoaders.google_fitness.contracts import date_contract
+
+        return date_contract(feature)
 
     def projection_schema(self, feature: str, phase: str) -> Any:
+        from wearable_project.DataLoaders.google_fitness.schema import get_schema
+
         return get_schema(feature, phase)
 
     def feature_contract(self, feature: str, phase: str) -> LoaderFeatureContract:
-        spec = get_feature_spec(feature)
-        schema = get_schema(feature, phase)
-        physical_columns = tuple(spec.column_names)
-        required_columns = tuple(spec.required_columns)
-        measurement_columns = tuple(spec.measurement_columns)
-        if phase == "curated":
-            from wearable_project.curation.google_fitness.registry import get_policy
+        from wearable_project.DataLoaders.google_fitness.contracts import feature_contract
 
-            policy = get_policy(feature, allow_fallback=False)
-            physical_columns = (*physical_columns, *policy.output.materialized_columns)
-            required_columns = (*required_columns, *policy.output.fixed_columns)
-            if "canonical_value" in policy.output.virtual_columns:
-                measurement_columns = (*measurement_columns, "canonical_value")
-        return LoaderFeatureContract(
-            feature=feature,
-            date=self.date_contract(feature),
-            timestamp_columns=schema.TIMESTAMP_COLUMNS,
-            calendar_date_columns=schema.CALENDAR_DATE_COLUMNS,
-            text_columns=schema.TEXT_COLUMNS,
-            categorical_columns=schema.CATEGORICAL_COLUMNS,
-            string_columns=schema.STRING_COLUMNS,
-            numeric_columns=schema.NUMERIC_COLUMNS,
-            integer_columns=schema.INTEGER_COLUMNS,
-            boolean_columns=schema.NULLABLE_BOOLEAN_COLUMNS,
-            measurement_columns=measurement_columns,
-            required_columns=required_columns,
-            physical_columns=physical_columns,
-        )
+        return feature_contract(feature, phase)
 
     def validate_root_identity(self, identity: RootIdentity, phase: str) -> None:
-        """Reject managed Google roots written under an incompatible state/source contract."""
+        from wearable_project.DataLoaders.google_fitness.state import validate_root_identity
 
-        from wearable_project.DataLoaders._base import DataLoaderStateError
-
-        if not identity.managed:
-            return
-        if identity.source is not self.source or not identity.verified:
-            raise DataLoaderStateError(
-                f"managed Google Fitness {phase} state could not establish the requested source contract: "
-                f"{identity.evidence}"
-            )
-        state_version = identity.metadata.get("state_schema_version")
-        if phase == "native":
-            registry_version = identity.metadata.get("registry_version")
-            if state_version != STATE_SCHEMA_VERSION:
-                raise DataLoaderStateError(
-                    "incompatible Google Fitness native state schema: "
-                    f"root records {state_version!r}, installed loader requires {STATE_SCHEMA_VERSION!r}"
-                )
-            if registry_version != REGISTRY_VERSION:
-                raise DataLoaderStateError(
-                    "incompatible Google Fitness native registry: "
-                    f"root records {registry_version!r}, installed loader requires {REGISTRY_VERSION!r}"
-                )
-            return
-
-        from wearable_project.curation.google_fitness.contract import CURATED_SCHEMA_VERSION, contract_fingerprint
-        from wearable_project.curation.google_fitness.state import CURATION_STATE_SCHEMA_VERSION
-
-        expected = {
-            "product_kind": "curated",
-            "state_schema_version": CURATION_STATE_SCHEMA_VERSION,
-            "curated_schema_version": CURATED_SCHEMA_VERSION,
-            "contract_fingerprint": contract_fingerprint(),
-        }
-        problems = [
-            f"{key}: root {identity.metadata.get(key)!r} vs installed {value!r}"
-            for key, value in expected.items()
-            if identity.metadata.get(key) != value
-        ]
-        if problems:
-            raise DataLoaderStateError(
-                "incompatible Google Fitness curated-root state metadata: " + "; ".join(problems)
-            )
+        validate_root_identity(identity, phase)
 
     def validate_root_contract(self, root: Path, phase: str) -> Mapping[str, Any]:
         """Validate and cache schema-v2 root contract before curated files can be interpreted."""
@@ -146,7 +107,12 @@ class GoogleFitnessAdapter:
         self._root_contract = validate_root_contract(root)
         return self._root_contract.metadata
 
-    def prepare_curated_frame(self, frame: pd.DataFrame, path: Path, feature: str) -> Any:
+    def state_manifest_contract(self, phase: str) -> StateManifestContract:
+        from wearable_project.DataLoaders.google_fitness.state import manifest_contract
+
+        return manifest_contract(phase)
+
+    def prepare_curated_frame(self, frame: pd.DataFrame, path: Path, feature: str,) -> CuratedFramePreparation:
         if self._root_contract is None:
             raise DataLoaderConfigurationError(
                 "Google Fitness curated frame preparation requires a validated root curation contract"
@@ -155,7 +121,9 @@ class GoogleFitnessAdapter:
 
         return prepare_curated_frame(frame, path, feature)
 
-    def reconcile_curated_frame(self, prepared: Any, path: Path, feature: str, entry: Mapping[str, Any],) -> bool:
+    def reconcile_curated_frame(
+        self, prepared: CuratedFramePreparation, path: Path, feature: str, entry: Mapping[str, Any],
+    ) -> bool:
         from wearable_project.DataLoaders.google_fitness.curated import reconcile_curated_frame
 
         return reconcile_curated_frame(prepared, path, feature, entry)
@@ -167,6 +135,11 @@ class GoogleFitnessAdapter:
 
         return installed_policy_fingerprint(feature)
 
+    def requires_installed_policy_without_state(self, phase: str) -> bool:
+        # Curated schema-v2 virtual projections are executable installed policy. Their fingerprint remains
+        # relevant even when callers disable file-state reconciliation.
+        return phase == "curated"
+
     def dense_default(self, feature: str, column: str, phase: str) -> Any:
         if phase != "curated":
             return None
@@ -175,9 +148,66 @@ class GoogleFitnessAdapter:
         return dense_default(feature, column)
 
     def curated_logical_counts(self, frame: pd.DataFrame, feature: str) -> Mapping[str, Any]:
+        del feature
         from wearable_project.DataLoaders.google_fitness.curated import logical_counts
 
         return logical_counts(frame)
+
+    def frame_load_metrics(self, frame: pd.DataFrame, feature: str, phase: str) -> Mapping[str, Any]:
+        """Source-qualified returned-row counters used only in Google load reports."""
+
+        metrics: dict[str, Any] = {}
+        if "collecting_method_version" in frame.columns:
+            metrics["collecting_method_version_counts"] = Counter(
+                str(value) for value in frame["collecting_method_version"].dropna()
+            )
+        if "tracked" in frame.columns:
+            tracked = _as_nullable_boolean(frame["tracked"])
+            if tracked is not None:
+                metrics["tracking_counts"] = Counter({
+                    "true": int(tracked.eq(True).fillna(False).sum()),  # noqa: E712 - pandas scalar comparison
+                    "false": int(tracked.eq(False).fillna(False).sum()),  # noqa: E712
+                    "missing": int(tracked.isna().sum()),
+                })
+        if phase == "curated":
+            metrics.update(self.curated_logical_counts(frame, feature))
+        return metrics
+
+    def load_report_extension(
+        self, metrics: Mapping[str, Any], context: LoadReportContext,
+    ) -> Mapping[str, Any]:
+        """Finalize Google-specific report fields without exposing their policy to the shared engine."""
+
+        report: dict[str, Any] = {
+            "requested_participants_empty_for_source": list(context.requested_empty_for_source),
+            "collecting_method_version_counts": dict(sorted(
+                metrics.get("collecting_method_version_counts", {}).items()
+            )),
+            "tracking_counts": dict(sorted(metrics.get("tracking_counts", {}).items())),
+        }
+        if not context.root_contract_metadata:
+            return report
+
+        physical_observed: dict[str, None] = {}
+        for participant_id in sorted(context.physical_columns_by_participant):
+            physical_observed.update(dict.fromkeys(context.physical_columns_by_participant[participant_id]))
+        report.update({
+            "curation_contract_validated": True,
+            "curation_contract": dict(context.root_contract_metadata),
+            "columns_stored": list(physical_observed),
+            "columns_reconstructed": list(context.reconstructed_columns),
+            "columns_virtual": list(context.virtual_columns),
+            "curation_status_counts": dict(sorted(metrics.get("curation_status_counts", {}).items())),
+            "step_count_role_counts": dict(sorted(metrics.get("step_count_role_counts", {}).items())),
+            "derivation_method_counts": dict(sorted(metrics.get("derivation_method_counts", {}).items())),
+            "tracking_status_counts": dict(sorted(metrics.get("tracking_status_counts", {}).items())),
+            "curation_unit_status_counts": dict(sorted(
+                metrics.get("curation_unit_status_counts", {}).items()
+            )),
+            "unit_evidence_counts": dict(sorted(metrics.get("unit_evidence_counts", {}).items())),
+            "canonical_value_rows": int(metrics.get("canonical_value_rows", 0)),
+        })
+        return report
 
     def curated_profile_record(
         self, entry: Mapping[str, Any], installed_fingerprint: str | None,
@@ -187,7 +217,7 @@ class GoogleFitnessAdapter:
         return curated_profile_record(entry, installed_fingerprint)
 
     def curated_profile_summary(
-        self, entries: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]], installed_fingerprint: str | None,
+        self, entries: Sequence[Mapping[str, Any]], installed_fingerprint: str | None,
     ) -> Mapping[str, Any]:
         from wearable_project.DataLoaders.google_fitness.curated import curated_profile_summary
 
@@ -200,6 +230,11 @@ class GoogleFitnessAdapter:
 
     def validate_frame(self, frame: pd.DataFrame, path: Path, feature: str, phase: str) -> None:
         """Apply registered native-prefix and version-specific invariants after temporal parsing."""
+
+        del phase
+        from wearable_project.processing.google_fitness.registry import (
+            ColumnType, NativeFeatureFamily, SLEEP_STATE_MAPPING, get_feature_spec,
+        )
 
         spec = get_feature_spec(feature)
         expected = list(spec.column_names)
@@ -245,10 +280,12 @@ class GoogleFitnessAdapter:
                         bad_position = int(np.flatnonzero(~finite)[0])
                         row = int(numeric.index[bad_position])
                         raise DataLoaderReadError(
-                            f"{path}: column {column!r} must contain finite values; data row {row + 1} is non-finite"
+                            f"{path}: column {column!r} must contain finite values; "
+                            f"data row {row + 1} is non-finite"
                         )
                     if column_spec.data_type is ColumnType.INTEGER:
-                        integral = np.equal(numeric.to_numpy(dtype=float), np.floor(numeric.to_numpy(dtype=float)))
+                        numeric_array = numeric.to_numpy(dtype=float)
+                        integral = np.equal(numeric_array, np.floor(numeric_array))
                         if not bool(integral.all()):
                             bad_position = int(np.flatnonzero(~integral)[0])
                             row = int(numeric.index[bad_position])
@@ -274,7 +311,8 @@ class GoogleFitnessAdapter:
             if bool(bad.any()):
                 row = int(bad[bad].index[0])
                 raise DataLoaderReadError(
-                    f"{path}: end_date must be {relation} start_date; data row {row + 1} violates the contract"
+                    f"{path}: end_date must be {relation} start_date; "
+                    f"data row {row + 1} violates the contract"
                 )
 
         if feature == "Sleep":
@@ -284,7 +322,8 @@ class GoogleFitnessAdapter:
             if bool(bad.any()):
                 row = int(bad[bad].index[0])
                 raise DataLoaderReadError(
-                    f"{path}: unregistered Google Fitness sleep state {states.loc[row]!r} at data row {row + 1}"
+                    f"{path}: unregistered Google Fitness sleep state {states.loc[row]!r} "
+                    f"at data row {row + 1}"
                 )
 
         if feature == "StepCount":
@@ -331,7 +370,8 @@ class GoogleFitnessAdapter:
                 if bool(bad.any()):
                     row = int(bad[bad].index[0])
                     raise DataLoaderReadError(
-                        f"{path}: StepCount 1.0 must not invent {column!r}; data row {row + 1} contains a value"
+                        f"{path}: StepCount 1.0 must not invent {column!r}; "
+                        f"data row {row + 1} contains a value"
                     )
             bad_index = legacy & (frame["payload_index"] != 0)
             if bool(bad_index.any()):
@@ -341,61 +381,54 @@ class GoogleFitnessAdapter:
                 )
 
     def participant_statuses(self, root: Path) -> dict[str, str]:
-        """Participant completion status from managed native state, without touching feature CSVs."""
+        from wearable_project.DataLoaders.google_fitness.state import participant_statuses
 
-        database = root / ".wearable_state.sqlite"
-        if not database.is_file():
-            return {}
-        uri = f"{database.resolve().as_uri()}?immutable=1"
-        try:
-            with closing(sqlite3.connect(uri, uri=True)) as connection:
-                return {
-                    str(participant_id): str(status)
-                    for participant_id, status in connection.execute(
-                        "SELECT participant_id, status FROM participants"
-                    ).fetchall()
-                }
-        except sqlite3.Error as exc:
-            from wearable_project.DataLoaders._base import DataLoaderStateError
+        return participant_statuses(root)
 
-            raise DataLoaderStateError(f"could not read participant statuses from {database}: {exc}") from exc
+    def contract_metadata(self, feature: str, phase: str) -> Mapping[str, Any]:
+        from wearable_project.DataLoaders.google_fitness.contracts import contract_metadata
 
-    def contract_metadata(self, feature: str, phase: str) -> dict[str, Any]:
-        spec = get_feature_spec(feature)
-        result: dict[str, Any] = {
-            "dataloader_schema_version": (
-                SCHEMA_VERSION if phase == "native" else CURATED_DATALOADER_SCHEMA_VERSION
-            ),
-            "native_registry_version": REGISTRY_VERSION,
-            "feature_family": spec.family.value,
-            "supported_collecting_method_versions": list(spec.supported_versions),
-        }
-        if phase == "native":
-            result["native_state_schema_version"] = STATE_SCHEMA_VERSION
-        else:
-            from wearable_project.curation.google_fitness.contract import (
-                CONTRACT_SCHEMA_VERSION, CURATED_SCHEMA_VERSION, contract_fingerprint,
-            )
-            from wearable_project.curation.google_fitness.registry import (
-                CURATION_REGISTRY_VERSION, POLICY_CONTRACT_VERSION,
-            )
-            from wearable_project.curation.google_fitness.state import CURATION_STATE_SCHEMA_VERSION
-
-            result.update({
-                "curated_schema_version": CURATED_SCHEMA_VERSION,
-                "contract_schema_version": CONTRACT_SCHEMA_VERSION,
-                "curation_registry_version": CURATION_REGISTRY_VERSION,
-                "policy_contract_version": POLICY_CONTRACT_VERSION,
-                "curation_state_schema_version": CURATION_STATE_SCHEMA_VERSION,
-                "contract_fingerprint": contract_fingerprint(),
-            })
-            if self._root_contract is not None:
-                result["root_contract"] = dict(self._root_contract.metadata)
-        return result
+        return contract_metadata(feature, phase, self._root_contract)
 
     def registry_unit(self, feature: str, column: str) -> str | None:
-        # Count is established for native values and the curated canonical projection. Exporter-unit mappings for
-        # every other Google measurement remain deliberately unresolved.
-        if feature == "StepCount" and column in {"value", "raw_value", "canonical_value"}:
-            return "count"
-        return None
+        from wearable_project.DataLoaders.google_fitness.units import registry_unit
+
+        return registry_unit(feature, column)
+
+    def column_metadata(
+        self, feature: str, column: str, phase: str, schema: Any, *, dense: bool,
+    ) -> ColumnMetadataContract:
+        role = schema.role_of(column)
+        contract = self.feature_contract(feature, phase)
+        return ColumnMetadataContract(
+            role=role.value if role is not None else "undeclared",
+            description=(
+                schema.ROLE_DESCRIPTIONS[role]
+                if role is not None
+                else "No declared role in the google_fitness DataLoader schema."
+            ),
+            registry_unit=(self.registry_unit(feature, column) if column in contract.measurement_columns else None),
+            dense_default=(self.dense_default(feature, column, phase) if dense else None),
+        )
+
+    def undeclared_columns_warning(self, feature: str, columns: Sequence[str]) -> str:
+        return (
+            f"{len(columns)} column(s) in {feature} files have no declared role in the google_fitness "
+            f"DataLoader schema: {', '.join(sorted(columns))}. They are returned only by projection='full' "
+            "or an explicit columns= request. Add them to the source schema."
+        )
+
+    def overview_info(self, *, native_root: Path, curated_root: Path) -> InfoDocument:
+        from wearable_project.DataLoaders.google_fitness.info import overview_report
+
+        return overview_report(native_root=native_root, curated_root=curated_root)
+
+    def feature_info(self, loader: Any, *, include_evidence: bool) -> InfoDocument:
+        from wearable_project.DataLoaders.google_fitness.info import feature_report
+
+        return feature_report(loader, include_evidence=include_evidence)
+
+    def with_harmonized_values(self, data: Any, feature: str, phase: str) -> Any:
+        from wearable_project.DataLoaders.google_fitness.derived import with_harmonized_values
+
+        return with_harmonized_values(data, feature, phase)
