@@ -29,8 +29,8 @@ raw exports ──process──▶ native root ──curate──▶ curated roo
    status, flags, a default-inclusion decision, the acquisition method and resolved units, and never changes a
    native value.
 3. **DataLoaders** expose one top-level loader per feature, with an explicit source contract and the HPP interface.
-   Apple HealthKit native and curated products and Google Fitness native products are verified against their state
-   databases. Google Fitness curated schema-v2 loading is the next implementation layer.
+   Apple HealthKit and Google Fitness native and curated products are verified against their state databases;
+   Google curated schema v2 additionally validates its root contract and reconstructs sparse/virtual fields.
 4. **`wearable_project.utils`** computes statistics, summaries, sleep and CGM metrics, figures and PDF reports
    through the DataLoaders, and documents itself with `utils.info()`.
 
@@ -54,7 +54,7 @@ wearable_project/
 │   │   ├── _contracts.py          # Source-neutral feature and root contracts
 │   │   ├── _sources.py            # Source selection, catalogs, roots and managed-root identity
 │   │   ├── apple_healthkit/       # Internal Apple adapter; no competing public feature loaders
-│   │   ├── google_fitness/        # Internal Google adapter and native projection schema
+│   │   ├── google_fitness/        # Internal Google adapter, native/curated schemas and virtual projections
 │   │   ├── _derived.py            # Source-aware derived helpers
 │   │   ├── _profile.py            # profile(): what a root holds, without parsing any feature file
 │   │   ├── _units.py              # Accepted Apple unit registry compatibility layer
@@ -136,11 +136,12 @@ apple = StepCountLoader().get_data(registration_codes=["10K_XXXXXXXXXX"])
 apple.df.head()                            # indexed by RegistrationCode and Date
 apple.load_report["state_verified"]        # True: checked against the Apple state database
 
-# The same public loader selects the Google native contract explicitly.
-google = StepCountLoader(source="google_fitness", phase="native").get_data(
+# The same public loader selects Google explicitly; curated remains the default phase.
+google = StepCountLoader(source="google_fitness").get_data(
     registration_codes=["10K_XXXXXXXXXX"]
 )
-google.load_report["wearable_source"]      # "google_fitness"
+google.load_report["wearable_source"]             # "google_fitness"
+google.load_report["curation_contract_validated"] # True
 ```
 
 ```python
@@ -262,7 +263,7 @@ data = loader.get_data(
 | Argument                              | Meaning                                                                                                                        |
 |---------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
 | `source`                              | `"apple_healthkit"` or `"google_fitness"`; omitted source preserves each loader's compatibility default                           |
-| `phase`                               | `"curated"` (the default) or `"native"`; Google Fitness is native-only in this checkpoint                                    |
+| `phase`                               | `"curated"` (the default) or `"native"`; both sources support both phases                                                      |
 | `root`, `native_root`, `curated_root` | Read from another source/phase root; managed-root identity must agree with the requested source                                  |
 | `state_validation`                    | `"auto"` (the default) verifies files when a state database exists; `"required"` fails without one; `"off"` skips file checks |
 
@@ -280,9 +281,9 @@ data = loader.get_data(
 
 ### Google Fitness native loading
 
-Google-only classes default to the Google source but retain the project-wide default phase of `"curated"`; until
-Increment 3, pass `phase="native"` explicitly. Shared classes preserve the established Apple default and therefore
-require both `source="google_fitness"` and `phase="native"`:
+Google-only classes default to the Google source and the project-wide default phase of `"curated"`. Pass
+`phase="native"` when the native product is required. Shared classes preserve the established Apple source default,
+so Google use must state `source="google_fitness"`:
 
 ```python
 from wearable_project.DataLoaders import StepCountLoader, WalkingLoader
@@ -299,6 +300,25 @@ walking = WalkingLoader(
 The native Google loader preserves all source rows and contexts. In particular, it retains both StepCount versions
 and every version-2 aggregation alternative. It does not apply curation roles, choose a preferred alternative, infer
 local time, or assign canonical units except the established `count` unit for StepCount.
+
+### Google Fitness curated loading
+
+Google curated products use the same public classes and default naturally to `phase="curated"`:
+
+```python
+steps = StepCountLoader(
+    source="google_fitness", state_validation="required"
+).get_data()
+
+walking_default = WalkingLoader(state_validation="required").get_data(
+    default_inclusion_only=True
+)
+```
+
+The loader validates `.curation_contract.json`, the curated state metadata, each physical native prefix, sparse
+materialized decisions and contract-defined virtual projections. It keeps every row unless
+`default_inclusion_only=True` is requested explicitly. See
+[Google Fitness curated DataLoaders](docs/GOOGLE_FITNESS_CURATED_DATALOADERS.md).
 
 ### What comes back
 
@@ -322,7 +342,8 @@ data.load_report          # provenance: root, phase, files, filters, projection,
   uses `datetime`; Google activities/Sleep/Calories/Distance use `start_date`, Weight/Height use `end_date`, and
   StepCount uses `outer_datetime`. The Google StepCount anchor is not a claimed canonical event day.
 - **Schemas remain source-specific.** Apple participant files can carry different sparse physical columns; Google
-  native files follow a stable registered schema. Pass `columns=[...]` for an explicit returned schema.
+  native files follow registered schemas and Google curated files expand to a contract-defined logical schema. Pass
+  `columns=[...]` for an explicit returned schema.
 - **A file is read exactly or not at all.** If reading it would change what it says, `DataLoaderReadError` names the
   file and, where there is one, the row and value.
 - **What a call could not deliver is reported** in `load_report`: requested participants without a folder, or
@@ -336,23 +357,20 @@ A projection is a named set of columns. Its roles are source-qualified:
 |--------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `"default"`  | Core timing, measurements/states, and interpretation context; excludes persistent identifiers and bulky/free-text provenance                               |
 | `"analysis"` | The default plus source-specific audit, device and lineage fields that are useful for stratified analysis; persistent identifiers remain withheld                |
-| `"full"`     | Every physically stored column, including persistent identifiers and sensitive provenance, for authorised work inside the protected environment                  |
+| `"full"`     | Every logical column; for Google curated data this includes reconstructed sparse defaults and contract-defined virtual fields, plus restricted identifiers |
 
 `load_report["columns_withheld"]` lists what a projection left out.
 
 ### Curated columns and default inclusion
 
-The following section describes the production Apple HealthKit curated loader. Google Fitness curated schema-v2
-loading is intentionally deferred until its sparse physical decisions and contract-defined virtual columns can be
-validated together.
-
 Curation never alters native data, which is the non-destructive contract. Every curated file has the same rows, in
-the same order, with the same native columns and values. It only appends columns:
+the same order, with the same native prefix and values. Source-specific curation then adds reviewed decisions and,
+where established, canonical/unit interpretations.
 
-```text
-canonical_value, canonical_unit, curation_unit_status, unit_evidence, unit_epoch_id,
-acquisition_method, curation_status, curation_flags, include_by_default
-```
+Apple can physically store columns such as `canonical_value`, `canonical_unit`, `curation_unit_status`,
+`unit_evidence`, `unit_epoch_id`, `acquisition_method`, `curation_status`, `curation_flags` and
+`include_by_default`. Google schema v2 stores a compact ordered decision suffix and exposes deterministic
+canonical/provenance fields virtually from the root contract.
 
 `curation_status` (`pass`, `review` or `exclude_default`) and `include_by_default` (`True` or `False`) answer
 different questions. Loaders return every row, and the default subset must be asked for explicitly:
@@ -363,18 +381,13 @@ from wearable_project.DataLoaders import WeightLoader
 df = WeightLoader().get_data(default_inclusion_only=True).df
 ```
 
-Curated files store the four status columns only where a row needs a non-default value. Loaders restore them for
-every row:
+Apple curated files store their dense logical defaults sparsely; the Apple loader restores the accepted defaults,
+including `acquisition_method="unclassified"`, `curation_status="pass"`, no flags and inclusion by default.
 
-| Column               | Restored as      |
-|----------------------|------------------|
-| `acquisition_method` | `"unclassified"` |
-| `curation_status`    | `"pass"`         |
-| `curation_flags`     | `""` (no flags)  |
-| `include_by_default` | `True`           |
-
-Unit columns are never filled in, because a missing unit means it was not resolved. `DataLoaders.info(feature)`
-explains a feature's curation policy and its rationale.
+Google schema v2 has a different physical/virtual contract. `acquisition_method` is fixed, StepCount physically
+stores `step_count_role`, and missing or blank `curation_status`, `curation_flags` and `include_by_default` mean
+`"pass"`, no flags and `True`. Canonical/unit/provenance projections are reconstructed from the validated root
+contract. Missing canonical units remain missing where mapping is deliberately withheld.
 
 ### Verification
 
@@ -382,14 +395,17 @@ Before any filter is applied, the requested source is checked against managed-ro
 checked against the phase's state database:
 
 - **Every file:** SHA-256, size and row count.
-- **Curated files, in addition:** the status, inclusion, acquisition-method and flag counts.
+- **Apple curated files, in addition:** status, inclusion, acquisition-method and flag counts.
+- **Google curated files, in addition:** the root contract, policy fingerprint, active physical columns, all status,
+  inclusion, provenance, StepCount-role and unit counters, and canonical-value count.
 
 A disagreement, or a file the database does not record, raises `DataLoaderStateError`.
 
 - **Samples without a database** load under `"auto"`, with `load_report["state_verified"]` and source verification
   reported separately. A known managed-root source mismatch is rejected even under `state_validation="off"`.
-- **Files curated under a policy that differs from the installed one** load with a warning, until the curated root
-  is rebuilt.
+- **Apple files curated under an older policy** load with a warning, preserving their stored decisions until the
+  root is rebuilt. **Google schema-v2 contract or per-file policy mismatches are rejected**, because virtual fields
+  must not be recomputed under a different scientific contract.
 - **The database is opened read-only,** so loading never writes into the data tree. It refuses to verify while a
   processing or curation run is in progress, or after an unclean shutdown.
 
@@ -468,8 +484,9 @@ A feature report explains:
 - its dtypes and caveats;
 - runnable examples.
 
-`info()` currently states the Apple feature contract. `profile()` reports what a particular managed root holds 
-without parsing feature CSVs.
+`info()` currently states the Apple feature contract; Google native contracts are documented in
+[`docs/GOOGLE_FITNESS_NATIVE_DATALOADERS.md`](docs/GOOGLE_FITNESS_NATIVE_DATALOADERS.md). `profile()` reports what a
+particular managed root holds without parsing feature CSVs.
 
 ## Statistics, metrics, figures and reports
 

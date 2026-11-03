@@ -254,5 +254,5 @@ def test_apple_loader_reports_unverified_source_for_an_unmanaged_trimmed_tree(tm
 
 
 def test_source_qualified_information_refuses_to_return_apple_policy_for_google():
-    with pytest.raises(DataLoaderConfigurationError, match="Google Fitness information reports are not enabled"):
+    with pytest.raises(DataLoaderConfigurationError, match="static information reports are not yet source-qualified"):
         DataLoaders.info("StepCount", source="google_fitness")

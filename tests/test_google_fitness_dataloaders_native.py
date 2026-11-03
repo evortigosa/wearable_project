@@ -249,9 +249,9 @@ def test_shared_public_loaders_keep_apple_default_and_select_google_explicitly(f
     assert google.source is WearableSource.GOOGLE_FITNESS
 
 
-def test_google_curated_loading_remains_explicitly_blocked_until_schema_v2_increment(tmp_path: Path):
+def test_google_curated_loading_requires_the_schema_v2_root_contract(tmp_path: Path):
     tmp_path.mkdir(exist_ok=True)
-    with pytest.raises(DataLoaderConfigurationError, match="curated schema-v2 loading is reserved for Increment 3"):
+    with pytest.raises(DataLoaderStateError, match="requires .curation_contract.json"):
         StepCountLoader(source="google_fitness", root=tmp_path).get_data()
 
 

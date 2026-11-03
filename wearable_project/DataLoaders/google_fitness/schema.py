@@ -1,11 +1,10 @@
 """
 Wearable Data Processing and Modeling project
-Google Fitness native DataLoader column roles, named projections, and stable dtype declarations.
-The Google native registry describes where columns came from. This module describes how a DataLoader should
-expose them. Unknown future columns are withheld from ``default`` and ``analysis`` and remain reachable through
-``full`` or an explicit ``columns=`` request. Persistent source labels, package identifiers and device UIDs are
-withheld from ordinary projections; the normal analytical view retains timing, measurements, state, collecting
-version, acquisition evidence and source context needed to interpret alternative representations.
+Google Fitness DataLoader column roles, projections, and stable dtype declarations.
+The native registry owns physical source columns.  The curated schema-v2 contract appends sparse physical
+review decisions and defines deterministic virtual projections. This module presents both phases through one
+feature-bound logical schema while preserving the established native projections and keeping persistent source,
+package, and device identifiers restricted to ``full``.
 """
 
 
@@ -19,6 +18,7 @@ from wearable_project.processing.google_fitness.registry import (
 
 
 SCHEMA_VERSION = "google-fitness-dataloader-native-schema-1"
+CURATED_DATALOADER_SCHEMA_VERSION = "google-fitness-dataloader-curated-schema-v2-1"
 DEFAULT_PROJECTION = "default"
 
 
@@ -30,7 +30,11 @@ class ColumnRole(str, Enum):
     STATE = "state"
     SOURCE_VERSION = "source_version"
     ACQUISITION = "acquisition"
+    DERIVATION = "derivation"
     FEATURE_CONTEXT = "feature_context"
+    CANONICAL = "canonical"
+    CURATION_DECISION = "curation_decision"
+    CURATION_AUDIT = "curation_audit"
     DEVICE = "device"
     IDENTIFIER = "identifier"
     LINEAGE = "lineage"
@@ -43,8 +47,17 @@ ROLE_DESCRIPTIONS: Mapping[ColumnRole, str] = {
     ColumnRole.MEASUREMENT: "A source measurement retained in its native exporter representation.",
     ColumnRole.STATE: "A source categorical state, such as a Google Fitness sleep state.",
     ColumnRole.SOURCE_VERSION: "Exporter collecting-method version controlling the source payload contract.",
-    ColumnRole.ACQUISITION: "Source evidence about whether and how an interval was tracked.",
+    ColumnRole.ACQUISITION: "Source evidence or reviewed interpretation of how an observation entered the product.",
+    ColumnRole.DERIVATION: "Reviewed derivation or tracking interpretation reconstructed from source evidence.",
     ColumnRole.FEATURE_CONTEXT: "Context required to interpret a value, source day label, or aggregation alternative.",
+    ColumnRole.CANONICAL: (
+        "Contract-defined canonical value/unit projection or explicit unit-resolution verdict; missing values may "
+        "record deliberate withholding rather than absent source data."
+    ),
+    ColumnRole.CURATION_DECISION: (
+        "Row- or group-level curation status, findings, default-inclusion decision, or StepCount representation role."
+    ),
+    ColumnRole.CURATION_AUDIT: "Detailed evidence supporting a curation or unit-resolution interpretation.",
     ColumnRole.DEVICE: "Application or coarse device descriptors useful for source-stratified analysis.",
     ColumnRole.IDENTIFIER: (
         "Persistent identifiers, package identifiers, and free-text source/application labels; restricted to full."
@@ -58,9 +71,13 @@ DEFAULT_ROLES: frozenset[ColumnRole] = frozenset({
     ColumnRole.STATE,
     ColumnRole.SOURCE_VERSION,
     ColumnRole.ACQUISITION,
+    ColumnRole.DERIVATION,
     ColumnRole.FEATURE_CONTEXT,
+    ColumnRole.CANONICAL,
+    ColumnRole.CURATION_DECISION,
 })
 ANALYSIS_ROLES: frozenset[ColumnRole] = DEFAULT_ROLES | frozenset({
+    ColumnRole.CURATION_AUDIT,
     ColumnRole.DEVICE,
     ColumnRole.LINEAGE,
 })
@@ -70,7 +87,7 @@ PROJECTIONS: Mapping[str, frozenset[ColumnRole]] = {
     "analysis": ANALYSIS_ROLES,
     "full": FULL_ROLES,
 }
-PROJECTION_SUMMARIES: Mapping[str, str] = {
+NATIVE_PROJECTION_SUMMARIES: Mapping[str, str] = {
     "default": (
         "Timing, measurements or states, collecting-method version, tracking evidence, and feature context. "
         "Excludes persistent identifiers, free-text source/application labels, detailed device descriptors, and lineage."
@@ -84,6 +101,23 @@ PROJECTION_SUMMARIES: Mapping[str, str] = {
         "Use only for authorised provenance work inside the protected environment."
     ),
 }
+CURATED_PROJECTION_SUMMARIES: Mapping[str, str] = {
+    "default": (
+        "Native timing, measurements or states, source-version/context, reviewed provenance, canonical/unit verdicts, "
+        "and row/group curation decisions. Persistent identifiers, detailed device descriptors, lineage, and detailed "
+        "unit evidence remain withheld."
+    ),
+    "analysis": (
+        "Everything in 'default' plus detailed unit evidence, non-unique application/device descriptors, and "
+        "outer-row/payload lineage. Persistent source, package, and device identifiers remain withheld."
+    ),
+    "full": (
+        "Every logical curated column: the complete stored native prefix, sparse physical decisions reconstructed to "
+        "their defaults, contract-defined virtual projections, and restricted identifiers."
+    ),
+}
+# Backward-compatible module-level name used by Increment 2 callers/tests.
+PROJECTION_SUMMARIES = NATIVE_PROJECTION_SUMMARIES
 
 _IDENTIFIER_COLUMNS = frozenset({
     "source_name",
@@ -100,22 +134,41 @@ _DEVICE_COLUMNS = frozenset({
     "device_model",
     "device_type",
 })
-_ACQUISITION_COLUMNS = frozenset({"tracked"})
+_ACQUISITION_COLUMNS = frozenset({"tracked", "acquisition_method"})
+_DERIVATION_COLUMNS = frozenset({"derivation_method", "tracking_status"})
 _FEATURE_CONTEXT_COLUMNS = frozenset({"source_day_label", "aggregation_source"})
+_CANONICAL_COLUMNS = frozenset({
+    "canonical_value", "canonical_unit", "curation_unit_status",
+})
+_CURATION_DECISION_COLUMNS = frozenset({
+    "step_count_role", "curation_status", "curation_flags", "include_by_default",
+})
+_CURATION_AUDIT_COLUMNS = frozenset({"unit_evidence"})
 _LINEAGE_COLUMNS = frozenset({"outer_id", "payload_index"})
 
 
 class GoogleFitnessFeatureSchema:
-    """Feature-bound projection and dtype schema implementing the shared loader schema interface."""
+    """Feature- and phase-bound projection/dtype schema used by the shared loader engine."""
 
     ColumnRole = ColumnRole
     ROLE_DESCRIPTIONS = ROLE_DESCRIPTIONS
     DEFAULT_PROJECTION = DEFAULT_PROJECTION
-    SCHEMA_VERSION = SCHEMA_VERSION
 
-    def __init__(self, feature: str) -> None:
+    def __init__(self, feature: str, phase: str = "native") -> None:
+        normalized = str(phase).strip().lower()
+        if normalized not in {"native", "curated"}:
+            raise ValueError(f"unknown Google Fitness DataLoader phase: {phase!r}")
         self.feature = feature
+        self.phase = normalized
         self.spec: NativeFeatureSpec = get_feature_spec(feature)
+        self.policy = None
+        if normalized == "curated":
+            from wearable_project.curation.google_fitness.registry import get_policy
+
+            self.policy = get_policy(feature, allow_fallback=False)
+        self.SCHEMA_VERSION = (
+            SCHEMA_VERSION if normalized == "native" else CURATED_DATALOADER_SCHEMA_VERSION
+        )
         self._roles = self._build_roles()
 
         categorical: set[str] = set()
@@ -152,6 +205,22 @@ class GoogleFitnessFeatureSchema:
                     categorical.add(column.name)
                 else:
                     strings.add(column.name)
+
+        if self.policy is not None:
+            for column in self.policy.output.materialized_columns:
+                if column == "include_by_default":
+                    booleans.add(column)
+                else:
+                    text.add(column)
+                    categorical.add(column)
+            for column in self.policy.output.virtual_columns:
+                if column == "canonical_value":
+                    numeric.add(column)
+                    if feature == "StepCount":
+                        integers.add(column)
+                else:
+                    text.add(column)
+                    categorical.add(column)
 
         self.CATEGORICAL_COLUMNS = frozenset(categorical)
         self.STRING_COLUMNS = frozenset(strings)
@@ -199,6 +268,21 @@ class GoogleFitnessFeatureSchema:
                 # A new provenance column is safer in the restricted full-only role until reviewed.
                 role = ColumnRole.IDENTIFIER
             roles[name] = role
+
+        if self.policy is not None:
+            for name in self.policy.output.materialized_columns + self.policy.output.virtual_columns:
+                if name in _ACQUISITION_COLUMNS:
+                    roles[name] = ColumnRole.ACQUISITION
+                elif name in _DERIVATION_COLUMNS:
+                    roles[name] = ColumnRole.DERIVATION
+                elif name in _CANONICAL_COLUMNS:
+                    roles[name] = ColumnRole.CANONICAL
+                elif name in _CURATION_DECISION_COLUMNS:
+                    roles[name] = ColumnRole.CURATION_DECISION
+                elif name in _CURATION_AUDIT_COLUMNS:
+                    roles[name] = ColumnRole.CURATION_AUDIT
+                else:
+                    roles[name] = ColumnRole.CURATION_AUDIT
         return roles
 
     def categorical_columns(self, feature: str | None = None) -> frozenset[str]:
@@ -212,9 +296,9 @@ class GoogleFitnessFeatureSchema:
     def is_known_projection(name: str) -> bool:
         return name in PROJECTIONS
 
-    @staticmethod
-    def describe_projection(name: str) -> str:
-        return PROJECTION_SUMMARIES[name]
+    def describe_projection(self, name: str) -> str:
+        summaries = NATIVE_PROJECTION_SUMMARIES if self.phase == "native" else CURATED_PROJECTION_SUMMARIES
+        return summaries[name]
 
     def role_of(self, column: str) -> ColumnRole | None:
         return self._roles.get(column)
@@ -234,14 +318,17 @@ class GoogleFitnessFeatureSchema:
 
 
 @lru_cache(maxsize=None)
-def get_schema(feature: str) -> GoogleFitnessFeatureSchema:
-    return GoogleFitnessFeatureSchema(feature)
+def get_schema(feature: str, phase: str = "native") -> GoogleFitnessFeatureSchema:
+    return GoogleFitnessFeatureSchema(feature, phase)
 
 
 __all__ = [
+    "CURATED_DATALOADER_SCHEMA_VERSION",
     "ColumnRole",
     "DEFAULT_PROJECTION",
     "GoogleFitnessFeatureSchema",
+    "NATIVE_PROJECTION_SUMMARIES",
+    "CURATED_PROJECTION_SUMMARIES",
     "PROJECTION_SUMMARIES",
     "ROLE_DESCRIPTIONS",
     "SCHEMA_VERSION",

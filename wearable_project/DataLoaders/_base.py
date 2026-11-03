@@ -1,8 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Shared implementation for HPP-style Apple wearable feature loaders. Native processing and curated roots keep
-the same participant / feature directory layout, so a single loader implementation can serve both phases
-without altering the stored files.
+Compatibility-preserving HPP-style loader engine for source-qualified wearable products. Source adapters provide
+scientific schemas and temporal contracts while this module owns exact CSV reads, verification, filtering,
+concatenation, indexing, projections, metadata, and profiling without altering stored files.
 """
 
 
@@ -378,6 +378,7 @@ class AppleHealthFeatureLoader:
         )
         self._root_override = Path(root).expanduser() if root is not None else None
         self._last_root_identity: RootIdentity | None = None
+        self._root_contract_metadata: dict[str, Any] = {}
 
     @property
     def _data_index_names(self) -> list[str]:
@@ -443,6 +444,10 @@ class AppleHealthFeatureLoader:
                 f"Use source={identity.source.value!r} or point root at a {self.source.value!r} product."
             )
         self._source_adapter.validate_root_identity(identity, self.phase)
+        # Source identity and the scientific root contract are separate claims. Google curated roots require the
+        # schema-v2 contract even when state_validation='off', because sparse defaults and virtual columns cannot
+        # be interpreted safely from CSV shape alone. Apple returns an empty contract and follows its accepted path.
+        self._root_contract_metadata = dict(self._source_adapter.validate_root_contract(root, self.phase))
         return root, detected_phase
 
     @property
@@ -465,13 +470,11 @@ class AppleHealthFeatureLoader:
             return
         if operation == "info" and self.source is WearableSource.APPLE_HEALTHKIT:
             return
-        if self.source is WearableSource.GOOGLE_FITNESS and self.phase == "curated":
+        if self.source is WearableSource.GOOGLE_FITNESS and operation == "info":
             detail = (
-                "Google Fitness curated schema-v2 loading is reserved for Increment 3 because sparse physical "
-                "decisions and contract-defined virtual columns must be validated together."
+                "Google Fitness static information reports are not yet source-qualified; use profile() for a "
+                "specific root and the Google Fitness DataLoader documentation for the static contract."
             )
-        elif self.source is WearableSource.GOOGLE_FITNESS and operation == "info":
-            detail = "Google Fitness static information reports are scheduled after the native loader contract."
         else:
             detail = "The selected source/phase operation is not implemented."
         raise DataLoaderConfigurationError(
@@ -581,7 +584,9 @@ class AppleHealthFeatureLoader:
         installed_fingerprint: str | None = None
         if dense:
             manifest, state_note = self._open_manifest(root)
-            if manifest is not None:
+            if manifest is not None or self.source is WearableSource.GOOGLE_FITNESS:
+                # Google virtual projections are defined by the installed/root contract even when state reads are
+                # disabled. Apple retains its historical behavior of comparing policy only when state is present.
                 installed_fingerprint = self._installed_policy_fingerprint()
         else:
             manifest, state_note = self._open_native_manifest(root)
@@ -621,6 +626,9 @@ class AppleHealthFeatureLoader:
         # result must carry so it concatenates with a populated one.
         projected_columns: dict[str, None] = {}
         stored_columns: dict[str, list[str]] = {}
+        physical_columns_by_participant: dict[str, list[str]] = {}
+        reconstructed_column_names: dict[str, None] = {}
+        virtual_column_names: dict[str, None] = {}
         # Each column's dtype after timestamp parsing, from the first file that carries it. Used only to type
         # an empty result like a populated one, so concatenation does not degrade datetimes or numbers to text.
         column_dtypes: dict[str, list[Any]] = {}
@@ -664,6 +672,15 @@ class AppleHealthFeatureLoader:
         acquisition_by_participant: dict[str, Counter[str]] = {}
         google_version_counts: Counter[str] = Counter()
         google_tracking_counts: Counter[str] = Counter()
+        google_curated_counts: dict[str, Counter[str] | int] = {
+            "curation_status_counts": Counter(),
+            "step_count_role_counts": Counter(),
+            "derivation_method_counts": Counter(),
+            "tracking_status_counts": Counter(),
+            "curation_unit_status_counts": Counter(),
+            "unit_evidence_counts": Counter(),
+            "canonical_value_rows": 0,
+        }
         retained_rows = 0
 
         for participant_id in participant_ids:
@@ -676,6 +693,7 @@ class AppleHealthFeatureLoader:
                     )
                 continue
             frame = self._read_feature_file(path)
+            physical_columns = tuple(str(column) for column in frame.columns)
             stored_width = len(frame.columns)
             files_read += 1
             read_participants.append(participant_id)
@@ -692,9 +710,27 @@ class AppleHealthFeatureLoader:
             # or inclusion filter, because the state database describes whole files. Checking a filtered
             # frame against whole-file counts would fail on every legitimately filtered call.
             inclusion_reconstructed = False
+            inclusion_reconstructed_mask = pd.Series(False, index=frame.index, dtype=bool)
             inclusion_verified = False
+            curated_preparation: Any | None = None
             if dense:
-                frame, filled, inclusion_reconstructed = self._densify(frame)
+                if self.source is WearableSource.GOOGLE_FITNESS:
+                    curated_preparation = self._source_adapter.prepare_curated_frame(
+                        frame, path, self.feature_name,
+                    )
+                    frame = curated_preparation.frame
+                    filled = dict(curated_preparation.reconstructed_rows)
+                    inclusion_reconstructed_mask = curated_preparation.inclusion_reconstructed_mask
+                    inclusion_reconstructed = bool(inclusion_reconstructed_mask.any())
+                    physical_columns = tuple(curated_preparation.physical_columns)
+                    reconstructed_column_names.update(
+                        dict.fromkeys(curated_preparation.reconstructed_columns)
+                    )
+                    virtual_column_names.update(dict.fromkeys(curated_preparation.virtual_columns))
+                else:
+                    frame, filled, inclusion_reconstructed = self._densify(frame)
+                    if inclusion_reconstructed:
+                        inclusion_reconstructed_mask = pd.Series(True, index=frame.index, dtype=bool)
                 rows_reconstructed.update(filled)
                 if manifest is not None:
                     entry = manifest.get(participant_id)
@@ -705,7 +741,13 @@ class AppleHealthFeatureLoader:
                             "file cannot be verified and may be foreign or partially written. For a "
                             "deliberately assembled sample tree, pass state_validation='off'."
                         )
-                    inclusion_verified = self._reconcile(frame, path, entry)
+                    if self.source is WearableSource.GOOGLE_FITNESS:
+                        assert curated_preparation is not None
+                        inclusion_verified = self._source_adapter.reconcile_curated_frame(
+                            curated_preparation, path, self.feature_name, entry,
+                        )
+                    else:
+                        inclusion_verified = self._reconcile(frame, path, entry)
                     if not inclusion_verified:
                         inclusion_counts_unverifiable += 1
                     verified_participants.add(participant_id)
@@ -740,6 +782,7 @@ class AppleHealthFeatureLoader:
             # filters below. Record it here so an empty date window cannot be mistaken for an absent
             # column, and so the schema is known even when nothing survives.
             stored_columns[participant_id] = list(frame.columns)
+            physical_columns_by_participant[participant_id] = list(physical_columns)
             undeclared_columns.update(dict.fromkeys(schema.undeclared_columns(frame.columns)))
             if requested_columns is not None:
                 requested_columns_seen.update(name for name in requested_columns if name in frame.columns)
@@ -757,20 +800,25 @@ class AppleHealthFeatureLoader:
                 column_dtypes.setdefault(column, []).append(dtype)
             dates = frame[self.date_column]
             if lower is not None:
-                frame = frame.loc[dates >= lower].copy()
+                keep = dates >= lower
+                frame = frame.loc[keep].copy()
+                inclusion_reconstructed_mask = inclusion_reconstructed_mask.loc[frame.index]
                 dates = frame[self.date_column]
             if upper is not None:
-                frame = frame.loc[dates <= upper].copy()
+                keep = dates <= upper
+                frame = frame.loc[keep].copy()
+                inclusion_reconstructed_mask = inclusion_reconstructed_mask.loc[frame.index]
 
             if default_inclusion_only:
                 # Always present here: default_inclusion_only is curated-only, and curated frames are dense.
                 include = self._as_boolean(frame["include_by_default"])
                 inclusion_rows_dropped += int((~include).sum())
+                reconstructed_kept = int((inclusion_reconstructed_mask & include).sum())
                 frame = frame.loc[include].copy()
-                if inclusion_reconstructed:
-                    inclusion_rows_reconstructed += int(len(frame))
-                    if not inclusion_verified:
-                        inclusion_rows_unverified += int(len(frame))
+                inclusion_reconstructed_mask = inclusion_reconstructed_mask.loc[frame.index]
+                inclusion_rows_reconstructed += reconstructed_kept
+                if reconstructed_kept and not inclusion_verified:
+                    inclusion_rows_unverified += reconstructed_kept
 
             if frame.empty:
                 continue
@@ -793,6 +841,19 @@ class AppleHealthFeatureLoader:
                             "false": int(tracked.eq(False).fillna(False).sum()),  # noqa: E712
                             "missing": int(tracked.isna().sum()),
                         })
+                if self.phase == "curated":
+                    logical = self._source_adapter.curated_logical_counts(frame, self.feature_name)
+                    for name in (
+                        "curation_status_counts", "step_count_role_counts", "derivation_method_counts",
+                        "tracking_status_counts", "curation_unit_status_counts", "unit_evidence_counts",
+                    ):
+                        counter = google_curated_counts[name]
+                        assert isinstance(counter, Counter)
+                        counter.update(logical[name])
+                    google_curated_counts["canonical_value_rows"] = (
+                        int(google_curated_counts["canonical_value_rows"])
+                        + int(logical["canonical_value_rows"])
+                    )
             retained_rows += int(len(frame))
             if limit is not None and retained_rows > limit:
                 raise DataLoaderSizeError(
@@ -958,6 +1019,36 @@ class AppleHealthFeatureLoader:
             report["requested_participants_empty_for_source"] = requested_empty_for_source
             report["collecting_method_version_counts"] = dict(sorted(google_version_counts.items()))
             report["tracking_counts"] = dict(sorted(google_tracking_counts.items()))
+            if self.phase == "curated":
+                physical_observed: dict[str, None] = {}
+                for participant_id in sorted(physical_columns_by_participant):
+                    physical_observed.update(dict.fromkeys(physical_columns_by_participant[participant_id]))
+                report.update({
+                    "curation_contract_validated": True,
+                    "curation_contract": dict(self._root_contract_metadata),
+                    "columns_stored": list(physical_observed),
+                    "columns_reconstructed": list(reconstructed_column_names),
+                    "columns_virtual": list(virtual_column_names),
+                    "curation_status_counts": dict(sorted(
+                        google_curated_counts["curation_status_counts"].items()  # type: ignore[union-attr]
+                    )),
+                    "step_count_role_counts": dict(sorted(
+                        google_curated_counts["step_count_role_counts"].items()  # type: ignore[union-attr]
+                    )),
+                    "derivation_method_counts": dict(sorted(
+                        google_curated_counts["derivation_method_counts"].items()  # type: ignore[union-attr]
+                    )),
+                    "tracking_status_counts": dict(sorted(
+                        google_curated_counts["tracking_status_counts"].items()  # type: ignore[union-attr]
+                    )),
+                    "curation_unit_status_counts": dict(sorted(
+                        google_curated_counts["curation_unit_status_counts"].items()  # type: ignore[union-attr]
+                    )),
+                    "unit_evidence_counts": dict(sorted(
+                        google_curated_counts["unit_evidence_counts"].items()  # type: ignore[union-attr]
+                    )),
+                    "canonical_value_rows": int(google_curated_counts["canonical_value_rows"]),
+                })
 
         if undeclared_columns:
             if self.source is WearableSource.APPLE_HEALTHKIT:
@@ -1063,6 +1154,7 @@ class AppleHealthFeatureLoader:
         status_total: Counter[str] = Counter()
         unit_status_total: Counter[str] = Counter()
         included = excluded = unverifiable = canonical_rows = ambiguous_rows = diverged = 0
+        google_curated_entries: list[Mapping[str, Any]] = []
         for participant_id in sorted(population):
             path = root / participant_id / self.filename
             on_disk = path.is_file()
@@ -1083,43 +1175,55 @@ class AppleHealthFeatureLoader:
                 )
             loadable = on_disk and entry is not None
             if dense and entry is not None:
-                stored = int(entry["curated_rows"])
-                inclusion_valid = (
-                    int(entry["included_by_default_rows"]) + int(entry["excluded_by_default_rows"]) == stored
-                )
-                acquisition = Counter(json.loads(entry["acquisition_counts_json"] or "{}"))
-                record.update({
-                    "pass_rows": int(entry["pass_rows"]),
-                    "review_rows": int(entry["review_rows"]),
-                    "exclude_default_rows": int(entry["exclude_default_rows"]),
-                    "included_by_default_rows": int(entry["included_by_default_rows"]) if inclusion_valid else None,
-                    "excluded_by_default_rows": int(entry["excluded_by_default_rows"]) if inclusion_valid else None,
-                    "acquisition_classified_fraction": self._classified_fraction(acquisition),
-                    "canonical_value_rows": int(entry["canonical_value_rows"]),
-                    "ambiguous_unit_rows": int(entry["ambiguous_unit_rows"]),
-                    "policy_current": (
-                        None if installed is None else str(entry["policy_fingerprint"]) == installed
-                    ),
-                })
-                if loadable:
-                    status_total.update({
-                        "pass": int(entry["pass_rows"]), "review": int(entry["review_rows"]),
-                        "exclude_default": int(entry["exclude_default_rows"]),
+                if self.source is WearableSource.GOOGLE_FITNESS:
+                    record.update(self._source_adapter.curated_profile_record(entry, installed))
+                    if loadable:
+                        google_curated_entries.append(entry)
+                else:
+                    stored = int(entry["curated_rows"])
+                    inclusion_valid = (
+                        int(entry["included_by_default_rows"]) + int(entry["excluded_by_default_rows"]) == stored
+                    )
+                    acquisition = Counter(json.loads(entry["acquisition_counts_json"] or "{}"))
+                    record.update({
+                        "pass_rows": int(entry["pass_rows"]),
+                        "review_rows": int(entry["review_rows"]),
+                        "exclude_default_rows": int(entry["exclude_default_rows"]),
+                        "included_by_default_rows": int(entry["included_by_default_rows"]) if inclusion_valid else None,
+                        "excluded_by_default_rows": int(entry["excluded_by_default_rows"]) if inclusion_valid else None,
+                        "acquisition_classified_fraction": self._classified_fraction(acquisition),
+                        "canonical_value_rows": int(entry["canonical_value_rows"]),
+                        "ambiguous_unit_rows": int(entry["ambiguous_unit_rows"]),
+                        "policy_current": (
+                            None if installed is None else str(entry["policy_fingerprint"]) == installed
+                        ),
                     })
-                    if inclusion_valid:
-                        included += int(entry["included_by_default_rows"])
-                        excluded += int(entry["excluded_by_default_rows"])
-                    else:
-                        unverifiable += 1
-                    acquisition_total.update(acquisition)
-                    unit_status_total.update(json.loads(entry["unit_status_counts_json"] or "{}"))
-                    canonical_rows += int(entry["canonical_value_rows"])
-                    ambiguous_rows += int(entry["ambiguous_unit_rows"])
-                    if record["policy_current"] is False:
-                        diverged += 1
+                    if loadable:
+                        status_total.update({
+                            "pass": int(entry["pass_rows"]), "review": int(entry["review_rows"]),
+                            "exclude_default": int(entry["exclude_default_rows"]),
+                        })
+                        if inclusion_valid:
+                            included += int(entry["included_by_default_rows"])
+                            excluded += int(entry["excluded_by_default_rows"])
+                        else:
+                            unverifiable += 1
+                        acquisition_total.update(acquisition)
+                        unit_status_total.update(json.loads(entry["unit_status_counts_json"] or "{}"))
+                        canonical_rows += int(entry["canonical_value_rows"])
+                        ambiguous_rows += int(entry["ambiguous_unit_rows"])
+                        if record["policy_current"] is False:
+                            diverged += 1
             records.append(record)
 
-        participants = self._profile_frame(records, dense=dense, with_state=state is not None)
+        google_profile: Mapping[str, Any] | None = None
+        google_profile_columns: Mapping[str, str] | None = None
+        if dense and state is not None and self.source is WearableSource.GOOGLE_FITNESS:
+            google_profile = self._source_adapter.curated_profile_summary(google_curated_entries, installed)
+            google_profile_columns = self._source_adapter.curated_profile_columns()
+        participants = self._profile_frame(
+            records, dense=dense, with_state=state is not None, curated_columns=google_profile_columns,
+        )
         loadable_mask = participants["on_disk"].astype(bool)
         if state is not None:
             loadable_mask &= participants["has_state"].astype(bool)
@@ -1144,26 +1248,34 @@ class AppleHealthFeatureLoader:
             "files_on_disk": int(participants["on_disk"].sum()),
             "rows": rows_total,
             "bytes_on_disk": int(participants["bytes_on_disk"].fillna(0).sum()),
-            "status_counts": dict(sorted(status_total.items())) if dense and state is not None else None,
+            "status_counts": (
+                google_profile["status_counts"] if google_profile is not None
+                else dict(sorted(status_total.items())) if dense and state is not None else None
+            ),
             "default_inclusion": (
-                {"included": included, "excluded": excluded, "unverifiable_files": unverifiable}
+                google_profile["default_inclusion"] if google_profile is not None
+                else {"included": included, "excluded": excluded, "unverifiable_files": unverifiable}
                 if dense and state is not None else None
             ),
             "acquisition": (
-                {"counts": dict(sorted(acquisition_total.items())),
-                 "classified_fraction": self._classified_fraction(acquisition_total)}
+                google_profile["acquisition"] if google_profile is not None
+                else {"counts": dict(sorted(acquisition_total.items())),
+                      "classified_fraction": self._classified_fraction(acquisition_total)}
                 if dense and state is not None else None
             ),
             "unit_resolution": (
-                {"status_counts": dict(sorted(unit_status_total.items())),
-                 "canonical_value_rows": canonical_rows, "ambiguous_unit_rows": ambiguous_rows,
-                 "resolved_fraction": (
-                     canonical_rows / (canonical_rows + ambiguous_rows) if canonical_rows + ambiguous_rows else None
-                 )}
+                google_profile["unit_resolution"] if google_profile is not None
+                else {"status_counts": dict(sorted(unit_status_total.items())),
+                      "canonical_value_rows": canonical_rows, "ambiguous_unit_rows": ambiguous_rows,
+                      "resolved_fraction": (
+                          canonical_rows / (canonical_rows + ambiguous_rows)
+                          if canonical_rows + ambiguous_rows else None
+                      )}
                 if dense and state is not None else None
             ),
             "policy": (
-                {"installed_fingerprint": installed, "files_diverged": diverged}
+                google_profile["policy"] if google_profile is not None
+                else {"installed_fingerprint": installed, "files_diverged": diverged}
                 if dense and state is not None else None
             ),
             "integrity": {
@@ -1182,25 +1294,40 @@ class AppleHealthFeatureLoader:
                 "exceeds_max_rows": bool(limit is not None and get_data_rows is not None and get_data_rows > limit),
             },
         }
+        if google_profile is not None:
+            for name in ("provenance", "step_count_roles", "curation_flags", "materialized_columns"):
+                summary[name] = google_profile[name]
+        if self.source is WearableSource.GOOGLE_FITNESS and self.phase == "curated":
+            # The root contract is validated even when state reads are disabled, because sparse defaults and
+            # virtual fields cannot be interpreted safely without it. Expose that fact consistently in profiles.
+            summary["curation_contract"] = dict(self._root_contract_metadata)
+
         source_contract = dict(self._source_adapter.contract_metadata(self.feature_name, self.phase))
         if source_contract:
             summary["source_contract"] = source_contract
         return ProfileReport(summary=summary, participants=participants, text=render_profile_text(summary))
 
     @staticmethod
-    def _profile_frame(records: list[dict[str, Any]], *, dense: bool, with_state: bool) -> pd.DataFrame:
+    def _profile_frame(
+        records: list[dict[str, Any]], *, dense: bool, with_state: bool,
+        curated_columns: Mapping[str, str] | None = None,
+    ) -> pd.DataFrame:
         """Build the per-participant profile table with stable, nullable dtypes."""
 
         columns: dict[str, str] = {"participant_id": "object", "on_disk": "boolean", "bytes_on_disk": "Int64"}
         if with_state:
             columns.update({"has_state": "boolean", "rows": "Int64", "size_matches": "boolean"})
             if dense:
-                columns.update({
-                    "pass_rows": "Int64", "review_rows": "Int64", "exclude_default_rows": "Int64",
-                    "included_by_default_rows": "Int64", "excluded_by_default_rows": "Int64",
-                    "acquisition_classified_fraction": "Float64",
-                    "canonical_value_rows": "Int64", "ambiguous_unit_rows": "Int64", "policy_current": "boolean",
-                })
+                if curated_columns is not None:
+                    columns.update(dict(curated_columns))
+                else:
+                    columns.update({
+                        "pass_rows": "Int64", "review_rows": "Int64", "exclude_default_rows": "Int64",
+                        "included_by_default_rows": "Int64", "excluded_by_default_rows": "Int64",
+                        "acquisition_classified_fraction": "Float64",
+                        "canonical_value_rows": "Int64", "ambiguous_unit_rows": "Int64",
+                        "policy_current": "boolean",
+                    })
         frame = pd.DataFrame.from_records(records, columns=["RegistrationCode", *columns])
         for column, dtype in columns.items():
             frame[column] = frame[column].astype(object).where(frame[column].notna(), None)
@@ -1634,8 +1761,10 @@ class AppleHealthFeatureLoader:
         return {str(row["participant_id"]): dict(row) for row in rows}, None
 
     def _installed_policy_fingerprint(self) -> str | None:
-        """The installed curation policy fingerprint for this feature, or None when it has no policy."""
+        """The source-qualified installed curation policy fingerprint, or None when no policy applies."""
 
+        if self.source is not WearableSource.APPLE_HEALTHKIT:
+            return self._source_adapter.installed_policy_fingerprint(self.feature_name, self.phase)
         from wearable_project.curation.apple_healthkit.registry import get_policy
 
         try:
@@ -1923,7 +2052,10 @@ class AppleHealthFeatureLoader:
                     "dtype": str(frame[column].dtype),
                     "non_null": int(frame[column].notna().sum()),
                     "registry_unit": registry_unit,
-                    "dense_default": None,
+                    "dense_default": (
+                        self._source_adapter.dense_default(self.feature_name, column, self.phase)
+                        if dense else None
+                    ),
                 })
         return pd.DataFrame.from_records(records).set_index("column")
 

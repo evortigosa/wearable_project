@@ -92,6 +92,41 @@ class AppleHealthKitAdapter:
         # Backward-compatible Apple roots predate source metadata and are already recognized by their state schema.
         return None
 
+    def validate_root_contract(self, root: Path, phase: str) -> dict[str, Any]:
+        # Apple curated semantics remain physically stored and need no root-level virtual-projection contract.
+        return {}
+
+    def prepare_curated_frame(self, frame: Any, path: Path, feature: str) -> Any:
+        raise RuntimeError("Apple curated preparation remains in DataLoaders._base")
+
+    def reconcile_curated_frame(self, prepared: Any, path: Path, feature: str, entry: Any) -> bool:
+        raise RuntimeError("Apple curated reconciliation remains in DataLoaders._base")
+
+    def installed_policy_fingerprint(self, feature: str, phase: str) -> str | None:
+        if phase != "curated":
+            return None
+        from wearable_project.curation.apple_healthkit.registry import get_policy
+
+        try:
+            return str(get_policy(feature, allow_fallback=False).fingerprint())
+        except KeyError:
+            return None
+
+    def dense_default(self, feature: str, column: str, phase: str) -> Any:
+        return None
+
+    def curated_logical_counts(self, frame: Any, feature: str) -> dict[str, Any]:
+        return {}
+
+    def curated_profile_record(self, entry: Any, installed_fingerprint: str | None,) -> dict[str, Any]:
+        return {}
+
+    def curated_profile_summary(self, entries: Any, installed_fingerprint: str | None,) -> dict[str, Any]:
+        return {}
+
+    def curated_profile_columns(self) -> dict[str, str]:
+        return {}
+
     def validate_frame(self, frame: Any, path: Path, feature: str, phase: str) -> None:
         # Apple validation remains exactly where it has always lived in DataLoaders._base.
         return None

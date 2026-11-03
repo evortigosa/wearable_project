@@ -10,7 +10,7 @@ behavioral reference while source-specific machinery is extracted behind this bo
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol, TYPE_CHECKING
+from typing import Any, Mapping, Protocol, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from wearable_project.DataLoaders._sources import WearableSource
@@ -92,6 +92,30 @@ class SourceAdapter(Protocol):
     def projection_schema(self, feature: str, phase: str) -> Any: ...
 
     def validate_root_identity(self, identity: RootIdentity, phase: str) -> None: ...
+
+    def validate_root_contract(self, root: Path, phase: str) -> Mapping[str, Any]: ...
+
+    def prepare_curated_frame(self, frame: Any, path: Path, feature: str) -> Any: ...
+
+    def reconcile_curated_frame(
+        self, prepared: Any, path: Path, feature: str, entry: Mapping[str, Any],
+    ) -> bool: ...
+
+    def installed_policy_fingerprint(self, feature: str, phase: str) -> str | None: ...
+
+    def dense_default(self, feature: str, column: str, phase: str) -> Any: ...
+
+    def curated_logical_counts(self, frame: Any, feature: str) -> Mapping[str, Any]: ...
+
+    def curated_profile_record(
+        self, entry: Mapping[str, Any], installed_fingerprint: str | None,
+    ) -> Mapping[str, Any]: ...
+
+    def curated_profile_summary(
+        self, entries: Sequence[Mapping[str, Any]], installed_fingerprint: str | None,
+    ) -> Mapping[str, Any]: ...
+
+    def curated_profile_columns(self) -> Mapping[str, str]: ...
 
     def validate_frame(self, frame: Any, path: Path, feature: str, phase: str) -> None: ...
 

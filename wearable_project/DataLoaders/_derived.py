@@ -133,38 +133,56 @@ def with_local_time(data: Any, columns: Sequence[str] | None = None) -> Any:
     return _with_columns(data, frame, descriptions, {}, "local_time", {"columns": list(descriptions)})
 
 
-def _with_google_native_harmonized_values(data: Any, feature: str, phase: str) -> Any:
-    """Google native harmonization without borrowing Apple unit policy."""
+def _with_google_harmonized_values(data: Any, feature: str, phase: str) -> Any:
+    """Google harmonization under the source-qualified native or curated contract."""
 
-    if phase != "native":
-        raise DataLoaderConfigurationError(
-            "Google Fitness curated harmonization requires the schema-v2 virtual-column contract, which is not "
-            "enabled in the native DataLoader checkpoint"
-        )
     available = set(data.load_report.get("columns_available", data.df.columns))
     if "value" not in available:
         raise DataLoaderConfigurationError(
             f"harmonized values apply to features with one numeric value column; {feature} uses a different "
             "measurement contract"
         )
-    _require(data, ["value"], "harmonization")
+    inputs = ["value"]
+    if phase == "curated":
+        inputs.extend(("canonical_value", "canonical_unit", "curation_unit_status"))
+    _require(data, inputs, "harmonization")
     values = data.df["value"]
     if not pd.api.types.is_numeric_dtype(values) or pd.api.types.is_bool_dtype(values):
         raise DataLoaderConfigurationError(
             f"harmonized values apply to numeric values; {feature}'s value holds {values.dtype}"
         )
 
-    fixed = "count" if feature == "StepCount" else None
     frame = data.df.copy()
     size = len(frame)
-    if fixed is None:
-        harmonized = np.full(size, np.nan, dtype=float)
-        units = np.full(size, None, dtype=object)
-        sources = np.full(size, "unresolved", dtype=object)
-    else:
-        harmonized = pd.to_numeric(values, errors="raise").to_numpy(dtype=float)
-        units = np.full(size, fixed, dtype=object)
-        sources = np.full(size, "registry", dtype=object)
+    fixed = "count" if feature == "StepCount" else None
+    candidates = _GOOGLE_NATIVE_UNIT_CANDIDATES.get(feature, ())
+    harmonized = np.full(size, np.nan, dtype=float)
+    units = np.full(size, None, dtype=object)
+    sources = np.full(size, "unresolved", dtype=object)
+    status_counts: dict[str, int] = {}
+
+    if phase == "native":
+        if fixed is not None:
+            harmonized[:] = pd.to_numeric(values, errors="raise").to_numpy(dtype=float)
+            units[:] = fixed
+            sources[:] = "registry"
+    elif phase == "curated":
+        canonical = frame["canonical_value"]
+        canonical_unit = frame["canonical_unit"].astype(object)
+        verdict = frame["curation_unit_status"].astype("string")
+        status_counts = {
+            str(name): int(count)
+            for name, count in verdict.fillna("unresolved").value_counts().items()
+        }
+        resolved = verdict.str.startswith("resolved", na=False).to_numpy(dtype=bool)
+        has_canonical = (canonical.notna() & canonical_unit.notna()).to_numpy(dtype=bool)
+        by_curation = resolved & has_canonical
+        if bool(by_curation.any()):
+            harmonized[by_curation] = pd.to_numeric(canonical, errors="coerce").to_numpy(dtype=float)[by_curation]
+            units[by_curation] = canonical_unit.to_numpy(dtype=object)[by_curation]
+            sources[by_curation] = "curation"
+    else:  # pragma: no cover - constructor validates phase
+        raise DataLoaderConfigurationError(f"unknown Google Fitness phase {phase!r}")
 
     frame[HARMONIZED_VALUE] = pd.Series(harmonized, index=frame.index, dtype="float64")
     frame[HARMONIZED_UNIT] = pd.Series(pd.Categorical(units), index=frame.index)
@@ -172,20 +190,23 @@ def _with_google_native_harmonized_values(data: Any, feature: str, phase: str) -
         pd.Categorical(sources, dtype=SOURCE_CATEGORIES), index=frame.index,
     )
     counts = {name: int(count) for name, count in pd.Series(sources).value_counts().items()}
-    candidates = _GOOGLE_NATIVE_UNIT_CANDIDATES.get(feature, ())
     descriptions = {
         HARMONIZED_VALUE: "The value in a trusted unit, or missing where no layer established one.",
         HARMONIZED_UNIT: "The unit of harmonized_value.",
         HARMONIZED_SOURCE: "The layer that established the unit: curation, processing, registry, or unresolved.",
     }
+    report = {
+        "sources": dict(sorted(counts.items())),
+        "registry_unit": fixed,
+        "unit_withheld_by_curation": bool(candidates) if phase == "native" else any(
+            name.startswith("withheld") for name in status_counts
+        ),
+        "unit_candidates": list(candidates),
+    }
+    if phase == "curated":
+        report["curation_unit_status_counts"] = dict(sorted(status_counts.items()))
     return _with_columns(
-        data, frame, descriptions, {HARMONIZED_VALUE: fixed}, "harmonized_values",
-        {
-            "sources": dict(sorted(counts.items())),
-            "registry_unit": fixed,
-            "unit_withheld_by_curation": bool(candidates),
-            "unit_candidates": list(candidates),
-        },
+        data, frame, descriptions, {HARMONIZED_VALUE: fixed}, "harmonized_values", report,
     )
 
 
@@ -217,7 +238,7 @@ def with_harmonized_values(data: Any) -> Any:
         )
     source = _wearable_source(data)
     if source == "google_fitness":
-        return _with_google_native_harmonized_values(data, str(feature), str(phase))
+        return _with_google_harmonized_values(data, str(feature), str(phase))
     if source != "apple_healthkit":
         raise DataLoaderConfigurationError(
             f"harmonized values do not support wearable source {source!r}"

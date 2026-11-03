@@ -1,6 +1,6 @@
 """
 Wearable Data Processing and Modeling project
-Root-level empirical profile of one feature, produced by ``AppleHealthFeatureLoader.profile()``.
+Root-level empirical profile of one source-qualified wearable feature.
 ``DataLoaders.info()`` describes a feature's static contract from the registries.  ``profile()`` describes what
 a particular root actually holds for that feature: participants, rows, bytes on disk, curation status, default
 inclusion, acquisition-method coverage, unit-resolution coverage, policy currency, and file integrity.  It is
@@ -104,14 +104,44 @@ def render_profile_text(summary: dict[str, Any]) -> str:
 
     units = summary.get("unit_resolution")
     if units is not None:
-        if units["resolved_fraction"] is None:
-            lines.append("Unit resolution    not applicable (the registry fixes a single unit)")
+        if "ambiguous_unit_rows" in units:
+            # Preserve the accepted Apple rendering exactly.
+            if units["resolved_fraction"] is None:
+                lines.append("Unit resolution    not applicable (the registry fixes a single unit)")
+            else:
+                lines.append(
+                    f"Unit resolution    {units['resolved_fraction']:.1%} resolved "
+                    f"({units['canonical_value_rows']:,} with a canonical value, "
+                    f"{units['ambiguous_unit_rows']:,} ambiguous)"
+                )
+        elif units.get("applicable_rows", 0) == 0:
+            lines.append("Unit resolution    not applicable to this feature's scalar projection")
         else:
             lines.append(
                 f"Unit resolution    {units['resolved_fraction']:.1%} resolved "
-                f"({units['canonical_value_rows']:,} with a canonical value, "
-                f"{units['ambiguous_unit_rows']:,} ambiguous)"
+                f"({units['resolved_rows']:,} resolved · {units['withheld_rows']:,} withheld · "
+                f"{units['unresolved_rows']:,} unresolved · "
+                f"{units['canonical_value_rows']:,} with a canonical value)"
             )
+
+    provenance = summary.get("provenance")
+    if provenance is not None:
+        lines.append(f"Derivation         {_counts(provenance['derivation_method_counts'])}")
+        lines.append(f"Tracking           {_counts(provenance['tracking_status_counts'])}")
+
+    roles = summary.get("step_count_roles")
+    if roles is not None and (
+        summary.get("feature") == "StepCount" or set(roles) != {"not_applicable"}
+    ):
+        lines.append(f"StepCount roles    {_counts(roles)}")
+
+    flags = summary.get("curation_flags")
+    if flags:
+        lines.append(f"Curation flags     {_counts(flags)}")
+
+    materialized = summary.get("materialized_columns")
+    if materialized is not None:
+        lines.append(f"Physical columns   {_counts(materialized['file_counts'])}")
 
     policy = summary.get("policy")
     if policy is not None:
