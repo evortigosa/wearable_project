@@ -1,7 +1,8 @@
 """
 Wearable Data Processing and Modeling project
-Cohort acceptance check for the DataLoaders, run on the real native and curated roots. The loader test suites
-run on a representative sample. This script checks what only the full cohort can show, without loading all of it:
+Cohort acceptance check for one source's DataLoaders, run on the real native and curated roots. The loader test
+suites run on a representative sample. This script checks what only the full cohort can show, without loading all
+of it:
 1. Profiles. ``profile()`` for every feature in both phases. It reads only the state databases and one ``stat``
    per file, so the whole cohort is covered in minutes. Unrecorded files and size mismatches fail; recorded files
    missing from disk are reported. The two phases must agree on each participant's rows.
@@ -16,11 +17,16 @@ run on a representative sample. This script checks what only the full cohort can
    is reported, with the command that fixes it.
 Usage:
 
-    python -m wearable_project.utils.cohort_acceptance --participants 50 --seed 1 --out ~/acceptance
+    python -m wearable_project.utils.cohort_acceptance \
+        --source apple_healthkit --participants 50 --seed 1 --out ~/acceptance/apple
 
-The roots default to the permanent HPP roots; ``--native`` and ``--curated`` point elsewhere. Reports are written as
-``cohort_acceptance.json`` and ``cohort_acceptance.txt`` in ``--out``, which must lie outside both roots. The exit
-status is 0 when nothing failed (warnings allowed), 1 when a check failed, and 2 for invalid arguments.
+    python -m wearable_project.utils.cohort_acceptance \
+        --source google_fitness --participants 50 --seed 1 --out ~/acceptance/google
+
+The roots default to the selected source's permanent HPP roots; ``--native`` and ``--curated`` point elsewhere.
+Omitting ``--source`` remains backward-compatible and selects Apple HealthKit. Reports are written as
+``cohort_acceptance.json`` and ``cohort_acceptance.txt`` in ``--out``, which must lie outside every selected data
+root. The exit status is 0 when nothing failed (warnings allowed), 1 when a check failed, and 2 for invalid arguments.
 """
 
 
@@ -40,19 +46,27 @@ from pathlib import Path
 from typing import Any
 import pandas as pd
 from wearable_project import __release_label__, __version__
-from wearable_project.utils.data_statistics import protected_roots
-from wearable_project.curation.apple_healthkit import schema
 from wearable_project.DataLoaders import available_features
-from wearable_project.DataLoaders._base import (
-    _PHASE_STATE_FILES, DEFAULT_CURATED_ROOT, DEFAULT_NATIVE_ROOT, AppleHealthFeatureLoader, _account_name,
+from wearable_project.DataLoaders._base import _PHASE_STATE_FILES, AppleHealthFeatureLoader, _account_name
+from wearable_project.DataLoaders._sources import (
+    DEFAULT_APPLE_HEALTHKIT_CURATED_ROOT, DEFAULT_APPLE_HEALTHKIT_NATIVE_ROOT, DEFAULT_GOOGLE_FITNESS_CURATED_ROOT,
+    DEFAULT_GOOGLE_FITNESS_NATIVE_ROOT, WearableSource, get_source_adapter, normalize_source,
 )
 from wearable_project.exceptions import DataLoaderError
 
 
 PHASES = ("native", "curated")
+COHORT_ACCEPTANCE_VERSION = "dataloader-cohort-acceptance-2"
 EARLIEST_PLAUSIBLE = pd.Timestamp("2000-01-01", tz="UTC")
 OFFSET_RANGE = (-720, 840)  # UTC-12:00 to UTC+14:00, in minutes
 DETERMINISM_PROBES = 3
+DEFAULT_SOURCE = WearableSource.APPLE_HEALTHKIT
+_ALL_DEFAULT_ROOTS = (
+    DEFAULT_APPLE_HEALTHKIT_NATIVE_ROOT,
+    DEFAULT_APPLE_HEALTHKIT_CURATED_ROOT,
+    DEFAULT_GOOGLE_FITNESS_NATIVE_ROOT,
+    DEFAULT_GOOGLE_FITNESS_CURATED_ROOT,
+)
 
 
 class Findings:
@@ -68,9 +82,30 @@ class Findings:
         return sum(1 for item in self.items if item["level"] == level)
 
 
-def _loader(feature: str, phase: str, root: Path, **kwargs) -> AppleHealthFeatureLoader:
+def _loader(
+    feature: str, phase: str, root: Path, source: WearableSource | str = DEFAULT_SOURCE, **kwargs,
+) -> AppleHealthFeatureLoader:
     module = __import__(f"wearable_project.DataLoaders.{feature}Loader", fromlist=[f"{feature}Loader"])
-    return getattr(module, f"{feature}Loader")(phase=phase, root=root, **kwargs)
+    return getattr(module, f"{feature}Loader")(
+        phase=phase,
+        root=root,
+        source=source,
+        **kwargs,
+    )
+
+
+def _source_argument(value: str) -> WearableSource:
+    try:
+        return normalize_source(value)
+    except DataLoaderError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _protected_roots(*roots: str | Path | None) -> tuple[Path, ...]:
+    """Known permanent and selected roots into which acceptance reports must never be written."""
+
+    candidates = [*_ALL_DEFAULT_ROOTS, *(root for root in roots if root is not None)]
+    return tuple(sorted({Path(root).expanduser().resolve() for root in candidates}))
 
 
 def _jsonable(value: Any) -> Any:
@@ -95,7 +130,9 @@ def _same_dtype(a: Any, b: Any) -> bool:
 
 
 # ------------------------------------------------------------------------------------------------ profiles
-def check_profiles(features, roots, findings: Findings) -> dict[str, dict[str, Any]]:
+def check_profiles(
+    features, roots, findings: Findings, source: WearableSource | str = DEFAULT_SOURCE,
+) -> dict[str, dict[str, Any]]:
     profiles: dict[str, dict[str, Any]] = {phase: {} for phase in PHASES}
     rows_by_participant: dict[str, dict[str, dict[str, int]]] = {phase: {} for phase in PHASES}
     for phase in PHASES:
@@ -104,7 +141,7 @@ def check_profiles(features, roots, findings: Findings) -> dict[str, dict[str, A
             try:
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
-                    report = _loader(feature, phase, roots[phase]).profile()
+                    report = _loader(feature, phase, roots[phase], source=source).profile()
             except Exception as exc:  # recorded, never raised: one feature must not stop the run
                 findings.add("FAIL", phase, feature, "profile", f"{type(exc).__name__}: {exc}")
                 continue
@@ -164,9 +201,11 @@ def _compare_phases(features, rows_by_participant, findings: Findings) -> None:
 
 
 # --------------------------------------------------------------------------------------------------- loads
-def check_load(feature, phase, root, codes, findings: Findings) -> dict[str, Any]:
+def check_load(
+    feature, phase, root, codes, findings: Findings, source: WearableSource | str = DEFAULT_SOURCE,
+) -> dict[str, Any]:
     started = time.perf_counter()
-    loader = _loader(feature, phase, root, state_validation="required")
+    loader = _loader(feature, phase, root, source=source, state_validation="required")
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -187,16 +226,20 @@ def check_load(feature, phase, root, codes, findings: Findings) -> dict[str, Any
     if report["state_verified"] is not True:
         findings.add("FAIL", phase, feature, "verification", "the load was not verified against the state database")
 
-    categorical = schema.categorical_columns(feature)
+    contract = loader._source_adapter.feature_contract(feature, phase)
+    projection_schema = loader._source_adapter.projection_schema(feature, phase)
+    categorical = contract.categorical_columns
     for column in df.columns:
         dtype = df[column].dtype
         if column in categorical and not isinstance(dtype, pd.CategoricalDtype):
             findings.add("FAIL", phase, feature, "declared categorical column", f"{column} is {dtype}")
-        if column in schema.INTEGER_COLUMNS and str(dtype) != "Int64":
+        if column in contract.boolean_columns and str(dtype) != "boolean":
+            findings.add("FAIL", phase, feature, "declared boolean column", f"{column} is {dtype}")
+        if column in contract.integer_columns and str(dtype) != "Int64":
             fractional = int((df[column].dropna() % 1 != 0).sum()) if pd.api.types.is_numeric_dtype(dtype) else None
             findings.add("WARN", phase, feature, "whole-number column holds fractions",
                          f"{column} is {dtype}; {fractional} non-whole value(s); its dtype now depends on the participants read")
-    undeclared = schema.undeclared_columns(report["columns_available"])
+    undeclared = projection_schema.undeclared_columns(report["columns_available"])
     if undeclared:
         findings.add("WARN", phase, feature, "columns the representative sample never showed", ", ".join(map(str, undeclared)))
     result["undeclared_columns"] = list(map(str, undeclared))
@@ -240,16 +283,29 @@ def check_load(feature, phase, root, codes, findings: Findings) -> dict[str, Any
     return result
 
 
-def check_loads(features, roots, codes, rows_by_participant, findings: Findings) -> dict[str, Any]:
+def check_loads(
+    features, roots, codes, rows_by_participant, findings: Findings,
+    source: WearableSource | str = DEFAULT_SOURCE,
+) -> dict[str, Any]:
+    del rows_by_participant
     loads: dict[str, dict[str, Any]] = {phase: {} for phase in PHASES}
     for phase in PHASES:
         for feature in features:
-            loads[phase][feature] = check_load(feature, phase, roots[phase], codes, findings)
+            loads[phase][feature] = check_load(
+                feature,
+                phase,
+                roots[phase],
+                codes,
+                findings,
+                source=source,
+            )
     return loads
 
 
 # -------------------------------------------------------------------------------------------------- report
-def check_sharing(features, roots, findings: Findings) -> dict[str, dict[str, Any]]:
+def check_sharing(
+    features, roots, findings: Findings, source: WearableSource | str = DEFAULT_SOURCE,
+) -> dict[str, dict[str, Any]]:
     """
     Whether each root is open to its group: files readable, folders readable and searchable, so that colleagues in
     the group can list and read what the loaders read. Checked from the permission bits, since the data owner can
@@ -257,6 +313,7 @@ def check_sharing(features, roots, findings: Findings) -> dict[str, dict[str, An
     """
 
     summary: dict[str, dict[str, Any]] = {}
+    adapter = get_source_adapter(source)
     for phase in PHASES:
         root = roots[phase]
         fix = f"the data owner can open the root to its group with: chmod -R g+rX {root}"
@@ -302,12 +359,35 @@ def check_sharing(features, roots, findings: Findings) -> dict[str, dict[str, An
         if database_open is False:
             findings.add("WARN", phase, None, "state database not readable by its group",
                          f"{database.name}: the loaders cannot verify any file without it; {fix}")
+        support_files: dict[str, bool | None] = {}
+        for filename in adapter.required_root_files(phase):
+            path = root / filename
+            readable = _open_to_group(path, folder=False) if path.is_file() else None
+            support_files[filename] = readable
+            if readable is None:
+                findings.add(
+                    "FAIL",
+                    phase,
+                    None,
+                    "required root support file missing",
+                    f"{filename}: the {adapter.source.value} "
+                    "loader cannot interpret this managed product without it",
+                )
+            elif readable is False:
+                findings.add(
+                    "WARN",
+                    phase,
+                    None,
+                    "root support file not readable by its group",
+                    f"{filename}: colleagues cannot interpret the product; {fix}",
+                )
         summary[phase] = {
             "groups": sorted(_account_name(gid, "group") for gid in groups),
             "files_checked": sum(checked.values()),
             "files_not_group_readable": {feature: len(v) for feature, v in closed_files.items() if v},
             "folders_not_open_to_group": len(closed_folders),
             "state_database_group_readable": database_open,
+            "required_root_files_group_readable": support_files,
         }
     return summary
 
@@ -327,8 +407,10 @@ def render(result: dict[str, Any]) -> str:
     findings = result["findings"]
     lines = [
         f"Cohort acceptance — wearable_project {result['package']['version']} ({result['package']['release_label']})",
+        f"Acceptance contract: {result['cohort_acceptance_version']}",
         f"Verdict: {result['verdict']}   ({sum(f['level'] == 'FAIL' for f in findings)} failed, "
         f"{sum(f['level'] == 'WARN' for f in findings)} warnings)",
+        f"Source:       {result['wearable_source']}",
         f"Native root:  {result['roots']['native']}", f"Curated root: {result['roots']['curated']}",
         f"Started {result['started']}, finished {result['finished']}",
         f"Features: {len(result['features'])}; participants loaded: {len(result['participants_sampled'])} "
@@ -360,18 +442,32 @@ def render(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(native: Path, curated: Path, participants: int, seed: int, features, profile_only: bool) -> dict[str, Any]:
+def run(
+    native: Path, curated: Path, participants: int, seed: int, features, profile_only: bool,
+    source: WearableSource | str = DEFAULT_SOURCE,
+) -> dict[str, Any]:
+    source = normalize_source(source)
     roots = {"native": native, "curated": curated}
     findings = Findings()
     started = datetime.now(timezone.utc)
-    profiled = check_profiles(features, roots, findings)
-    sharing = check_sharing(features, roots, findings)
+    profiled = check_profiles(features, roots, findings, source=source)
+    sharing = check_sharing(features, roots, findings, source=source)
     pool = sorted({code for phase in PHASES for rows in profiled["rows_by_participant"][phase].values() for code in rows})
     count = len(pool) if participants <= 0 else min(participants, len(pool))
     codes = sorted(random.Random(seed).sample(pool, count)) if pool else []
-    loads = {} if profile_only else check_loads(features, roots, codes, profiled["rows_by_participant"], findings)
+    loads = {} if profile_only else check_loads(
+        features,
+        roots,
+        codes,
+        profiled["rows_by_participant"],
+        findings,
+        source=source,
+    )
     return {
-        "tool": "cohort_acceptance", "package": {"version": __version__, "release_label": __release_label__},
+        "tool": "cohort_acceptance",
+        "cohort_acceptance_version": COHORT_ACCEPTANCE_VERSION,
+        "package": {"version": __version__, "release_label": __release_label__},
+        "wearable_source": source.value,
         "pandas": pd.__version__, "python": sys.version.split()[0],
         "roots": {k: str(v) for k, v in roots.items()}, "seed": seed, "features": list(features),
         "participants_requested": participants, "participants_sampled": codes,
@@ -383,16 +479,32 @@ def run(native: Path, curated: Path, participants: int, seed: int, features, pro
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[1], formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--native", type=Path, default=Path(DEFAULT_NATIVE_ROOT), help="native root")
-    parser.add_argument("--curated", type=Path, default=Path(DEFAULT_CURATED_ROOT), help="curated root")
+    parser.add_argument(
+        "--source",
+        type=_source_argument,
+        default=DEFAULT_SOURCE,
+        metavar="SOURCE",
+        help="wearable source: apple_healthkit or google_fitness (default: apple_healthkit)",
+    )
+    parser.add_argument("--native", type=Path, default=None, help="native root (default: selected source root)")
+    parser.add_argument("--curated", type=Path, default=None, help="curated root (default: selected source root)")
     parser.add_argument("--participants", type=int, default=50, help="participants to load; 0 loads all (default 50)")
     parser.add_argument("--seed", type=int, default=1, help="seed for choosing participants (default 1)")
     parser.add_argument("--features", nargs="+", help="limit to these features (default: all)")
     parser.add_argument("--profile-only", action="store_true", help="run the profiles only")
-    parser.add_argument("--out", type=Path, default=None, help="report directory (default: ./cohort_acceptance_<time>)")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="report directory (default: ./cohort_acceptance_<source>_<time>)",
+    )
     args = parser.parse_args(argv)
 
-    features = available_features()
+    source = normalize_source(args.source)
+    adapter = get_source_adapter(source)
+    args.native = (args.native or adapter.native_root).expanduser()
+    args.curated = (args.curated or adapter.curated_root).expanduser()
+    features = available_features(source=source)
     if args.features:
         unknown = sorted(set(args.features) - set(features))
         if unknown:
@@ -401,12 +513,23 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("native", "curated"):
         if not getattr(args, name).is_dir():
             parser.error(f"--{name} {getattr(args, name)} is not a directory")
-    out = (args.out or Path.cwd() / f"cohort_acceptance_{datetime.now():%Y%m%d-%H%M%S}").expanduser().resolve()
-    for root in protected_roots(args.native, args.curated):
+    out = (
+        args.out
+        or Path.cwd() / f"cohort_acceptance_{source.value}_{datetime.now():%Y%m%d-%H%M%S}"
+    ).expanduser().resolve()
+    for root in _protected_roots(args.native, args.curated):
         if out == root or root in out.parents:
             parser.error(f"--out {out} lies inside the data root {root}; reports are never written into a data root")
 
-    result = run(args.native, args.curated, args.participants, args.seed, features, args.profile_only)
+    result = run(
+        args.native,
+        args.curated,
+        args.participants,
+        args.seed,
+        features,
+        args.profile_only,
+        source=source,
+    )
     out.mkdir(parents=True, exist_ok=True)
     (out / "cohort_acceptance.json").write_text(json.dumps(_jsonable(result), indent=2))
     text = render(result)

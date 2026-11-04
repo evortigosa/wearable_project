@@ -106,7 +106,7 @@ From a release wheel, or from a source checkout (the `plots` extra adds matplotl
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install ./wearable_project-0.3.0-py3-none-any.whl     # a release wheel
+python -m pip install ./wearable_project-0.4.0-py3-none-any.whl     # a release wheel
 ```
 
 **Requirements:** Python 3.10 or newer, pandas 2.0 or newer, matplotlib 3.5 or newer, and tqdm.
@@ -115,12 +115,15 @@ python -m pip install ./wearable_project-0.3.0-py3-none-any.whl     # a release 
 - pytest, for the tests (the `dev` extra);
 - pyarrow, for Parquet exports.
 
-It is tested on Python 3.10 with pandas 2.0, and on Python 3.12 with pandas 2.1, 2.2 and 3.0.
+The 0.4.0 release gate requires Python 3.10, 3.12 and 3.13 coverage across the supported pandas 2.x/3.x matrix. Exact
+commands and the required full-cohort checks are recorded in
+[`docs/RELEASE_0_4_0.md`](docs/RELEASE_0_4_0.md); a build should not be distributed until that matrix has passed
+in the laboratory environment.
 
 To check an installation, run from outside the source folder:
 
 ```bash
-wearable-project --version                # wearable-project 0.3.0
+wearable-project --version                # wearable-project 0.4.0
 wearable-project curation-environment     # import source, versions, module integrity
 ```
 
@@ -149,6 +152,7 @@ google.load_report["curation_contract_validated"] # True
 from wearable_project import utils
 from wearable_project.utils import data_statistics as ds, data_summaries as sm, data_plots as dp
 
+# These higher-level analytical utilities currently implement the accepted Apple HealthKit contracts.
 daily = ds.compute_daily_statistics("curated", features=["StepCount", "HeartRate"],
                                     participants=["10K_XXXXXXXXXX"])
 summaries = sm.summarize(daily)            # valid days, adherence, participant and cohort summaries
@@ -494,6 +498,12 @@ and the completed architecture audit in
 
 ## Statistics, metrics, figures and reports
 
+The source-aware DataLoaders in 0.4.0 read Apple HealthKit and Google Fitness independently. The higher-level
+`data_statistics`, `data_summaries`, `domain_metrics`, and `data_plots` workflows below remain Apple HealthKit
+analytical contracts: they depend on Apple row-level UTC offsets, feature semantics, and unit policies. They do
+not merge Apple and Google observations, select a preferred source, deduplicate across sources, or reinterpret
+Google Fitness as Apple data. Cross-source harmonization is a separate later layer.
+
 ```python
 from wearable_project.utils import data_statistics as ds, data_summaries as sm
 from wearable_project.utils import domain_metrics as dm, data_plots as dp
@@ -600,23 +610,30 @@ wearable-project run --input /data/exports --native-output /data/native --curate
 
 ## Checking the cohort
 
-The test suites run on a small representative sample. `cohort_acceptance` checks the real roots for what only the
-full cohort can show:
+The test suites run on a small representative sample. `cohort_acceptance` checks one selected source's real roots
+for what only the full cohort can show. Omitting `--source` remains Apple-compatible:
 
 ```bash
-python -m wearable_project.utils.cohort_acceptance --participants 50 --seed 1 --out ~/acceptance
+python -m wearable_project.utils.cohort_acceptance \
+  --source apple_healthkit \
+  --participants 50 --seed 1 --out ~/acceptance/apple
+
+python -m wearable_project.utils.cohort_acceptance \
+  --source google_fitness \
+  --participants 50 --seed 1 --out ~/acceptance/google
 ```
 
 1. **It profiles every feature in both phases,** from the state databases only. It fails on unrecorded files and
    size mismatches, and on phases that disagree on a participant's rows.
 2. **It loads every feature in both phases** for a seeded random set of participants, with verification required,
    and checks dtypes, declared types and both helpers.
-3. **It checks that the roots' group can read every file, folder and state database.** A run by the data owner, who
-   can read everything, would otherwise pass while colleagues are refused.
+3. **It checks that the roots' group can read every file, folder, state database, and required root contract.** A
+   run by the data owner, who can read everything, would otherwise pass while colleagues are refused.
 
 It writes `cohort_acceptance.txt` and `cohort_acceptance.json` to `--out`, and exits with 0 when nothing failed, 1
-when a check failed, and 2 for invalid arguments. `--features` restricts the run, `--participants 0` loads every
-participant who has the chosen features, and `--native` and `--curated` point to other roots.
+when a check failed, and 2 for invalid arguments. `--features` is validated against the selected source,
+`--participants 0` loads every participant who has the chosen features, and `--native` and `--curated` point to
+other roots. The JSON report records `wearable_source` so Apple and Google evidence cannot be confused.
 
 ## Running the tests
 
@@ -624,6 +641,8 @@ participant who has the chosen features, and `--native` and `--curated` point to
 python -m pip install -e ".[dev]"
 export WEARABLE_NATIVE_SAMPLE=/path/to/native_sample
 export WEARABLE_CURATED_SAMPLE=/path/to/curated_sample
+export WEARABLE_GOOGLE_NATIVE_SAMPLE=/path/to/google_native_sample
+export WEARABLE_GOOGLE_CURATED_SAMPLE=/path/to/google_curated_sample
 python -m pytest -rs
 ```
 

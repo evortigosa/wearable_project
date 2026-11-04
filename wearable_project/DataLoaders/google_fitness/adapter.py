@@ -112,6 +112,10 @@ class GoogleFitnessAdapter:
 
         return manifest_contract(phase)
 
+    def required_root_files(self, phase: str) -> tuple[str, ...]:
+        # Curated schema-v2 sparse defaults and virtual projections are defined by this immutable root contract.
+        return (".curation_contract.json",) if phase == "curated" else ()
+
     def prepare_curated_frame(self, frame: pd.DataFrame, path: Path, feature: str,) -> CuratedFramePreparation:
         if self._root_contract is None:
             raise DataLoaderConfigurationError(

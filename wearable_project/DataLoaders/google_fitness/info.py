@@ -16,7 +16,7 @@ from wearable_project.DataLoaders._profile import ACQUISITION_CAVEAT
 from wearable_project.DataLoaders._sources import GOOGLE_FITNESS_PUBLIC_FEATURES
 
 
-INFO_CONTRACT_VERSION = "dataloader-info-google-fitness-1"
+INFO_CONTRACT_VERSION = "dataloader-info-google-fitness-2"
 _WIDTH = 100
 _EXAMPLE_CODE = "10K_1235738253"
 
@@ -333,6 +333,20 @@ def feature_report(loader: Any, *, include_evidence: bool) -> InfoDocument:
     if phase == "curated":
         usage["default_subset"] = "included = loader.get_data(default_inclusion_only=True)"
 
+    primary_measurement = "value" if "value" in spec.measurement_columns else None
+    auxiliary_measurements = [
+        column for column in spec.measurement_columns if column != primary_measurement
+    ]
+    singular_helper_applicable = primary_measurement is not None
+    resolved_values_available = feature == "StepCount"
+    multi_measurement_feature = not singular_helper_applicable and len(spec.measurement_columns) > 1
+    if resolved_values_available:
+        harmonization_result = "resolved"
+    elif singular_helper_applicable:
+        harmonization_result = "withheld_by_policy"
+    else:
+        harmonization_result = "not_applicable"
+
     payload = {
         "wearable_source": "google_fitness",
         "feature": feature,
@@ -401,10 +415,14 @@ def feature_report(loader: Any, *, include_evidence: bool) -> InfoDocument:
             "reason": "The Google product does not retain a row-level UTC offset from which local wall time can be reconstructed.",
         },
         "harmonization": {
-            "supported": feature == "StepCount",
+            "supported": singular_helper_applicable,
+            "resolved_values_available": resolved_values_available,
             "established_unit": registry_unit(feature, "value"),
             "unit_candidates_only": list(unresolved_unit_candidates(feature, "value")),
-            "multi_measurement_feature": len(spec.measurement_columns) > 1,
+            "primary_measurement": primary_measurement,
+            "auxiliary_measurements": auxiliary_measurements,
+            "multi_measurement_feature": multi_measurement_feature,
+            "result_policy": harmonization_result,
         },
         "evidence_refs": list(evidence_ids),
         "evidence": evidence,
@@ -449,7 +467,16 @@ def feature_report(loader: Any, *, include_evidence: bool) -> InfoDocument:
             "The official-type unit is retained only as a candidate. The cohort exporter mapping is unverified, "
             "so canonical and harmonized values remain missing rather than being silently labeled."
         ))
-    if len(spec.measurement_columns) > 1:
+        lines.extend(_wrap(
+            "with_harmonized_values() is applicable to the scalar value column, but deliberately returns an "
+            "unresolved value/unit until that exporter mapping is accepted."
+        ))
+    if feature == "StepCount":
+        lines.extend(_wrap(
+            "with_harmonized_values() uses value as the primary count measurement. raw_value remains auxiliary "
+            "source evidence and does not make StepCount a multi-measurement feature for this helper."
+        ))
+    if multi_measurement_feature:
         lines.extend(_wrap(
             "This is a multi-measurement row. The singular with_harmonized_values() helper is intentionally "
             "inapplicable; calories, distance and quantity remain separate evidence."

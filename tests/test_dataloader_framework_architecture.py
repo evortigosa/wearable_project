@@ -103,6 +103,18 @@ def _canonical_payload_hash(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _with_increment3_release_identity(value: object) -> object:
+    """Normalize the intentional 0.4.0 release identity before comparing Apple behavior with Increment 3."""
+
+    if isinstance(value, dict):
+        return {key: _with_increment3_release_identity(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_with_increment3_release_identity(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_with_increment3_release_identity(item) for item in value)
+    return "0.3.0" if value == "0.4.0" else value
+
+
 def test_source_adapters_satisfy_the_runtime_contract():
     assert isinstance(get_source_adapter("apple_healthkit"), SourceAdapter)
     assert isinstance(get_source_adapter("google_fitness"), SourceAdapter)
@@ -121,6 +133,10 @@ def test_source_adapters_own_state_and_csv_behavior_contracts():
     )
     assert apple.state_manifest_contract("curated").row_count_column == "curated_rows"
     assert google.state_manifest_contract("curated").row_count_column == "curated_rows"
+    assert apple.required_root_files("native") == ()
+    assert apple.required_root_files("curated") == ()
+    assert google.required_root_files("native") == ()
+    assert google.required_root_files("curated") == (".curation_contract.json",)
     assert apple.state_manifest_contract("native").required_columns == (
         "participant_id", "feature", "row_count", "size_bytes", "sha256",
     )
@@ -236,27 +252,43 @@ def test_google_static_info_covers_every_feature_and_phase_without_root_io(monke
 def test_google_info_describes_step_count_and_withheld_scalar_units():
     step = static_info("StepCount", source="google_fitness", phase="curated", include_evidence=True).payload
     assert step["date_index"]["column"] == "outer_datetime"
+    assert step["contract_versions"]["info_contract_version"] == "dataloader-info-google-fitness-2"
     assert step["date_index"]["canonical_day_derived"] is False
     assert step["group_policy"]["role_column"] == "step_count_role"
     assert step["columns"]["curation_virtual"] == [
         "canonical_value", "canonical_unit", "curation_unit_status", "unit_evidence", "derivation_method",
     ]
     assert step["harmonization"]["supported"] is True
+    assert step["harmonization"]["resolved_values_available"] is True
     assert step["harmonization"]["established_unit"] == "count"
+    assert step["harmonization"]["primary_measurement"] == "value"
+    assert step["harmonization"]["auxiliary_measurements"] == ["raw_value"]
+    assert step["harmonization"]["multi_measurement_feature"] is False
+    assert step["harmonization"]["result_policy"] == "resolved"
+    assert "singular with_harmonized_values() helper is intentionally inapplicable" not in static_info(
+        "StepCount", source="google_fitness", phase="curated"
+    ).text
     assert step["evidence"]
 
     calories = static_info("Calories", source="google_fitness", phase="curated").payload
     assert calories["harmonization"] == {
-        "supported": False,
+        "supported": True,
+        "resolved_values_available": False,
         "established_unit": None,
         "unit_candidates_only": ["kcal"],
+        "primary_measurement": "value",
+        "auxiliary_measurements": [],
         "multi_measurement_feature": False,
+        "result_policy": "withheld_by_policy",
     }
     assert calories["measurements"][0]["canonical_projection_enabled"] is False
     assert calories["measurements"][0]["version_units"][0]["canonicalization"] == "withhold"
 
     walking = static_info("Walking", source="google_fitness", phase="curated").payload
+    assert walking["harmonization"]["supported"] is False
+    assert walking["harmonization"]["primary_measurement"] is None
     assert walking["harmonization"]["multi_measurement_feature"] is True
+    assert walking["harmonization"]["result_policy"] == "not_applicable"
     assert walking["columns"]["measurement"] == ["calories", "distance", "quantity"]
 
 
@@ -269,8 +301,10 @@ def test_apple_static_info_remains_byte_and_payload_equivalent_to_increment3():
 
     assert set(reports) == set(expected)
     for name, report in reports.items():
-        assert hashlib.sha256(report.text.encode("utf-8")).hexdigest() == expected[name]["text_sha256"], name
-        assert _canonical_payload_hash(report.payload) == expected[name]["payload_sha256"], name
+        baseline_text = report.text.replace("0.4.0", "0.3.0")
+        baseline_payload = _with_increment3_release_identity(report.payload)
+        assert hashlib.sha256(baseline_text.encode("utf-8")).hexdigest() == expected[name]["text_sha256"], name
+        assert _canonical_payload_hash(baseline_payload) == expected[name]["payload_sha256"], name
 
 
 def test_both_state_markers_are_rejected_before_csv_parsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

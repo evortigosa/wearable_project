@@ -77,6 +77,11 @@ class AppleHealthKitAdapter:
 
         return manifest_contract(phase)
 
+    def required_root_files(self, phase: str) -> tuple[str, ...]:
+        del phase
+        # Apple interpretations needed by the loader are physically stored in the CSV and state database.
+        return ()
+
     def prepare_curated_frame(self, frame: Any, path: Path, feature: str,) -> CuratedFramePreparation:
         from wearable_project.DataLoaders.apple_healthkit.curated import prepare_curated_frame
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wearable-project"
-version = "0.3.0"
+version = "0.4.0"
 description = "Participant-oriented Apple HealthKit and Google Fitness processing, curation, and HPP-style data loaders"
 authors = [
   {name = "Evandro S. Ortigossa", email = "evortigosa@gmail.com"},
