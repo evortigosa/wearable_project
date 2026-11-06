@@ -1,199 +1,229 @@
-# Wearable Data Processing and Modeling project
+# wearable-project
 
-This project turns Apple HealthKit and Google Fitness exports of the Human Phenotype Project (HPP, the "10K"
-cohort) into verified, analysis-ready data. It provides:
+`wearable-project` turns Apple HealthKit and Google Fitness exports from the Human Phenotype Project (HPP, the
+"10K" cohort) into verified, analysis-ready participant/feature tables.
 
-- one file per participant and feature;
-- a curated copy that marks what to review or leave out, without changing any value;
-- source-aware loaders that read each implemented native or curated product into pandas;
-- tools for cohort statistics, sleep and glucose metrics, figures and reports.
+For most researchers, the package starts and ends with **DataLoaders**: one public `<Feature>Loader` class per
+feature, pandas output with stable schemas and dtypes, native or curated data, and state-backed integrity checks.
+Processing and curation are included for the small number of data engineers who maintain the cohort products.
 
 Developed at the Segal Lab, Department of Computer Science and Applied Mathematics, Weizmann Institute of Science.
+A project overview is available in [this presentation](https://docs.google.com/presentation/d/1dbA7ByPcUTwcUZf5fLVpNBrlMeY5RP5Myy0WmeKwETI/edit?usp=drivesdk).
 
-For more details, see [this presentation](https://docs.google.com/presentation/d/1dbA7ByPcUTwcUZf5fLVpNBrlMeY5RP5Myy0WmeKwETI/edit?usp=drivesdk).
+| Package                  | Sources                            |                                       Public feature loaders | Default phase | Python |
+|--------------------------|------------------------------------|-------------------------------------------------------------:|---------------|--------|
+| `wearable-project 0.4.0` | Apple HealthKit and Google Fitness | 96 unique modules: 33 Apple + 67 Google, with 4 shared names | `curated`     | 3.10+  |
 
-## How it fits together
+## Contents
 
-```text
-raw exports ──process──▶ native root ──curate──▶ curated root
-                             │                        │
-                             └────── DataLoaders ─────┘
-                                          │
-                utils: statistics, sleep and CGM metrics, figures, reports
-```
+- [Install](#install)
+- [Start here: load wearable data](#start-here-load-wearable-data)
+- [Choose a source, feature and phase](#choose-a-source-feature-and-phase)
+- [Available features and HPP cohort coverage](#available-features-and-hpp-cohort-coverage)
+- [DataLoader reference](#dataloader-reference)
+- [Source-specific scientific contracts](#source-specific-scientific-contracts)
+- [Statistics, metrics, figures and reports](#statistics-metrics-figures-and-reports)
+- [Processing and curation for data engineers](#processing-and-curation-for-data-engineers)
+- [Cohort acceptance and release qualification](#cohort-acceptance-and-release-qualification)
+- [Repository layout and developer documentation](#repository-layout-and-developer-documentation)
+- [Running the tests](#running-the-tests)
 
-1. **Processing** (`wearable-project process`) reads the cumulative monthly CSV exports (one folder per
-   participant). It writes one CSV per participant and feature, cleaned at the feature's native time resolution.
-   Runs are incremental and atomic, and a state database records every file written.
-2. **Curation** (`wearable-project curate`) writes a second root with the same rows and values. It adds a curation
-   status, flags, a default-inclusion decision, the acquisition method and resolved units, and never changes a
-   native value.
-3. **DataLoaders** expose one top-level loader per feature, with an explicit source contract and the HPP interface.
-   Apple HealthKit and Google Fitness native and curated products are verified against their state databases;
-   Google curated schema v2 additionally validates its root contract and reconstructs sparse/virtual fields.
-4. **`wearable_project.utils`** computes statistics, summaries, sleep and CGM metrics, figures and PDF reports
-   through the DataLoaders, and documents itself with `utils.info()`.
+## Install
 
-The HPP roots are already processed and curated, so most users need only steps 3 and 4.
-
-## Repository layout
-
-```text
-wearable_project/
-├── wearable_project/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── cli.py
-│   ├── exceptions.py
-│   ├── DataLoaders/               # 96 unique feature modules: 33 Apple + 67 Google, 4 shared
-│   │   ├── StepCountLoader.py     # One public class; source= selects Apple or Google
-│   │   ├── HeartRateLoader.py     # Apple-only
-│   │   ├── WalkingLoader.py       # Google-only
-│   │   ├── ...
-│   │   ├── _base.py               # Shared engine: exact reads, filters, verification, projections, size limit
-│   │   ├── _contracts.py          # Source-neutral feature and root contracts
-│   │   ├── _sources.py            # Source selection, catalogs, roots and managed-root identity
-│   │   ├── apple_healthkit/       # Internal Apple adapter; no competing public feature loaders
-│   │   ├── google_fitness/        # Internal Google adapter, native/curated schemas and virtual projections
-│   │   ├── _derived.py            # Source-aware derived helpers
-│   │   ├── _profile.py            # profile(): what a root holds, without parsing any feature file
-│   │   ├── _units.py              # Accepted Apple unit registry compatibility layer
-│   │   └── info.py                # Source-aware static feature reports and discovery
-│   ├── processing/                # Stage 1: raw exports -> native root
-│   │   ├── parser.py              # Streaming parser for the cumulative monthly CSV exports
-│   │   ├── registry.py            # Feature families and unit policies for native rows
-│   │   ├── cleaners.py            # Feature-aware cleaning at each feature's native resolution
-│   │   ├── pipeline.py            # Per-participant orchestration, incremental planning, atomic commits
-│   │   ├── writer.py              # Atomic participant-folder writing and the processing state database
-│   │   ├── scan.py                # Read-only planning scan (`process-scan`)
-│   │   ├── tracker.py             # Run telemetry and processing reports
-│   │   ├── environment.py         # Version and module-integrity diagnostics
-│   │   └── resampling.py          # Reserved for a later resampling stage
-│   ├── curation/                  # Stage 2: native root -> curated root, non-destructively
-│   │   ├── registry.py            # The feature-policy registry, the source of truth for curation
-│   │   ├── models.py              # Typed policy contracts
-│   │   ├── rules.py               # Curation rules and flags
-│   │   ├── strategies.py          # Named strategies referenced by policies
-│   │   ├── decisions.py           # Versioned human calibration decisions
-│   │   ├── evidence.py            # Evidence catalog behind the policies
-│   │   ├── guidance.py            # User-facing guidance for every feature
-│   │   ├── explain.py             # Explanations of policies, rules and unit policies
-│   │   ├── unit_resolution.py     # Participant-, source- and scale-aware unit resolution
-│   │   ├── engine.py              # Row-preserving curation of one feature file
-│   │   ├── pipeline.py            # Participant-level curation, staging and atomic commits
-│   │   ├── state.py               # Curation state database and reports
-│   │   ├── schema.py              # Column roles, projections and returned dtypes for the DataLoaders
-│   │   ├── audit.py               # Read-only policy-calibration audit
-│   │   ├── environment.py         # Version, fingerprint and module-integrity diagnostics
-│   │   └── curate_cli.py          # Curation commands
-│   └── utils/                     # Analysis through the DataLoaders
-│       ├── data_statistics.py     # Coverage, daily statistics, written runs
-│       ├── data_summaries.py      # Valid days, adherence, summaries, patterns, quality
-│       ├── domain_metrics.py      # Sleep by night, CGM metrics and the ambulatory glucose profile
-│       ├── data_plots.py          # Figures and reports
-│       ├── info.py                # utils.info(): help on the four modules above
-│       └── cohort_acceptance.py   # Checks the DataLoaders on the full cohort roots
-├── tests/
-├── README.md
-├── LICENSE
-└── pyproject.toml
-```
-
-## Installation
-
-From a release wheel, or from a source checkout (the `plots` extra adds matplotlib):
+Install the release wheel in an isolated environment:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install ./wearable_project-0.4.0-py3-none-any.whl     # a release wheel
+python -m pip install ./wearable_project-0.4.0-py3-none-any.whl
 ```
 
-**Requirements:** Python 3.10 or newer, pandas 2.0 or newer, matplotlib 3.5 or newer, and tqdm.
-
-**Optional:**
-- pytest, for the tests (the `dev` extra);
-- pyarrow, for Parquet exports.
-
-The 0.4.0 release gate requires Python 3.10, 3.12 and 3.13 coverage across the supported pandas 2.x/3.x matrix. Exact
-commands and the required full-cohort checks are recorded in
-[`docs/RELEASE_0_4_0.md`](docs/RELEASE_0_4_0.md); a build should not be distributed until that matrix has passed
-in the laboratory environment.
-
-To check an installation, run from outside the source folder:
+For development from a checkout:
 
 ```bash
-wearable-project --version                # wearable-project 0.4.0
-wearable-project curation-environment     # import source, versions, module integrity
+python -m pip install -e ".[dev]"
 ```
 
-## Quick start
+Runtime requirements are Python 3.10 or newer, pandas 2.0 or newer, matplotlib 3.5 or newer, and tqdm 4.66 or
+newer. `pyarrow` is optional and is needed only for Parquet exports and their tests.
+
+Check the installed artifact from a directory outside the source checkout:
+
+```bash
+wearable-project --version
+# wearable-project 0.4.0
+
+python - <<'PY'
+from wearable_project import __version__
+assert __version__ == "0.4.0"
+print("wearable-project", __version__)
+PY
+```
+
+## Start here: load wearable data
+
+The permanent HPP native and curated roots are already configured as defaults in the laboratory environment. A
+normal analysis therefore needs only a feature class and, for Google Fitness, an explicit source when the feature
+name is shared with Apple.
 
 ```python
 from wearable_project import DataLoaders
-from wearable_project.DataLoaders import StepCountLoader
+from wearable_project.DataLoaders import StepCountLoader, WalkingLoader
 
-print(DataLoaders.info("StepCount"))       # Apple contract; omitted source remains Apple-compatible
-print(DataLoaders.info("StepCount", source="google_fitness"))  # Google contract
-
-apple = StepCountLoader().get_data(registration_codes=["10K_XXXXXXXXXX"])
-apple.df.head()                            # indexed by RegistrationCode and Date
-apple.load_report["state_verified"]        # True: checked against the Apple state database
-
-# The same public loader selects Google explicitly; curated remains the default phase.
-google = StepCountLoader(source="google_fitness").get_data(
-    registration_codes=["10K_XXXXXXXXXX"]
+# Existing Apple loaders remain backward compatible: omitted source means Apple HealthKit.
+apple_steps = StepCountLoader(state_validation="required").get_data(
+    registration_codes=["10K_1235738253"],
+    start_date="2024-01-01",
+    end_date="2024-12-31 23:59:59",
 )
-google.load_report["wearable_source"]             # "google_fitness"
-google.load_report["curation_contract_validated"] # True
+
+# The same public class reads Google Fitness when source is explicit.
+google_steps = StepCountLoader(
+    source="google_fitness",
+    state_validation="required",
+).get_data(registration_codes=["10K_8790614327"])
+
+# Google-only loaders default to Google Fitness, although explicit source is clearer in shared code.
+google_walking = WalkingLoader(
+    source="google_fitness",
+    state_validation="required",
+).get_data(projection="analysis")
+
+apple_steps.df.head()
+google_steps.load_report["wearable_source"]             # "google_fitness"
+google_steps.load_report["state_verified"]              # True
+google_steps.load_report["curation_contract_validated"] # True for Google curated schema v2
 ```
+
+Every call returns a `LoaderData` container:
 
 ```python
-from wearable_project import utils
-from wearable_project.utils import data_statistics as ds, data_summaries as sm, data_plots as dp
-
-# These higher-level analytical utilities currently implement the accepted Apple HealthKit contracts.
-daily = ds.compute_daily_statistics("curated", features=["StepCount", "HeartRate"],
-                                    participants=["10K_XXXXXXXXXX"])
-summaries = sm.summarize(daily)            # valid days, adherence, participant and cohort summaries
-dp.plot_hour_of_day(daily, "HeartRate", path="heart_rate_by_hour.png")
-utils.info("compute_daily_statistics")     # help on any tool
+data = google_steps
+data.df                   # feature rows, indexed by RegistrationCode and Date
+data.df_metadata          # per-participant returned/stored rows, date span and verification
+data.df_columns_metadata  # per-column role, description, dtype, non-null count, unit and dense default
+data.load_report          # source, root, phase, files, filters, projection and verification provenance
 ```
 
-## Loading features
+> **One load always represents one source.** Version 0.4.0 does not merge Apple and Google observations, select a
+> preferred source, deduplicate across sources, reconcile source intervals, or map both Sleep ontologies into one
+> representation. Those are later harmonization decisions, not DataLoader behavior.
 
-How many participants have each Apple HealthKit feature in the HPP Apple roots (the same in both Apple phases),
-as of the cohort check of 28 September 2026:
+## Choose a source, feature and phase
+
+A loader is defined by three independent choices:
+
+1. **Source** — `"apple_healthkit"` or `"google_fitness"`.
+2. **Feature** — the top-level `<Feature>Loader` class.
+3. **Phase** — `"curated"` by default, or `"native"` for the source-faithful product.
+
+### Source defaults and compatibility
+
+| Loader kind                | Example                                                          | Omitted `source` | Other source                   |
+|----------------------------|------------------------------------------------------------------|------------------|--------------------------------|
+| Existing Apple-only loader | `HeartRateLoader`                                                | Apple HealthKit  | rejected during construction   |
+| Shared loader name         | `StepCountLoader`, `SleepLoader`, `HeightLoader`, `WeightLoader` | Apple HealthKit  | pass `source="google_fitness"` |
+| Google-only loader         | `WalkingLoader`, `CaloriesLoader`, `BikingLoader`                | Google Fitness   | Apple is rejected              |
+
+The four shared feature names have one public module and one class each; there is no competing
+`google_fitness.StepCountLoader`. Existing laboratory imports remain valid:
+
+```python
+from wearable_project.DataLoaders.StepCountLoader import StepCountLoader
+```
+
+For new code, package-level imports are shorter:
+
+```python
+from wearable_project.DataLoaders import StepCountLoader, WearableSource
+
+loader = StepCountLoader(source=WearableSource.GOOGLE_FITNESS)
+```
+
+### Native and curated phases
+
+| Phase     | Meaning                                                                                                                                             |
+|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `native`  | Source-faithful normalized rows at their retained native time support; no ordinary loading-time resampling, source selection or curation filtering  |
+| `curated` | The same rows, order, native prefix and values, plus reviewed annotations, default-inclusion decisions and accepted unit/provenance interpretations |
+
+Curated is the default because it exposes the review decisions without deleting evidence. Loaders still return every
+row unless `default_inclusion_only=True` is requested explicitly.
+
+### Discover the catalog and inspect contracts
+
+```python
+from wearable_project import DataLoaders
+
+DataLoaders.available_features()                              # 33 Apple features (legacy default)
+DataLoaders.available_features(source="apple_healthkit")      # 33
+DataLoaders.available_features(source="google_fitness")       # 67
+DataLoaders.available_sources("StepCount")                    # both sources
+DataLoaders.available_sources("HeartRate")                    # Apple only
+
+print(DataLoaders.info("StepCount"))                          # Apple curated contract
+print(DataLoaders.info("StepCount", source="google_fitness")) # Google curated contract
+print(DataLoaders.info("Walking", source="google_fitness", phase="native"))
+```
+
+`info()` is static: it reads executable package contracts and never opens a data root. `profile()` describes one
+actual root from its state database and file metadata without parsing feature CSVs:
+
+```python
+from wearable_project.DataLoaders import HeartRateLoader
+
+profile = HeartRateLoader(state_validation="required").profile()
+print(profile)
+profile.summary       # rows, files, bytes, integrity and curated outcome coverage
+profile.participants  # one row per participant
+```
+
+## Available features and HPP cohort coverage
+
+The final full-cohort acceptance run on **5 November 2026** found every public feature in both native and curated
+roots, with identical participant and row counts across phases. The counts below are therefore per phase.
+
+| Source          | Public features | Feature files |        Rows | Native size | Curated size | Largest participant coverage    |
+|-----------------|----------------:|--------------:|------------:|------------:|-------------:|---------------------------------|
+| Apple HealthKit |              33 |        23,335 | 451,653,688 |    103.9 GB |     107.9 GB | `StepCount`: 4,006 participants |
+| Google Fitness  |              67 |        32,707 |  13,476,849 |     1.64 GB |      1.89 GB | `Calories`: 5,558 participants  |
+
+Bars in the participant charts are linear. Row charts use a logarithmic scale because feature sizes span many
+orders of magnitude. These are cohort snapshots, not hard-coded loader limits; use `profile()` for the current root.
+
+### Apple HealthKit coverage
+
+Participants with each feature:
 
 ```text
 StepCount              ██████████████████████████████████████████████████ 4,006
-ActiveEnergyBurned     ████████████████████████ 1,888
-BasalEnergyBurned      ██████████████████████ 1,744
+ActiveEnergyBurned     ███████████████████████▋ 1,888
+BasalEnergyBurned      █████████████████████▊ 1,744
 Height                 ████████████████████▌ 1,639
 DistanceWalkingRunning ████████████████████ 1,602
-FlightsClimbed         ███████████████████ 1,570
-Weight                 ██████████████████ 1,553
-ActivitySummary        ██████████████ 1,085
-HeartRate              █████████████ 1,055
-Sleep                  ████████████ 1,032
-RestingHeartRate       █████████ 753
-Vo2Max                 ███████ 573
-HeartRateVariability   ███████ 568
-WalkingHeartRate       ██████ 540
-Mindful                ██████ 514
-OxygenSaturation       ██████ 460
-RespiratoryRate        █████ 425
+FlightsClimbed         ███████████████████▋ 1,570
+Weight                 ███████████████████▍ 1,553
+ActivitySummary        █████████████▌ 1,085
+HeartRate              █████████████▏ 1,055
+Sleep                  ████████████▉ 1,032
+RestingHeartRate       █████████▍ 753
+Vo2Max                 ███████▏ 573
+HeartRateVariability   ███████▏ 568
+WalkingHeartRate       ██████▊ 540
+Mindful                ██████▍ 514
+OxygenSaturation       █████▊ 460
+RespiratoryRate        █████▎ 425
 DailyDistanceCycling   █████ 405
-Electrocardiogram      ████ 349
+Electrocardiogram      ████▍ 349
 BMI                    ████ 324
-DailyDistanceSwimming  ███ 253
-BodyFatPercentage      ███ 224
+DailyDistanceSwimming  ███▏ 253
+BodyFatPercentage      ██▊ 224
 LeanBodyMass           ██ 157
-EnergyConsumed         █ 106
-Protein                █ 103
-Carbohydrates          █ 101
-BloodPressure          █ 97
-TotalFat               █ 95
+EnergyConsumed         █▍ 106
+Protein                █▎ 103
+Carbohydrates          █▎ 101
+BloodPressure          █▎ 97
+TotalFat               █▏ 95
 WaistCircumference     ▋ 52
 BloodGlucose           ▌ 39
 BodyTemperature        ▎ 20
@@ -201,453 +231,778 @@ BloodAlcoholContent    ▏ 2
 PeakFlow               ▏ 1
 ```
 
-And how many rows each feature holds, from the same check. Together the cohort holds 451,653,688 rows in each phase, 
-and HeartRate alone is 61% of them (the counts span eight orders of magnitude, so the bars use a log scale):
+<details>
+<summary>Rows per feature (log scale)</summary>
 
 ```text
-HeartRate              ███████████████████████████████████████████████████ 275,540,794
-StepCount              ███████████████████████████████████████████████ 60,014,907
-DistanceWalkingRunning ██████████████████████████████████████████████ 40,879,374
-BasalEnergyBurned      █████████████████████████████████████████████ 28,792,402
-ActiveEnergyBurned     ████████████████████████████████████████████ 19,812,185
-FlightsClimbed         ██████████████████████████████████████████ 9,876,659
-Sleep                  █████████████████████████████████████████ 5,469,021
-RespiratoryRate        ████████████████████████████████████████ 3,604,591
-HeartRateVariability   ███████████████████████████████████████ 2,250,623
-OxygenSaturation       ██████████████████████████████████████ 1,672,342
-ActivitySummary        █████████████████████████████████████▏ 1,530,301
-RestingHeartRate       ███████████████████████████████████ 570,414
-BloodGlucose           ███████████████████████████████████ 546,853
-WalkingHeartRate       ██████████████████████████████████ 384,732
-Weight                 ███████████████████████████████ 113,700
-Vo2Max                 ██████████████████████████████ 92,210
-DailyDistanceCycling   █████████████████████████████ 68,704
-BMI                    ████████████████████████████ 68,337
-BodyFatPercentage      ███████████████████████████ 44,719
-EnergyConsumed         ███████████████████████████ 44,174
-Protein                ███████████████████████████ 39,091
-LeanBodyMass           ███████████████████████████ 38,992
-Carbohydrates          ███████████████████████████ 38,855
-TotalFat               ███████████████████████████ 38,101
+HeartRate              ██████████████████████████████████████████████████ 275,540,794
+StepCount              ██████████████████████████████████████████████▏ 60,014,907
+DistanceWalkingRunning █████████████████████████████████████████████▏ 40,879,374
+BasalEnergyBurned      ████████████████████████████████████████████▎ 28,792,402
+ActiveEnergyBurned     ███████████████████████████████████████████▎ 19,812,185
+FlightsClimbed         █████████████████████████████████████████▍ 9,876,659
+Sleep                  ███████████████████████████████████████▉ 5,469,021
+RespiratoryRate        ██████████████████████████████████████▉ 3,604,591
+HeartRateVariability   █████████████████████████████████████▋ 2,250,623
+OxygenSaturation       ████████████████████████████████████▉ 1,672,342
+ActivitySummary        ████████████████████████████████████▋ 1,530,301
+RestingHeartRate       ██████████████████████████████████▏ 570,414
+BloodGlucose           ██████████████████████████████████ 546,853
+WalkingHeartRate       █████████████████████████████████▏ 384,732
+Weight                 ██████████████████████████████ 113,700
+Vo2Max                 █████████████████████████████▍ 92,210
+DailyDistanceCycling   ████████████████████████████▋ 68,704
+BMI                    ████████████████████████████▋ 68,337
+BodyFatPercentage      ███████████████████████████▌ 44,719
+EnergyConsumed         ███████████████████████████▌ 44,174
+Protein                ███████████████████████████▎ 39,091
+LeanBodyMass           ███████████████████████████▎ 38,992
+Carbohydrates          ███████████████████████████▎ 38,855
+TotalFat               ███████████████████████████▏ 38,101
 Mindful                ███████████████████████████ 36,761
-DailyDistanceSwimming  ██████████████████████████ 28,248
-BodyTemperature        ██████████████████████████ 26,469
-Height                 ████████████████████████ 12,080
-BloodPressure          ████████████████████████ 10,346
-Electrocardiogram      ██████████████████████ 6,519
-BloodAlcoholContent    ████████████████ 835
-WaistCircumference     ██████████████ 346
-PeakFlow               ██ 3
-                       ╵     ╵     ╵     ╵     ╵     ╵     ╵     ╵     ╵
-                       1     10    100   1K    10K   100K  1M    10M   100M   rows (log scale)
+DailyDistanceSwimming  ██████████████████████████▍ 28,248
+BodyTemperature        ██████████████████████████▎ 26,469
+Height                 ████████████████████████▏ 12,080
+BloodPressure          ███████████████████████▊ 10,346
+Electrocardiogram      ██████████████████████▋ 6,519
+BloodAlcoholContent    █████████████████▎ 835
+WaistCircumference     ███████████████ 346
+PeakFlow               ██▉ 3
 ```
 
-Loaded for the whole cohort at once, HeartRate and StepCount exceed the default request limit of 50,000,000 rows: 
-load them in participant batches, or raise `max_rows`.
+</details>
 
-The cohort grows, so for the current numbers ask the roots themselves: `ds.compute_coverage("curated").features` gives
-the participants, rows and bytes of every feature, without reading any feature file.
+### Google Fitness coverage
 
-The public catalog has one top-level `<Feature>Loader` per unique feature: 33 accepted Apple loaders and 67 Google
-Fitness loaders, with one shared class for `Height`, `Sleep`, `StepCount`, and `Weight`. Omitted `source` remains
-Apple HealthKit for every pre-existing production loader.
+Participants with each feature:
+
+```text
+Calories                      ██████████████████████████████████████████████████ 5,558
+StepCount                     ████████████████████████████████████████████████▌ 5,394
+Weight                        ████████████████████████████████████████████████ 5,340
+Distance                      ███████████████████████████████████████████████▍ 5,267
+UnknownActivity               █████████████████████▏ 2,354
+Walking                       ████████████████████▏ 2,243
+InVehicle                     ████████████████████ 2,229
+Running                       ██████████████▊ 1,633
+Biking                        █████████▉ 1,100
+Still                         █████████▉ 1,093
+OtherActivity                 ▌ 61
+Pilates                       ▎ 34
+Sleep                         ▎ 34
+StrengthTraining              ▎ 29
+Calisthenics                  ▎ 27
+Swimming                      ▎ 21
+BikingMountain                ▏ 20
+Weightlifting                 ▏ 20
+WalkingFitness                ▏ 18
+SwimmingPool                  ▏ 17
+Yoga                          ▏ 17
+Aerobics                      ▏ 14
+Elliptical                    ▏ 11
+StairClimbing                 ▏ 11
+Hiking                        ▏ 10
+IntervalTrainingHighIntensity ▏ 10
+WalkingTreadmill              ▏ 10
+Meditation                    ▏ 9
+RunningJogging                ▏ 9
+RunningTreadmill              ▏ 8
+BikingSpinning                ▏ 7
+CircuitTraining               ▏ 7
+Gardening                     ▏ 7
+BikingUtility                 ▏ 6
+Gymnastics                    ▏ 6
+IntervalTraining              ▏ 6
+BikingStationary              ▏ 5
+Crossfit                      ▏ 5
+Dancing                       ▏ 5
+Tennis                        ▏ 5
+BikingRoad                    ▏ 4
+MartialArts                   ▏ 4
+SwimmingOpenWater             ▏ 4
+BikingHand                    ▏ 3
+Boxing                        ▏ 3
+Ergometer                     ▏ 2
+Kayaking                      ▏ 2
+Rowing                        ▏ 2
+StairClimbingMachine          ▏ 2
+Volleyball                    ▏ 2
+WalkingNordic                 ▏ 2
+Zumba                         ▏ 2
+Basketball                    ▏ 1
+GuidedBreathing               ▏ 1
+Handball                      ▏ 1
+Height                        ▏ 1
+HorsebackRiding               ▏ 1
+JumpRope                      ▏ 1
+KickScooter                   ▏ 1
+Kickboxing                    ▏ 1
+RockClimbing                  ▏ 1
+RowingMachine                 ▏ 1
+RunningSand                   ▏ 1
+SkatingCross                  ▏ 1
+SkiingCrossCountry            ▏ 1
+VolleyballBeach               ▏ 1
+VolleyballIndoor              ▏ 1
+```
+
+<details>
+<summary>Rows per feature (log scale)</summary>
+
+```text
+Calories                      ██████████████████████████████████████████████████ 4,059,476
+Walking                       ████████████████████████████████████████████████▋ 2,633,002
+StepCount                     ████████████████████████████████████████████████ 2,174,908
+UnknownActivity               ███████████████████████████████████████████████▏ 1,710,270
+Distance                      ██████████████████████████████████████████████▍ 1,369,648
+Still                         █████████████████████████████████████████████▏ 930,098
+InVehicle                     ██████████████████████████████████████████▉ 460,997
+Weight                        ████████████████████████████████████▎ 61,939
+Running                       ███████████████████████████████████▋ 51,558
+Biking                        ████████████████████████████████▌ 19,816
+OtherActivity                 ████████████████████████▏ 1,540
+Sleep                         ███████████████████████▎ 1,173
+StrengthTraining              ██████████████████▋ 286
+Pilates                       █████████████████▌ 209
+Yoga                          █████████████████▍ 198
+RunningTreadmill              █████████████████▎ 190
+Calisthenics                  █████████████████ 177
+BikingMountain                ████████████████▌ 154
+StairClimbing                 ███████████████▋ 118
+WalkingFitness                ███████████████▋ 115
+Weightlifting                 ███████████████▏ 99
+BikingSpinning                ██████████████▌ 81
+SwimmingPool                  ██████████████▍ 78
+Elliptical                    █████████████▉ 69
+Swimming                      █████████████▊ 66
+CircuitTraining               █████████████▋ 63
+IntervalTrainingHighIntensity █████████████▍ 58
+Aerobics                      ████████████▉ 51
+WalkingTreadmill              ████████████▊ 48
+BikingStationary              ████████████▋ 47
+Meditation                    ████████████ 39
+Hiking                        ███████████▏ 30
+RunningJogging                ██████████▊ 26
+WalkingNordic                 ██████████▌ 24
+Crossfit                      ██████████▏ 22
+BikingUtility                 ██████████ 21
+MartialArts                   ██████████ 21
+Tennis                        █████████▉ 20
+IntervalTraining              ████████▉ 15
+BikingRoad                    ███████▋ 10
+Gymnastics                    ███████▋ 10
+Gardening                     ███████▎ 9
+Zumba                         ██████▉ 8
+Basketball                    ██████▍ 7
+Dancing                       ██████▍ 7
+Ergometer                     █████▉ 6
+SwimmingOpenWater             █████▉ 6
+Kayaking                      █████▎ 5
+BikingHand                    ███▋ 3
+Boxing                        ███▋ 3
+Rowing                        ███▋ 3
+StairClimbingMachine          ███▋ 3
+Volleyball                    ███▋ 3
+Height                        ██▎ 2
+RockClimbing                  ██▎ 2
+GuidedBreathing               ▏ 1
+Handball                      ▏ 1
+HorsebackRiding               ▏ 1
+JumpRope                      ▏ 1
+KickScooter                   ▏ 1
+Kickboxing                    ▏ 1
+RowingMachine                 ▏ 1
+RunningSand                   ▏ 1
+SkatingCross                  ▏ 1
+SkiingCrossCountry            ▏ 1
+VolleyballBeach               ▏ 1
+VolleyballIndoor              ▏ 1
+```
+
+</details>
+
+`UnknownActivity` is an accepted Google activity label and has a public loader. `UnregisteredActivity` is a separate
+exceptional fallback for future, unknown exporter labels; it is intentionally not part of the public catalog, and
+`cohort_acceptance` surfaces it for review rather than silently accepting it.
+
+## DataLoader reference
+
+### Construct a loader
 
 ```python
-from wearable_project.DataLoaders import HeartRateLoader
+from wearable_project.DataLoaders import HeartRateLoader, StepCountLoader
 
-loader = HeartRateLoader(source="apple_healthkit", phase="curated", state_validation="auto")
-data = loader.get_data(
-    registration_codes=["10K_XXXXXXXXXX"],
-    start_date="2024-01-01",
-    end_date="2024-12-31 23:59:59",
+apple = HeartRateLoader(
+    phase="curated",
+    state_validation="required",
+)
+
+google = StepCountLoader(
+    source="google_fitness",
+    phase="native",
+    root="/path/to/another/google/native/root",
+    state_validation="required",
 )
 ```
 
-**The loader** takes these arguments:
+| Constructor argument          | Meaning                                                                                                    |
+|-------------------------------|------------------------------------------------------------------------------------------------------------|
+| `source`                      | `"apple_healthkit"` or `"google_fitness"`; omission uses the class compatibility default described above   |
+| `phase`                       | `"curated"` (default) or `"native"`                                                                        |
+| `root`                        | Override the active root for the selected phase                                                            |
+| `native_root`, `curated_root` | Override one or both phase-specific roots while keeping normal phase selection                             |
+| `state_validation`            | `"auto"` verifies when state exists; `"required"` fails without state; `"off"` skips per-file state checks |
 
-| Argument                              | Meaning                                                                                                                        |
-|---------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
-| `source`                              | `"apple_healthkit"` or `"google_fitness"`; omitted source preserves each loader's compatibility default                           |
-| `phase`                               | `"curated"` (the default) or `"native"`; both sources support both phases                                                      |
-| `root`, `native_root`, `curated_root` | Read from another source/phase root; managed-root identity must agree with the requested source                                  |
-| `state_validation`                    | `"auto"` (the default) verifies files when a state database exists; `"required"` fails without one; `"off"` skips file checks |
+Source identity is always checked for managed roots, even when `state_validation="off"`. Google curated roots must
+also provide a compatible `.curation_contract.json`, because sparse defaults and virtual fields cannot be interpreted
+safely without it.
 
-**`get_data()`** takes these arguments:
-
-| Argument                               | Meaning                                                    |
-|----------------------------------------|------------------------------------------------------------|
-| `registration_codes` (alias `reg_ids`) | Participants to read; `None` for all                       |
-| `start_date`, `end_date`               | Inclusive UTC bounds; a bare date means midnight UTC       |
-| `columns` (alias `cols`)               | Exactly these columns; overrides `projection`              |
-| `projection`                           | `"default"`, `"analysis"` or `"full"` (see below)          |
-| `default_inclusion_only`               | Curated phase only: keep only the rows included by default |
-| `max_rows`                             | Refuse larger requests (see below); `None` for no limit    |
-| `sort_index`                           | Sort by `RegistrationCode` and `Date` (the default)        |
-
-### Google Fitness native loading
-
-Google-only classes default to the Google source and the project-wide default phase of `"curated"`. Pass
-`phase="native"` when the native product is required. Shared classes preserve the established Apple source default,
-so Google use must state `source="google_fitness"`:
+### Read rows with `get_data()`
 
 ```python
-from wearable_project.DataLoaders import StepCountLoader, WalkingLoader
-
-steps = StepCountLoader(
-    source="google_fitness", phase="native", state_validation="required"
-).get_data()
-
-walking = WalkingLoader(
-    phase="native", state_validation="required"
-).get_data(projection="analysis")
+result = apple.get_data(
+    registration_codes=["10K_1235738253", "8790614327"], # prefixed or raw IDs are accepted
+    start_date="2024-01-01",
+    end_date="2024-12-31 23:59:59",
+    projection="analysis",
+    default_inclusion_only=False,
+    max_rows=5_000_000,
+)
 ```
 
-The native Google loader preserves all source rows and contexts. In particular, it retains both StepCount versions
-and every version-2 aggregation alternative. It does not apply curation roles, choose a preferred alternative, infer
-local time, or assign canonical units except the established `count` unit for StepCount.
+| `get_data()` argument            | Meaning                                                                                          |
+|----------------------------------|--------------------------------------------------------------------------------------------------|
+| `registration_codes` (`reg_ids`) | One participant or an iterable; `None` discovers all participants with that feature              |
+| `start_date`, `end_date`         | Inclusive bounds applied to the feature's mechanical `Date` anchor; bare dates mean midnight UTC |
+| `columns` (`cols`)               | Return exactly these logical columns; overrides the named projection                             |
+| `projection`                     | `"default"`, `"analysis"` or `"full"`                                                            |
+| `default_inclusion_only`         | Curated phase only: retain rows whose reviewed decision includes them by default                 |
+| `sort_index`                     | Sort by `RegistrationCode` and `Date` (default `True`)                                           |
+| `max_rows`                       | Per-call safety ceiling; default 50,000,000; `None` disables it explicitly                       |
 
-### Google Fitness curated loading
+The resulting `DataFrame` has a two-level index:
 
-Google curated products use the same public classes and default naturally to `phase="curated"`:
+```text
+RegistrationCode
+Date
+```
+
+`Date` is a source-qualified mechanical anchor, not a promise that every feature has the same temporal meaning.
+Duplicate index keys are legitimate—for example, parallel Google StepCount alternatives can share an outer timestamp.
+
+### Result metadata
+
+`LoaderData` keeps the data and its audit trail together:
+
+- `df` contains only requested rows and projected columns.
+- `df_metadata` reports returned rows, stored rows, date span, state verification, policy currency and acquisition
+  coverage for each participant present in the result.
+- `df_columns_metadata` reports every returned column's declared role, description, dtype, non-null count, registry
+  unit and reconstructed default where applicable.
+- `load_report` records source, phase, resolved root, source identity, participants, files, filters, projections,
+  withheld/undeclared columns, state verification, size estimates and source-specific contract information.
+
+`LoaderData.metadata` is a deprecated alias of `load_report` retained for older callers.
+
+### Projections and protected provenance
+
+| Projection | Returns                                                                                                                                                                  |
+|------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `default`  | Core timing, measurements/states, interpretation context, reviewed provenance and curation decisions; persistent identifiers and bulky/free-text provenance are withheld |
+| `analysis` | `default` plus source-specific audit, device, algorithm and lineage fields useful for stratified analysis; persistent identifiers remain withheld                        |
+| `full`     | Every logical column, including restricted identifiers; Google curated data also include reconstructed sparse defaults and contract-defined virtual fields               |
+
+`load_report["columns_withheld"]` lists what the projection omitted. Use `full` only for authorized provenance work
+inside the protected environment; do not use it casually for derived exports.
+
+### Native fidelity and curated inclusion
+
+Ordinary loading does not:
+
+- resample or fill time slots;
+- merge devices or sources;
+- deduplicate rows beyond what native processing already committed;
+- collapse Google StepCount alternatives;
+- infer local time when offset evidence is absent;
+- assign a canonical unit that curation deliberately withheld.
+
+Curation is non-destructive. Every curated CSV retains the same row count, row order, native prefix and parsed native
+values as its corresponding native CSV. Curation adds decisions and interpretations.
+
+`curation_status` and `include_by_default` answer different questions:
+
+- `curation_status`: `pass`, `review`, or `exclude_default`;
+- `include_by_default`: the reviewed binary decision used by `default_inclusion_only=True`.
 
 ```python
-steps = StepCountLoader(
-    source="google_fitness", state_validation="required"
-).get_data()
+from wearable_project.DataLoaders import StepCountLoader
 
-walking_default = WalkingLoader(state_validation="required").get_data(
+all_google_rows = StepCountLoader(source="google_fitness").get_data()
+default_google_rows = StepCountLoader(source="google_fitness").get_data(
     default_inclusion_only=True
 )
 ```
 
-The loader validates `.curation_contract.json`, the curated state metadata, each physical native prefix, sparse
-materialized decisions and contract-defined virtual projections. It keeps every row unless
-`default_inclusion_only=True` is requested explicitly. See
-[Google Fitness curated DataLoaders](docs/GOOGLE_FITNESS_CURATED_DATALOADERS.md).
+Apple curated files can omit dense logical defaults physically; the loader reconstructs the accepted values such as
+`acquisition_method="unclassified"`, `curation_status="pass"`, no flags and inclusion by default.
 
-### What comes back
+Google curated schema v2 stores a compact physical decision suffix and exposes deterministic virtual fields from the
+validated root contract. Missing or blank `curation_status`, `curation_flags` and `include_by_default` mean
+`"pass"`, no flags and `True`. `load_report` distinguishes stored, reconstructed, virtual and available columns.
 
-```python
-data.df                   # the rows, indexed by RegistrationCode and Date
-data.df_metadata          # per participant: returned and stored rows, date span, verification
-data.df_columns_metadata  # per column: role, description, dtype, unit
-data.load_report          # provenance: root, phase, files, filters, projection, verification, request size
-```
+### Exact reads, stable dtypes and verification
 
-- **Values come back exactly as stored.** Only empty cells are missing.
-- **Aggregation is feature- and source-specific.** Apple interval totals can contain fractional attributed shares;
-  Google activities can carry several measurements (`calories`, `distance`, and `quantity`) in one row; Google
-  StepCount can carry parallel alternatives. Ordinary loading never resamples, deduplicates, or chooses a preferred
-  representation.
-- **Dtypes are declared, not inferred,** so they never depend on which participants a call reads. Google StepCount
-  counts and payload indices use nullable `Int64`; Apple StepCount remains floating point because fractional values
-  are legitimate. Controlled labels are categorical, persistent identifiers are strings, and UTC instants remain
-  timezone-aware.
-- **`Date` is a mechanical, source-qualified index anchor.** Apple normally uses `start_date` and ActivitySummary
-  uses `datetime`; Google activities/Sleep/Calories/Distance use `start_date`, Weight/Height use `end_date`, and
-  StepCount uses `outer_datetime`. The Google StepCount anchor is not a claimed canonical event day.
-- **Schemas remain source-specific.** Apple participant files can carry different sparse physical columns; Google
-  native files follow registered schemas and Google curated files expand to a contract-defined logical schema. Pass
-  `columns=[...]` for an explicit returned schema.
-- **A file is read exactly or not at all.** If reading it would change what it says, `DataLoaderReadError` names the
-  file and, where there is one, the row and value.
-- **What a call could not deliver is reported** in `load_report`: requested participants without a folder, or
-  without a file for the feature, and recorded files missing from disk.
+The loader is deliberately stricter than a normal `pandas.read_csv()` call:
 
-### Projections
+- only empty cells become missing; literal text such as `"None"` stays text;
+- floating-point values use round-trip parsing;
+- duplicate headers, malformed row widths, invalid numeric/Boolean values and malformed timestamps fail loudly;
+- declared dtypes are applied after participant concatenation, so one-participant and cohort loads agree;
+- controlled vocabularies are categorical, whole-number fields use nullable `Int64`, Booleans use pandas Boolean
+  dtypes, persistent identifiers remain strings, and instants remain timezone-aware UTC;
+- Apple StepCount remains floating point because fractional attributed shares are legitimate;
+- Google StepCount values and payload indices use nullable `Int64`.
 
-A projection is a named set of columns. Its roles are source-qualified:
+Before date, inclusion or projection filters are applied, managed files are checked against source-specific state:
 
-| Projection   | Returns                                                                                                                                                      |
-|--------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `"default"`  | Core timing, measurements/states, and interpretation context; excludes persistent identifiers and bulky/free-text provenance                               |
-| `"analysis"` | The default plus source-specific audit, device and lineage fields that are useful for stratified analysis; persistent identifiers remain withheld                |
-| `"full"`     | Every logical column; for Google curated data this includes reconstructed sparse defaults and contract-defined virtual fields, plus restricted identifiers |
+- every file: filename, byte size, SHA-256 and row count;
+- Apple curated files: curation status, inclusion, acquisition method and flag counts;
+- Google curated files: root contract, policy fingerprint, active physical columns, status/inclusion/provenance,
+  StepCount-role and unit counters, and canonical-value count.
 
-`load_report["columns_withheld"]` lists what a projection left out.
+The state database is opened read-only. Loading refuses active SQLite sidecars, source/phase conflicts, unsafe
+participant paths and malformed managed-state evidence. A mismatch raises `DataLoaderStateError` before data are
+returned.
 
-### Curated columns and default inclusion
+### Time semantics
 
-Curation never alters native data, which is the non-destructive contract. Every curated file has the same rows, in
-the same order, with the same native prefix and values. Source-specific curation then adds reviewed decisions and,
-where established, canonical/unit interpretations.
+HealthKit and Google Fitness define feature semantics, not one universal sample cadence. The loader preserves the
+stored timestamps and does not hard-code assumptions such as "StepCount is always hourly" or "HeartRate is always
+one-minute data".
 
-Apple can physically store columns such as `canonical_value`, `canonical_unit`, `curation_unit_status`,
-`unit_evidence`, `unit_epoch_id`, `acquisition_method`, `curation_status`, `curation_flags` and
-`include_by_default`. Google schema v2 stores a compact ordered decision suffix and exposes deterministic
-canonical/provenance fields virtually from the root contract.
+| Source / feature family                      | Mechanical `Date` anchor | Interpretation                                                                         |
+|----------------------------------------------|--------------------------|----------------------------------------------------------------------------------------|
+| Apple ordinary point/interval features       | `start_date`             | Event/interval start in UTC                                                            |
+| Apple `ActivitySummary`                      | `datetime`               | Outer summary timestamp; not silently converted into a canonical local day             |
+| Google activities, Sleep, Calories, Distance | `start_date`             | Source interval start in UTC                                                           |
+| Google Weight, Height                        | `end_date`               | Source reading-interval end                                                            |
+| Google StepCount                             | `outer_datetime`         | Outer summary timestamp shared across versions/alternatives; not a canonical event day |
 
-`curation_status` (`pass`, `review` or `exclude_default`) and `include_by_default` (`True` or `False`) answer
-different questions. Loaders return every row, and the default subset must be asked for explicitly:
-
-```python
-from wearable_project.DataLoaders import WeightLoader
-
-df = WeightLoader().get_data(default_inclusion_only=True).df
-```
-
-Apple curated files store their dense logical defaults sparsely; the Apple loader restores the accepted defaults,
-including `acquisition_method="unclassified"`, `curation_status="pass"`, no flags and inclusion by default.
-
-Google schema v2 has a different physical/virtual contract. `acquisition_method` is fixed, StepCount physically
-stores `step_count_role`, and missing or blank `curation_status`, `curation_flags` and `include_by_default` mean
-`"pass"`, no flags and `True`. Canonical/unit/provenance projections are reconstructed from the validated root
-contract. Missing canonical units remain missing where mapping is deliberately withheld.
-
-### Verification
-
-Before any filter is applied, the requested source is checked against managed-root identity, and each file is
-checked against the phase's state database:
-
-- **Every file:** SHA-256, size and row count.
-- **Apple curated files, in addition:** status, inclusion, acquisition-method and flag counts.
-- **Google curated files, in addition:** the root contract, policy fingerprint, active physical columns, all status,
-  inclusion, provenance, StepCount-role and unit counters, and canonical-value count.
-
-A disagreement, or a file the database does not record, raises `DataLoaderStateError`.
-
-- **Samples without a database** load under `"auto"`, with `load_report["state_verified"]` and source verification
-  reported separately. A known managed-root source mismatch is rejected even under `state_validation="off"`.
-- **Apple files curated under an older policy** load with a warning, preserving their stored decisions until the
-  root is rebuilt. **Google schema-v2 contract or per-file policy mismatches are rejected**, because virtual fields
-  must not be recomputed under a different scientific contract.
-- **The database is opened read-only,** so loading never writes into the data tree. It refuses to verify while a
-  processing or curation run is in progress, or after an unclean shutdown.
-
-### Size limit
-
-`get_data()` refuses requests above `max_rows` rows, 50,000,000 by default, raising `DataLoaderSizeError`. Near the
-limit, one call can use roughly 20 to 60 GB at peak. Where the state database gives exact counts, an oversized
-request is refused before any file is parsed. The request size is in `load_report["size_estimate"]`.
-
-```python
-from wearable_project.DataLoaders import AppleHealthFeatureLoader
-
-HeartRateLoader().get_data(max_rows=5_000_000)       # this call
-AppleHealthFeatureLoader.default_max_rows = None     # the whole session: no limit
-```
+Google `summary_date` remains a timezone-naive calendar label. It is not converted to midnight UTC and is not used
+as the default index.
 
 ### Local time and harmonized values
 
-Stored timestamps are UTC. Two helpers add derived columns and keep the originals:
+Derived helpers return a new `LoaderData` and preserve the stored columns:
 
 ```python
-from wearable_project.DataLoaders import SleepLoader
+from wearable_project.DataLoaders import SleepLoader, WeightLoader
 
-sleep = SleepLoader().get_data().with_local_time().df        # adds start_date_local, end_date_local
-weight = WeightLoader().get_data().with_harmonized_values().df
+apple_sleep = SleepLoader().get_data().with_local_time()
+apple_weight = WeightLoader().get_data().with_harmonized_values()
+google_weight = WeightLoader(source="google_fitness").get_data().with_harmonized_values()
 ```
 
-- **`with_local_time()`** uses Apple row-level `utc_offset_minutes`. Google native products do not retain equivalent
-  offset evidence, so the helper refuses to invent local time.
-- **`with_harmonized_values()`** adds `harmonized_value`, `harmonized_unit` and `harmonized_unit_source`. Existing
-  Apple behavior is unchanged. Google native StepCount resolves to `count`; Calories, Distance, Weight, and Height
-  remain unresolved until the exporter-to-official-type mapping is accepted; multi-measurement activities reject
-  the singular helper.
+- `with_local_time()` uses Apple row-level `utc_offset_minutes` to add timezone-naive local wall-clock columns.
+  Google products do not retain equivalent row-level offsets, so the helper refuses to invent them.
+- `with_harmonized_values()` adds `harmonized_value`, `harmonized_unit` and `harmonized_unit_source` according to
+  the selected source's accepted policy.
+- Google StepCount resolves to `count`.
+- Google Calories, Distance, Weight and Height remain unresolved until the exporter-to-official-type mapping is
+  accepted; proposed official units are evidence, not canonical output.
+- Google activity rows can contain `calories`, `distance` and `quantity` together, so the singular harmonization
+  helper is intentionally inapplicable.
 
-### Profiling a root before loading
+### Profile before loading and control large requests
 
-`profile()` describes what a root holds for a feature, from the state database and one file `stat` per file,
-without parsing any CSV:
+`profile()` is the normal first step for dense features:
 
 ```python
-print(HeartRateLoader().profile())
-profile = WeightLoader().profile(registration_codes=["10K_XXXXXXXXXX"])
-profile.summary          # rows, files, bytes, and in the curated phase status, inclusion and unit coverage
-profile.participants     # one row per participant
+from wearable_project.DataLoaders import HeartRateLoader
+
+loader = HeartRateLoader(state_validation="required")
+profile = loader.profile()
+print(profile)
+
+# Filter or batch before materializing a very large frame.
+participant_batch = profile.participants.index[:50].tolist()
+data = loader.get_data(registration_codes=participant_batch)
 ```
+
+`get_data()` refuses requests above 50,000,000 rows by default and raises `DataLoaderSizeError`. Where state provides
+exact counts, refusal occurs before a CSV is parsed. Full-cohort Apple HeartRate (275,540,794 rows) and StepCount
+(60,014,907 rows) exceed this default; load them in participant/date batches or pass an explicit `max_rows` override
+for a suitably provisioned job.
+
+```python
+loader.get_data(max_rows=150_000_000)  # explicit high-memory decision for this call
+loader.get_data(max_rows=None)         # explicit removal of the per-call ceiling
+```
+
+The conservative package default is intentional and should not be raised merely because one cluster has high memory.
 
 ### Errors
 
 All loader errors derive from `DataLoaderError`:
 
-| Error                          | Raised when                                                                                                  |
-|--------------------------------|--------------------------------------------------------------------------------------------------------------|
-| `DataLoaderConfigurationError` | An invalid phase, filter or option is given                                                                  |
-| `DataLoaderSourceError`        | A feature is unavailable for the requested source, or a managed root belongs to another source               |
-| `DataLoaderPathError`          | The configured data root is unavailable                                                                      |
-| `DataLoaderReadError`          | A file cannot be read exactly, or the system refuses to let you read it;                                     |
-| `DataLoaderStateError`         | A file disagrees with its state database, or the database does not record it, or the database cannot be read |
-| `DataLoaderSizeError`          | A call would return more than `max_rows` rows                                                                |
+| Error                          | Raised when                                                                          |
+|--------------------------------|--------------------------------------------------------------------------------------|
+| `DataLoaderConfigurationError` | A phase, source, filter, projection, column or option is invalid                     |
+| `DataLoaderSourceError`        | A feature is unavailable for the source, or a managed root belongs to another source |
+| `DataLoaderPathError`          | The configured root is unavailable or unsafe                                         |
+| `DataLoaderReadError`          | A CSV cannot be read exactly, or permissions prevent reading it                      |
+| `DataLoaderStateError`         | Managed files, state, policy or root contracts disagree                              |
+| `DataLoaderSizeError`          | A request exceeds `max_rows`                                                         |
 
-### Help on a feature
+## Source-specific scientific contracts
 
-```python
-print(DataLoaders.info())                                   # production Apple loading contract
-print(DataLoaders.info("Sleep", include_evidence=True))     # one Apple feature, with its evidence
-print(HeartRateLoader(phase="native").info())               # the same, for this loader's phase and root
-print(DataLoaders.info("StepCount", source="google_fitness", include_evidence=True))
-print(DataLoaders.available_features(source="google_fitness"))
-print(DataLoaders.available_sources("StepCount"))
+### Apple HealthKit
+
+The 33 established public Apple loaders preserve production behavior from earlier releases.
+
+- Quantity samples retain their original point or interval support; no fixed cadence is inferred from the feature
+  name or unit.
+- Cumulative quantities such as StepCount, distance and energy are interval totals. Apple StepCount is `float64`
+  because attributed/reconciled rows can be fractional.
+- HeartRate and other discrete quantities can be points or short source-defined intervals. `beats/min` is a unit,
+  not a promise that each row covers one minute.
+- Sleep is a variable-duration state interval. `ActivitySummary` is a calendar-summary product with separate time
+  semantics. ECG records retain session timing and waveform sampling metadata.
+- Row-level UTC offsets support `with_local_time()`.
+- Apple curation can physically materialize canonical values, units, unit evidence and unit epochs where policy
+  resolution succeeds.
+
+Use `DataLoaders.info(feature, source="apple_healthkit", include_evidence=True)` for the full row meaning, unit
+policy, caveats and evidence for one feature.
+
+### Google Fitness
+
+Google output features fall into five loader schema families:
+
+| Family             | Features                      | Row meaning                                                   | Main measurements/state                                 | `Date` anchor    |
+|--------------------|-------------------------------|---------------------------------------------------------------|---------------------------------------------------------|------------------|
+| Activity intervals | 61 registered activity labels | One retained activity/state interval                          | `calories`, `distance`, `quantity`, tracking/provenance | `start_date`     |
+| Sleep              | `Sleep`                       | One retained sleep-state interval                             | categorical `value` plus optional activity measurements | `start_date`     |
+| Scalar intervals   | `Calories`, `Distance`        | One source interval total/value                               | `value`, source day label, version                      | `start_date`     |
+| Anthropometrics    | `Weight`, `Height`            | One point or retained source interval                         | `value`, adding application, version                    | `end_date`       |
+| Step count         | `StepCount`                   | One version-1 scalar or one version-2 aggregation alternative | `value`, `raw_value`, aggregation/app/device context    | `outer_datetime` |
+
+#### Google StepCount representations
+
+The loader keeps every representation. Curation adds a reviewed `step_count_role` rather than deleting alternatives:
+
+```text
+legacy_v1
+fit_app_preferred
+merge_fallback
+third_party_fallback
+parallel_nonpreferred
+ambiguous_parallel
 ```
 
-A feature report explains:
-- what one row is, and its time anchor;
-- which columns each projection returns;
-- its units in each phase;
-- its curation policy;
-- how its files are verified;
-- its dtypes and caveats;
-- runnable examples.
+`default_inclusion_only=True` selects the reviewed default subset. It does not rewrite the curated product or merge
+version 1 with version 2.
 
-`info()` is source-aware and static: it reads executable package contracts but never a data root. `profile()`
-reports what a particular managed root holds without parsing feature CSVs. The internal boundary and compatibility
-rationale are documented in [`docs/DATALOADER_SOURCE_AWARE_FOUNDATION.md`](docs/DATALOADER_SOURCE_AWARE_FOUNDATION.md)
-and the completed architecture audit in
-[`docs/DATALOADER_FRAMEWORK_AUDIT.md`](docs/DATALOADER_FRAMEWORK_AUDIT.md).
+#### Google units
+
+| Feature    | Current accepted loader behavior                               |
+|------------|----------------------------------------------------------------|
+| StepCount  | Canonical/harmonized `count`                                   |
+| Calories   | Candidate `kcal` documented; canonical mapping withheld        |
+| Distance   | Candidate `m` documented; canonical mapping withheld           |
+| Weight     | Candidate `kg` documented; canonical mapping withheld          |
+| Height     | Candidate `m` documented; canonical mapping withheld           |
+| Activities | Multiple measurement dimensions; no singular harmonized scalar |
+
+Detailed contracts are available in
+[`docs/GOOGLE_FITNESS_NATIVE_DATALOADERS.md`](docs/GOOGLE_FITNESS_NATIVE_DATALOADERS.md) and
+[`docs/GOOGLE_FITNESS_CURATED_DATALOADERS.md`](docs/GOOGLE_FITNESS_CURATED_DATALOADERS.md).
 
 ## Statistics, metrics, figures and reports
 
-The source-aware DataLoaders in 0.4.0 read Apple HealthKit and Google Fitness independently. The higher-level
-`data_statistics`, `data_summaries`, `domain_metrics`, and `data_plots` workflows below remain Apple HealthKit
-analytical contracts: they depend on Apple row-level UTC offsets, feature semantics, and unit policies. They do
-not merge Apple and Google observations, select a preferred source, deduplicate across sources, or reinterpret
-Google Fitness as Apple data. Cross-source harmonization is a separate later layer.
+The source-aware DataLoaders read Apple and Google independently. The higher-level modules below remain **Apple
+HealthKit analytical contracts** in 0.4.0 because they depend on Apple local-time evidence, feature semantics and
+unit policies. They do not merge sources or reinterpret Google data as Apple data.
+
+| Module            | Main outputs                                                                        |
+|-------------------|-------------------------------------------------------------------------------------|
+| `data_statistics` | Coverage, participant-day statistics, valid-day rules and reproducible written runs |
+| `data_summaries`  | Adherence, participant/cohort summaries and temporal patterns                       |
+| `domain_metrics`  | Sleep-by-night, CGM consensus metrics and ambulatory glucose profiles               |
+| `data_plots`      | Traceable matplotlib figures and PDF reports                                        |
 
 ```python
-from wearable_project.utils import data_statistics as ds, data_summaries as sm
-from wearable_project.utils import domain_metrics as dm, data_plots as dp
-```
+from wearable_project import utils
+from wearable_project.utils import data_statistics as ds
+from wearable_project.utils import data_summaries as sm
+from wearable_project.utils import domain_metrics as dm
+from wearable_project.utils import data_plots as dp
 
-| Module            | Provides                                                                                                                                                   |
-|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `data_statistics` | Coverage of the cohort, from `profile()` without parsing files; daily statistics per participant and local day                                             |
-| `data_summaries`  | Valid days, adherence and retention, participant and cohort summaries (Table 1), weekly and hourly patterns, time zones, data quality, clinical thresholds |
-| `domain_metrics`  | Sleep by noon-to-noon night, CGM consensus metrics, the ambulatory glucose profile                                                                         |
-| `data_plots`      | 52 figures, and PDF reports                                                                                                                                |
-
-```python
-coverage = ds.compute_coverage("curated")               # participants, rows and bytes per feature
-daily = ds.compute_daily_statistics("curated", participants=["10K_XXXXXXXXXX"])
-daily.daily["StepCount"]                                 # one row per participant and local day
-
+# Apple HealthKit analytical workflow.
+daily = ds.compute_daily_statistics(
+    "curated",
+    features=["StepCount", "HeartRate"],
+    participants=["10K_1235738253"],
+)
 summaries = sm.summarize(daily)
-summaries.cohort                                         # Table 1, counting each participant once
-patterns = sm.temporal_patterns(daily)                   # day of week, weekday and weekend, month
+metrics = dm.compute_domain_metrics("curated", participants=["10K_1235738253"])
+figure = dp.plot_daily_values(daily, "StepCount", participant="10K_1235738253")
+dp.report(daily, "report.pdf", domain=metrics)
 
-metrics = dm.compute_domain_metrics("curated", participants=["10K_XXXXXXXXXX"])
-metrics.sleep_nights                                     # one row per participant and night
-metrics.cgm_periods                                      # CGM metrics, one row per participant
-
-figure = dp.plot_daily_values(daily, "StepCount", participant="10K_XXXXXXXXXX")
-figure.data                                              # the exact table the figure draws
-dp.report(daily, "report.pdf", domain=metrics)           # the standard figures in one PDF
+utils.info("compute_daily_statistics")
+utils.info("valid days")
+utils.info("defaults")
 ```
 
-**How the statistics work:**
-- **Days are the participant's local calendar days,** from each row's UTC offset.
-- **Values combine as their feature requires.** Totals are summed and split at midnight in proportion; levels are
-  described, never summed.
-- **Time is counted once** when several devices record it.
-- **Summaries use valid days only.** Each feature has a valid-day rule, and `rules=` overrides it.
-- **Every threshold and rule is a named constant.** `utils.info("defaults")` shows each one's value, source and
-  basis.
+Key analytical rules:
 
-**Outputs:**
-- **Nothing is written unless asked.** Results are returned in memory; `out=` writes a run to a folder, and `path=`
-  saves a figure.
-- **A written run** is crash-safe, resumable (`resume=True`) and reproducible byte for byte, apart from the times in
-  its `run.json`. Every summary and figure function accepts the run's folder in place of the in-memory result.
-- **At cohort scale,** compute once into a folder, and use `workers=` to process participants in parallel:
-  ```bash
-  python -m wearable_project.utils.data_statistics daily --phase curated --out runs/daily --workers 8
-  ```
+- days are participant-local Apple calendar days recovered from each row's UTC offset;
+- extensive totals are summed and split at midnight in proportion; intensive levels are summarized, never summed;
+- overlapping device time is counted once;
+- summaries use feature-specific valid-day rules;
+- results stay in memory unless `out=` or `path=` is supplied;
+- written runs are crash-safe, resumable and reproducible apart from timestamps in `run.json`.
 
-**Figures:**
-- **Figures for sharing:** `min_participants=` hides any aggregate resting on fewer participants, and removes it from
-  `figure.data` too. Participant identifiers appear only with `show_ids=True`.
-- **Figures never need a display.** Each is a matplotlib `Figure`, saved when given `path=`.
-
-### Help on the tools
-
-`utils.info()` explains every function, figure, parameter, output table and column. It also explains the concepts
-the tools rest on, every default with its source, and complete workflows as runnable code:
-
-```python
-utils.info()                          # the map: modules, pipeline, tools by question
-utils.info("plot_agp")                # one figure: what it shows, options, its data
-utils.info("min_participants")        # one parameter, and every tool that takes it
-utils.info("DomainMetrics.sleep_nights")  # one output table, column by column
-utils.info("valid days")              # one concept, with the rules in force
-utils.info("defaults")                # every threshold and rule, with its source
-utils.info("shareable report")        # one workflow, as code
-utils.info("jetlag")                  # anything else: a ranked search
-```
-
-From a shell: `python -m wearable_project.utils.info plot_agp`, with `--json` for structured output.
-
-## Processing and curation from the command line
+At cohort scale, compute once into a run folder and use workers:
 
 ```bash
-wearable-project process-scan --input /data/exports --output /data/native --workers 16   # what a run would do
-wearable-project process --input /data/exports --output /data/native --workers 8
-wearable-project curate --input-native /data/native --output /data/curated --workers 8 --max-in-flight 8
-wearable-project run --input /data/exports --native-output /data/native --curated-output /data/curated
+python -m wearable_project.utils.data_statistics daily \
+  --phase curated --out runs/daily --workers 8
 ```
 
-- **Runs are incremental.** Unchanged participants are skipped, changed ones are updated or rebuilt, and every commit
-  is atomic. `--mode rebuild` rebuilds everything (for `run`: `--native-mode`, `--curation-mode`). `--json-summary`
-  prints the run's report as JSON.
-- **`process-scan` is read-only.** It never creates or changes anything. It exits with 0 when no work is needed, 3
-  with `--fail-if-work-needed` when some is, and 1 on a blocking or planning error.
-- **The roots must be distinct and not nested.** `--input-native` must be a native root: a curated root is refused,
-  by its state database or by its curation columns. `--allow-unmanaged-native-root` admits a native copy without a
-  state database.
+## Processing and curation for data engineers
 
-| Command                                                   | Purpose                                                                        |
-|-----------------------------------------------------------|--------------------------------------------------------------------------------|
-| `process`, `process-scan`, `run`                          | Build or update the native root; plan a run; process then curate               |
-| `curate`                                                  | Build or update the curated root from a native root                            |
-| `report`, `curation-report`                               | Read a persisted processing or curation report (`--json`, `--include-details`) |
-| `processing-environment`, `curation-environment`          | The imported source, versions and module integrity                             |
-| `registry`, `curation-registry`                           | The native processing policies; the curation policy matrix                     |
-| `describe-feature`, `explain-rule`, `explain-unit-policy` | Explain a feature, a curation rule, a unit policy                              |
-| `evidence`, `policy-decisions`                            | The evidence catalog; the versioned calibration decisions                      |
-| `curation-audit`                                          | A read-only policy-calibration audit of a native root                          |
+Most users should not rebuild the permanent products. This section is for maintainers working from the cumulative
+monthly HPP export.
 
-`wearable-project <command> --help` gives each command's options. `python -m wearable_project` is equivalent to
-`wearable-project`.
+```text
+mixed raw export
+   ├── process apple-healthkit ──▶ managed Apple native root ──▶ curated Apple root
+   └── process google-fitness  ──▶ managed Google native root ─▶ curated Google root
+                                              │
+                                     source-aware DataLoaders
+```
 
-## Checking the cohort
+Each processor reads only its own rows from the mixed export. Native processing writes one file per participant and
+feature and records lineage, counts and hashes in `.wearable_state.sqlite`. Curation writes an independent root,
+preserves all native rows/values, and records decisions in `.wearable_curation_state.sqlite`.
 
-The test suites run on a small representative sample. `cohort_acceptance` checks one selected source's real roots
-for what only the full cohort can show. Omitting `--source` remains Apple-compatible:
+### Apple HealthKit pipeline
 
 ```bash
-python -m wearable_project.utils.cohort_acceptance \
-  --source apple_healthkit \
-  --participants 50 --seed 1 --out ~/acceptance/apple
+RAW=/path/to/exported-at-YYYY-MM
+APPLE_NATIVE=/path/to/cleaned_apple_healthkit
+APPLE_CURATED=/path/to/curated_apple_healthkit
 
-python -m wearable_project.utils.cohort_acceptance \
-  --source google_fitness \
-  --participants 50 --seed 1 --out ~/acceptance/google
+wearable-project process apple-healthkit \
+  --input "$RAW" --output "$APPLE_NATIVE" \
+  --workers 32 --max-in-flight 32 \
+  --snapshot-policy strict-cumulative \
+  --verify-existing-hashes --json-summary
+
+wearable-project curate apple-healthkit \
+  --input-native "$APPLE_NATIVE" --output "$APPLE_CURATED" \
+  --workers 32 --max-in-flight 32 \
+  --verify-existing-hashes --json-summary
 ```
 
-1. **It profiles every feature in both phases,** from the state databases only. It fails on unrecorded files and
-   size mismatches, and on phases that disagree on a participant's rows.
-2. **It loads every feature in both phases** for a seeded random set of participants, with verification required,
-   and checks dtypes, declared types and both helpers.
-3. **It checks that the roots' group can read every file, folder, state database, and required root contract.** A
-   run by the data owner, who can read everything, would otherwise pass while colleagues are refused.
+Apple also provides the combined command:
 
-It writes `cohort_acceptance.txt` and `cohort_acceptance.json` to `--out`, and exits with 0 when nothing failed, 1
-when a check failed, and 2 for invalid arguments. `--features` is validated against the selected source,
-`--participants 0` loads every participant who has the chosen features, and `--native` and `--curated` point to
-other roots. The JSON report records `wearable_source` so Apple and Google evidence cannot be confused.
+```bash
+wearable-project run apple-healthkit \
+  --input "$RAW" \
+  --native-output "$APPLE_NATIVE" \
+  --curated-output "$APPLE_CURATED" \
+  --workers 32 --max-in-flight 32 \
+  --snapshot-policy strict-cumulative \
+  --verify-existing-hashes --json-summary
+```
+
+### Google Fitness pipeline
+
+```bash
+RAW=/path/to/exported-at-YYYY-MM
+GOOGLE_NATIVE=/path/to/cleaned_google_fitness
+GOOGLE_CURATED=/path/to/curated_google_fitness
+
+wearable-project process google-fitness \
+  --input "$RAW" --output "$GOOGLE_NATIVE" \
+  --workers 32 --max-in-flight 32 \
+  --snapshot-policy strict-cumulative \
+  --verify-existing-hashes --json-summary
+
+wearable-project curate google-fitness \
+  --input-native "$GOOGLE_NATIVE" --output "$GOOGLE_CURATED" \
+  --workers 32 --max-in-flight 32 \
+  --verify-native-hashes --verify-existing-hashes --json-summary
+```
+
+There is no combined `run google-fitness` command in 0.4.0; run the two explicit stages above.
+
+### Operational guarantees and inspection commands
+
+- Runs are participant-transactional and atomic. Workers stage outputs; the parent process publishes a complete
+  participant directory and commits state only after validation.
+- Unchanged participants are skipped; changed participants are recomputed from their complete retained source
+  history. `--mode rebuild` rebuilds everything.
+- `strict-cumulative` blocks missing committed months and rebuilds when historical input changes.
+- Native and curated roots must be distinct and must not be nested.
+- `process-scan <source>` is read-only and reports the next plan without creating or changing files.
+- `--json-summary` emits the complete machine-readable run report.
+
+```bash
+wearable-project process-scan apple-healthkit --input "$RAW" --output "$APPLE_NATIVE"
+wearable-project process-scan google-fitness --input "$RAW" --output "$GOOGLE_NATIVE"
+wearable-project processing-environment apple-healthkit
+wearable-project processing-environment google-fitness
+wearable-project curation-environment apple-healthkit
+wearable-project curation-environment google-fitness
+```
+
+Use `wearable-project <command> --help` for all options. `python -m wearable_project` is equivalent to the console
+command.
+
+## Cohort acceptance and release qualification
+
+`cohort_acceptance` is the full-product DataLoader gate. It is source-aware and complements the unit/representative
+sample test suite.
+
+It:
+
+1. profiles every public feature in native and curated state without parsing CSVs;
+2. closes the complete state/disk inventory and surfaces non-public fallbacks or unexpected products;
+3. loads every observed feature for a deterministic, feature-specific participant sample;
+4. verifies exact sampled row counts, schemas, dtypes, helpers and native/curated agreement;
+5. optionally recomputes every state-recorded file SHA-256 independently of the sample;
+6. validates group ownership and read/search access for roots, participant folders, state databases and required
+   support contracts.
+
+### Permanent-root gate
+
+Run the checked-in wrapper from the repository root:
+
+```bash
+set -euo pipefail
+
+export LAB_GROUP=segalg
+export APPLE_NATIVE=/path/to/cleaned_apple_healthkit
+export APPLE_CURATED=/path/to/curated_apple_healthkit
+export GOOGLE_NATIVE=/path/to/cleaned_google_fitness
+export GOOGLE_CURATED=/path/to/curated_google_fitness
+export PARTICIPANTS=50
+export SEED=1
+export HASH_WORKERS=16
+export OUT=/path/outside/the/data/acceptance_0_4_0
+
+bash scripts/release_0_4_0/RUN_FULL_COHORT_GATES.sh \
+  2>&1 | tee "$OUT.run.log"
+```
+
+The wrapper invokes both sources with `--verify-all-hashes`, `--required-group` and `--fail-on-warnings`. Stable
+release evidence requires, for both reports:
+
+```json
+{
+  "verdict": "PASS",
+  "release_gate_verdict": "PASS",
+  "findings": []
+}
+```
+
+`--participants 50` means up to 50 participants independently for each observed feature and phase. Rare features are
+therefore loaded fully, while `--verify-all-hashes` still covers every committed file. Use `--participants 0` only
+when every stored row must also be parsed.
+
+The final 5 November 2026 permanent-root run passed both sources with zero failures and zero warnings and verified:
+
+```text
+Apple native + curated: 46,670 files, 211.8 GB
+Google native + curated: 65,414 files, 3.53 GB
+Combined:                112,084 files, 215.3 GB, 0 hash failures
+```
+
+### Python and pandas compatibility gate
+
+Package metadata declares Python 3.10+ and pandas 2.0+. Before publishing a stable wheel, execute the full suite and
+installed-wheel smoke test in the supported matrix:
+
+| Python | pandas                     | Purpose                           |
+|--------|----------------------------|-----------------------------------|
+| 3.10   | 2.0.x                      | Oldest declared boundary          |
+| 3.12   | 2.1.x                      | Historical laboratory environment |
+| 3.12   | 2.2.x                      | Current pandas 2.x behavior       |
+| 3.12   | 3.0.x                      | pandas 3 timestamp/dtype behavior |
+| 3.13   | 2.2.x or current supported | Newest Python/build environment   |
+
+Use the checked-in isolated runner for one matrix row:
+
+```bash
+PYTHON=/path/to/python3.12 \
+PANDAS_SPEC='pandas==2.2.*' \
+WEARABLE_NATIVE_SAMPLE=/path/to/cleaned_apple_healthkit \
+WEARABLE_CURATED_SAMPLE=/path/to/curated_apple_healthkit \
+WEARABLE_GOOGLE_NATIVE_SAMPLE=/path/to/cleaned_google_fitness \
+WEARABLE_GOOGLE_CURATED_SAMPLE=/path/to/curated_google_fitness \
+scripts/release_0_4_0/RUN_COMPATIBILITY_ENV.sh
+```
+
+### Build and release-integrity gate
+
+After every tracked source change and before building final artifacts:
+
+```bash
+python -m wearable_project.utils.regenerate_manifest --write --release-label 0.4.0
+python -m wearable_project.utils.regenerate_manifest --check --release-label 0.4.0
+python -m pip install --upgrade build
+python -m build
+```
+
+Install both wheel and source distribution outside the checkout, run representative Apple and Google loads, and
+record SHA-256 digests for source archive, wheel, source distribution, test evidence and cohort reports.
+
+## Repository layout and developer documentation
+
+```text
+wearable_project/
+├── wearable_project/
+│   ├── DataLoaders/                 # 96 top-level feature modules and the shared source-aware engine
+│   │   ├── apple_healthkit/         # Internal Apple contracts, state, schemas, units, derived behavior and info
+│   │   ├── google_fitness/          # Internal Google contracts, schema-v2 virtual fields, units and info
+│   │   ├── _base.py                 # Exact reads, filtering, verification, projections and size protection
+│   │   ├── _contracts.py            # Source-neutral adapter and feature/root contracts
+│   │   ├── _sources.py              # Source catalogs, default roots and managed-root identity
+│   │   └── info.py                  # Source-aware static discovery and feature reports
+│   ├── processing/
+│   │   ├── apple_healthkit/
+│   │   └── google_fitness/
+│   ├── curation/
+│   │   ├── apple_healthkit/
+│   │   └── google_fitness/
+│   ├── utils/                       # Apple analytical utilities plus source-aware cohort acceptance
+│   ├── cli.py
+│   └── exceptions.py
+├── tests/
+├── docs/
+├── README.md
+├── LICENSE
+└── pyproject.toml
+```
 
 ## Running the tests
 
 ```bash
 python -m pip install -e ".[dev]"
-export WEARABLE_NATIVE_SAMPLE=/path/to/native_sample
-export WEARABLE_CURATED_SAMPLE=/path/to/curated_sample
-export WEARABLE_GOOGLE_NATIVE_SAMPLE=/path/to/google_native_sample
-export WEARABLE_GOOGLE_CURATED_SAMPLE=/path/to/google_curated_sample
+
+export WEARABLE_NATIVE_SAMPLE=/path/to/cleaned_apple_healthkit
+export WEARABLE_CURATED_SAMPLE=/path/to/curated_apple_healthkit
+export WEARABLE_GOOGLE_NATIVE_SAMPLE=/path/to/cleaned_google_fitness
+export WEARABLE_GOOGLE_CURATED_SAMPLE=/path/to/curated_google_fitness
+
 python -m pytest -rs
 ```
 
-Tests that need the sample roots are skipped without them, and `-rs` shows why a test was skipped. The Parquet
-tests need pyarrow.
+Tests that require sample roots are skipped when the corresponding environment variable is absent; `-rs` reports
+why. Parquet tests additionally require `pyarrow`.
 
 ## License
 

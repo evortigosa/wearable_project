@@ -20,7 +20,10 @@ from wearable_project.DataLoaders._sources import (
     features_for_source, normalize_source, probe_root_identity,
 )
 from wearable_project.DataLoaders.HeartRateLoader import HeartRateLoader
+from wearable_project.DataLoaders.HeightLoader import HeightLoader
+from wearable_project.DataLoaders.SleepLoader import SleepLoader
 from wearable_project.DataLoaders.StepCountLoader import StepCountLoader
+from wearable_project.DataLoaders.WeightLoader import WeightLoader
 from wearable_project.curation.apple_healthkit.registry import COHORT_OBSERVED_FEATURES
 from wearable_project.exceptions import DataLoaderConfigurationError, DataLoaderSourceError
 from wearable_project.processing.google_fitness.registry import (
@@ -97,6 +100,15 @@ def test_existing_loader_defaults_remain_apple_healthkit():
     assert "date_column" not in loader.__dict__
     assert "date_semantics" not in loader.__dict__
     assert isinstance(loader, AppleHealthFeatureLoader)
+
+
+def test_shared_loader_modules_document_both_source_contracts():
+    for cls in (HeightLoader, SleepLoader, StepCountLoader, WeightLoader):
+        module = sys.modules[cls.__module__]
+        documentation = module.__doc__ or ""
+        assert "Source-aware" in documentation
+        assert "Apple HealthKit" in documentation
+        assert 'source="google_fitness"' in documentation
 
 
 def test_legacy_base_ownership_and_public_mro_are_preserved():

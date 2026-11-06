@@ -1,6 +1,7 @@
 """
 Wearable Data Processing and Modeling project
-HPP-style loader for Apple HealthKit Weight.
+Source-aware HPP loader for Weight. Apple HealthKit remains the backward-compatible default; pass
+source="google_fitness" to load the Google Fitness product.
 """
 
 

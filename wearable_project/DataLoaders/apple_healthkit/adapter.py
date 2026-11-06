@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from wearable_project.DataLoaders._contracts import (
     ColumnMetadataContract, CuratedFramePreparation, DateContract, InfoDocument, LoadReportContext,
-    LoaderFeatureContract, RootIdentity, StateManifestContract,
+    LoaderFeatureContract, NonPublicOutputContract, RootIdentity, StateManifestContract,
 )
 from wearable_project.DataLoaders._sources import (
     APPLE_HEALTHKIT_PUBLIC_FEATURES, DEFAULT_APPLE_HEALTHKIT_CURATED_ROOT, DEFAULT_APPLE_HEALTHKIT_NATIVE_ROOT,
@@ -76,6 +76,25 @@ class AppleHealthKitAdapter:
         from wearable_project.DataLoaders.apple_healthkit.state import manifest_contract
 
         return manifest_contract(phase)
+
+    def non_public_output_contracts(self, phase: str) -> tuple[NonPublicOutputContract, ...]:
+        """Apple native types supported by processing but intentionally absent from the public loader catalog."""
+
+        if phase != "native":
+            return ()
+        public = set(APPLE_HEALTHKIT_PUBLIC_FEATURES)
+        return tuple(
+            NonPublicOutputContract(
+                feature=feature,
+                classification="supported_non_public",
+                detail=(
+                    "Apple native processing supports this feature, but wearable-project 0.4.0 deliberately "
+                    "does not expose it through the established 33-feature public DataLoader catalog"
+                ),
+            )
+            for feature in self.features("native")
+            if feature not in public
+        )
 
     def required_root_files(self, phase: str) -> tuple[str, ...]:
         del phase

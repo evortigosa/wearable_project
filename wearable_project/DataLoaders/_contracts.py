@@ -83,6 +83,15 @@ class StateManifestContract:
 
 
 @dataclass(frozen=True, slots=True)
+class NonPublicOutputContract:
+    """A managed product feature intentionally outside the public DataLoader catalog."""
+
+    feature: str
+    classification: str
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class ColumnMetadataContract:
     """Source-qualified metadata for one returned analytical column."""
 
@@ -174,6 +183,8 @@ class SourceAdapter(Protocol):
     def validate_root_contract(self, root: Path, phase: str) -> Mapping[str, Any]: ...
 
     def state_manifest_contract(self, phase: str) -> StateManifestContract: ...
+
+    def non_public_output_contracts(self, phase: str) -> tuple[NonPublicOutputContract, ...]: ...
 
     def required_root_files(self, phase: str) -> tuple[str, ...]: ...
 

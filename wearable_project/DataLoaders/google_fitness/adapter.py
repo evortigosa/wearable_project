@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from wearable_project.DataLoaders._contracts import (
     ColumnMetadataContract, CuratedFramePreparation, DateContract, InfoDocument, LoadReportContext,
-    LoaderFeatureContract, RootIdentity, StateManifestContract,
+    LoaderFeatureContract, NonPublicOutputContract, RootIdentity, StateManifestContract,
 )
 from wearable_project.DataLoaders._sources import (
     DEFAULT_GOOGLE_FITNESS_CURATED_ROOT, DEFAULT_GOOGLE_FITNESS_NATIVE_ROOT, GOOGLE_FITNESS_PUBLIC_FEATURES,
@@ -111,6 +111,22 @@ class GoogleFitnessAdapter:
         from wearable_project.DataLoaders.google_fitness.state import manifest_contract
 
         return manifest_contract(phase)
+
+    def non_public_output_contracts(self, phase: str) -> tuple[NonPublicOutputContract, ...]:
+        """Exceptional source products that are intentionally not accepted public feature policies."""
+
+        if phase != "native":
+            return ()
+        return (
+            NonPublicOutputContract(
+                feature="UnregisteredActivity",
+                classification="exceptional_fallback",
+                detail=(
+                    "the native processor preserves an unknown future Google activity label in this fallback; "
+                    "its presence requires scientific review before a stable DataLoader release"
+                ),
+            ),
+        )
 
     def required_root_files(self, phase: str) -> tuple[str, ...]:
         # Curated schema-v2 sparse defaults and virtual projections are defined by this immutable root contract.
